@@ -988,6 +988,80 @@ async def test_a_chats_rows_are_stored_one_at_a_time_however_long_an_inserts_ans
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["agent", "user"])
+async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next(redis, role):
+    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, and
+    the database stores the row all the same. The cancel waits for the insert's answer, so the row takes its place in
+    the chat's order before the chat's next row is stored: it goes out first, and nothing is left to tell its agent.
+    Rule 5: a row with no place to take (the person's own words) never waits on its cancel."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+
+    def insert(payload):
+        def execute():
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert
+    landed, answer = asyncio.Event(), asyncio.Event()
+
+    async def run_sync(fn, **kw):
+        out = fn()  # the database has it
+        if out.data[0]["role"] == role and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    order: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        order.append(messages[0]["text"])
+        return {"sent": 1}
+
+    text = "Hi, I'm Ana." if role == "agent" else "Thanks!"
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock()):
+        from app.services.conversation_service import add_message
+
+        first = asyncio.create_task(add_message(CONV, role, text))
+        await asyncio.wait_for(landed.wait(), 1)
+        first.cancel()  # the request goes, its row stored
+        if role == "user":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(first, 1)  # at once: nothing to place
+            answer.set()
+            return
+        line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not line.done(), "the next row waits for the cancelled one's answer"
+        answer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await asyncio.wait_for(line, 1)
+        await mc.drain(CONV)
+        await asyncio.sleep(0)
+        await mc.drain(CONV)
+    assert [r["content"] for r in stored] == ["Hi, I'm Ana.", "Ana shared the itinerary"]
+    assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "out first, as stored"
+    assert not await redis.hgetall(mc.OUTBOX), "sent: nothing left to tell its agent"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("between", ["unread", "nowhere", "found"])
 async def test_a_row_with_nothing_to_send_keeps_the_next_one_behind_the_one_before(redis, monkeypatch, between):
     """CodeRabbit #288: the agent's first message is with the gateway when their second one's chat cannot be read

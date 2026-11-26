@@ -510,6 +510,26 @@ def _stored(on_stored: Optional[Callable[[dict], None]], row: dict, conversation
         logger.error(f"add_message: the caller's on_stored failed conv={conversation_id}: {type(e).__name__}: {e}")
 
 
+# How long a cancelled caller waits for its insert's answer (past the PostgREST client's own 10 s).
+INSERT_WAIT_S = 12.0
+
+
+async def _place_if_stored(landing: "asyncio.Future", on_stored: Callable[[dict], None], conversation_id: str) -> None:
+    """add_message's caller cancelled while its insert was on its way: the database may store the row all the same.
+    Its answer is waited for (INSERT_WAIT_S at most), and a row stored is given its place (on_stored) before the
+    cancel goes on. Refused, or no answer in time: not known stored, nothing placed (its written-down delivery is
+    the recovery minute's to look up)."""
+    try:
+        res = await asyncio.wait_for(asyncio.shield(landing), INSERT_WAIT_S)
+    except Exception as e:
+        logger.warning(f"add_message: a cancelled caller's insert not known stored conv={conversation_id}: "
+                       f"{type(e).__name__}: {e}")
+        return
+    row = res.data[0] if res.data else None
+    if row:
+        _stored(on_stored, row, conversation_id)
+
+
 async def add_message(
     conversation_id: str,
     role: str,
@@ -548,8 +568,20 @@ async def add_message(
         if message_id:
             payload["id"] = message_id
         try:
-            res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False,
-                                  label="messages")
+            insert = _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False,
+                               label="messages")
+            if on_stored is None:
+                res = await insert
+            else:
+                # A row with a place to take (a chat's Messenger order): a caller cancelled while its insert is on its
+                # way waits for the answer first, so a row the database stored is placed before the caller's hold on
+                # that order goes (never inserted again: idempotent=False).
+                landing = asyncio.ensure_future(insert)
+                try:
+                    res = await asyncio.shield(landing)
+                except asyncio.CancelledError:
+                    await _place_if_stored(landing, on_stored, conversation_id)
+                    raise
         except Exception as e:
             # By the database's code only (23505 on the id, the table's one unique key): its text quotes the row.
             if not message_id or _error_code(e) != "23505":
