@@ -174,12 +174,15 @@ What the API does with an event:
   nothing holds the event, in one step: no claim, no answer and no send of its replies written down, so a claim taken
   since the pass looked leaves it to that turn, and a send a later event of its person's began meanwhile (its answer
   gone from Redis) to that send; a try counted as the pass looked is given back when its own turn never starts after
-  all (another's turn holds it, or it fails before: its person's earlier events not looked up, or one of theirs
-  failing first), so the last one is never spent waiting on another's turn, and only while its count is still there:
-  an event let go of meanwhile, answered by that turn, gets no count written back, which would stay with no expiry; a
-  turn that ran keeps its try, its answer kept or not: one Redis did not take is held by its process, written at its
-  next minute and sent then without a try)
-  (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
+  all (another's turn holds it, or it fails before: its person's earlier events not looked up, one of theirs
+  failing first, or Redis failing as its claim is taken or its place written, that claim let go of), so the last one
+  is never spent waiting on another's turn, and only while its count is still there: an event let go of meanwhile,
+  answered by that turn, gets no count written back, which would stay with no expiry; a turn that ran keeps its try,
+  its answer kept or not: one Redis did not take is held by its process, written at its next minute and sent then
+  without a try)
+  (`recover_given_up`, logged without its words). The limit: an event given up in the moment between a later event of
+  its person's reading it, to answer it first, and claiming it still gets that turn. Its replies go out if the
+  gateway is reached then, never later: the event is given up, and counted so, as if that turn had not run. Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
   that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send).
