@@ -221,7 +221,10 @@ What the API does with an event:
   not read (never taken for one gone: this one is never answered past it). One read as gone, or there and no event,
   is left to the recovery to give up, and passed over only while that is still what is there: one put back since for
   a late send of its replies is looked at again, and this one waits behind that send. Redis down before anything was
-  written (this one not kept): there is no inbox to look in. Every take looks in Redis even while its process cools
+  written (this one not kept): there is no inbox to look in. Redis refusing the take's first write (an error reply:
+  out of memory, read only) wrote nothing of it either: this one is answered as one not kept, unless an earlier
+  delivery took it (read then: Redis still answers reads), and never sent back at each delivery while Redis refuses.
+  Every take looks in Redis even while its process cools
   down (another call's failure, process wide): only Redis failing the take itself sends an event the way of one not
   kept. A take Redis may have run with its answer lost makes this one wait (409, `take_unsure`): the delivery made
   again, at this process or another, finds the take that ran while Redis answers, so this one is never answered past
@@ -232,7 +235,9 @@ What the API does with an event:
   earlier": they are looked up all the same, and Redis failing makes this one fail, kept. This one goes on only once
   one step finds none of the earlier ones left and marks its passing as the person's latest take: an earlier one put
   back for a late send of its replies before that step makes this one wait behind it; one put back after it finds
-  this one passed, and its replies are never sent after this one's (`late_dropped`). What an answered event's
+  this one passed, and its replies are never sent after this one's (`late_dropped`). Each earlier one answered first
+  for this one runs its turn only after the same step, for its own earlier ones: one passed over as gone and put back
+  before it makes it wait, and this one behind it. What an answered event's
   mark and its place in the inbox say is written through a cooldown too, so the recovery never answers it a second
   time. The recovery goes oldest first, and a person whose event still waits has their later ones wait that minute,
   untried.
