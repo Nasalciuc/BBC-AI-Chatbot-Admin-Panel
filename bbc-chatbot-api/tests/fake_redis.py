@@ -239,7 +239,24 @@ class FakeRedis:
         self._check("hdel")
         if not self._alive(key):
             return 0
-        return sum(1 for f in fields if self.kv[key].pop(str(f), None) is not None)
+        n = sum(1 for f in fields if self.kv[key].pop(str(f), None) is not None)
+        if not self.kv[key]:
+            # As Redis: a hash with no field left is no key at all (and no expiry).
+            self.kv.pop(key, None)
+            self.expires.pop(key, None)
+        return n
+
+    async def hscan(self, key: str, cursor: int = 0, match: Optional[str] = None,
+                    count: Optional[int] = None) -> tuple[int, dict[str, str]]:
+        """A part of the hash from `cursor` (here its place in the fields), about `count` fields, and where the next
+        part starts (0: none left)."""
+        self._check("hscan")
+        if not self._alive(key):
+            return 0, {}
+        items = list(self.kv[key].items())
+        n = count or 10
+        after = cursor + n
+        return (after if after < len(items) else 0), dict(items[cursor:after])
 
     # ── lists ────────────────────────────────────────────────
     def _list(self, key: str) -> list:
