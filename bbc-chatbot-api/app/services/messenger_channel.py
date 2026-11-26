@@ -934,12 +934,21 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
     replies given the first time, none when the other way sent them; one made while the first is still answered
     raises StillAnswering; a failure raises EventFailed, and the gateway delivers the event again. `client`: the
     recovery's Redis client. The event's mark and its place in the inbox are read and written through it, a cooldown
-    begun since or not, and Redis failing raises: a kept event is never answered without its mark (its replies kept
-    from a turn whose send never reached the gateway would be made again), it is left for a later pass."""
+    begun since or not, and Redis failing there fails the event before its turn (EventFailed, turn_ran False: the
+    recovery gives back the try it counted, its claim let go of): a kept event is never answered without its mark
+    (its replies kept from a turn whose send never reached the gateway would be made again), it is left for a later
+    pass."""
     if by == "gateway":
         MESSENGER_HEALTH["events"] += 1
     key = f"msgr:event:{event.key()}"
-    state, kept = await _claim(key, client)
+    try:
+        state, kept = await _claim(key, client)
+    except Exception as e:
+        if client is None:
+            raise  # never so: the gateway's claim answers without its mark instead (no_dedupe)
+        # The recovery's: its mark not read or written, Redis failing (logged). No turn of its ran: it fails so, left
+        # in the inbox for the next pass, the try counted for it given back.
+        raise EventFailed(True, turn_ran=False) from e
     if state == "pending":
         MESSENGER_HEALTH["still_answering"] += 1
         raise StillAnswering()
@@ -967,6 +976,12 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         # Its take may have run, Redis's answer lost: delivered again in a moment, never answered as one not kept.
         await _forget(key, token)
         raise
+    except Exception as e:
+        # The recovery's (client given: the event is in the inbox already), Redis failing as its place is written
+        # (logged): no turn of its ran. Its claim let go of, it fails so, the try counted for it given back, and the
+        # next pass looks at it again.
+        await _forget(key, token)
+        raise EventFailed(client is not None, turn_ran=False) from e
     replies: list[dict] = []
     turn_ran = False  # its own turn started: a failure before it never counts as one of its tries (the recovery)
     try:
@@ -3003,7 +3018,8 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
             return "given_up"
     try:
         # Through this pass's client: a cooldown begun since (another call's failure, process wide) never reads as an
-        # event with no mark, and Redis failing stops the pass, the event left for the next one.
+        # event with no mark. Redis failing as its claim is taken or its place written fails it before its turn
+        # (EventFailed: its try given back, its claim let go of), the event left for the next pass.
         out = await handle(event, by="api", client=r)
     except StillAnswering as e:
         if tries and not isinstance(e, AnswerNotKept):

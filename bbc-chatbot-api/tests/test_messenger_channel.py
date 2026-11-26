@@ -4420,6 +4420,41 @@ async def test_a_try_counts_only_once_its_own_turn_started(chat, redis, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("refused", ["its_claim", "its_place_in_the_inbox"])
+async def test_a_kept_event_redis_fails_before_its_turn_gives_its_try_back(chat, redis, monkeypatch, refused):
+    """CodeRabbit #288: Redis refuses the recovery's claim of a kept event, or the write of its place in the inbox
+    (_keep_event), before its turn starts. No turn ran: the event fails (EventFailed, turn_ran False) with the try
+    counted for it given back and its claim let go of, so the next pass looks at it again, never giving it up for
+    turns that never ran; the pass goes on. Rule 5: its own turn failing keeps the try
+    (test_a_try_counts_only_once_its_own_turn_started[in_its_turn])."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = str(mc.RECOVER_TRIES - 1)
+    real_set = redis.set
+    once = {"on": True}
+
+    async def refusing(key, value, *a, **kw):
+        target = "msgr:event:m1" if refused == "its_claim" else f"{mc.INBOX}:m1"
+        if once["on"] and key == target:
+            once["on"] = False
+            raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+        return await real_set(key, value, *a, **kw)
+
+    monkeypatch.setattr(redis, "set", refusing)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert not once["on"] and (out["state"], out["waiting"], out["given_up"]) == ("ran", 1, 0)
+        assert redis.kv[tries_key] == str(mc.RECOVER_TRIES - 1), "no turn of its ran: its try given back"
+        assert "msgr:event:m1" not in redis.kv, "its claim let go of"
+        assert "m1" in redis.kv[mc.INBOX] and len(chat.requests) == 1
+        out = await mc.run_messenger_recover()  # Redis answers again: its turn runs, once
+    assert out["answered"] == 1 and gw.sent == ["About: Hi, two seats to Istanbul in December?"]
+    assert len(chat.requests) == 2 and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_that_ran_keeps_its_try_when_its_answer_is_not_kept(chat, redis, monkeypatch):
     """CodeRabbit #288: a kept event's recovery turn runs at its last try and Redis refuses its answer (held by this
     process: AnswerNotKept). The turn ran, so its try stays counted. Its answer is still written and sent at the next
@@ -5303,8 +5338,8 @@ async def test_a_cooldown_begun_during_a_recovery_pass_never_answers_its_event_a
     """CodeRabbit #288: the first recovery's send never reached the gateway (its replies kept). In the next pass,
     another call's failure starts Redis's cooldown (process wide) after the pass took its client: the pass reads the
     event's mark through that client, finds the replies kept and sends them, with no second turn. Rule 5: Redis
-    really failing then, the event is left for a later pass, kept, its turn not run again; once Redis answers, the
-    kept replies go."""
+    really failing then, the event fails before its turn (EventFailed: its mark not read), left for a later pass,
+    kept, its turn not run again; once Redis answers, the kept replies go."""
     await _fail_once(chat, redis)
     _turns(chat)
     reply = "About: Hi, two seats to Istanbul in December?"
@@ -5326,7 +5361,7 @@ async def test_a_cooldown_begun_during_a_recovery_pass_never_answers_its_event_a
         redis.down = False
         redis_client.set_client_for_tests(redis)  # the cooldown over
         if then == "down":
-            assert out["state"] == "failed" and "m1" in redis.kv[mc.INBOX] and gw.sent == [reply]
+            assert (out["state"], out["waiting"]) == ("ran", 1) and "m1" in redis.kv[mc.INBOX] and gw.sent == [reply]
             redis.kv.pop(mc.RECOVER_LOCK, None)  # not let go while Redis failed: it expires
             out = await mc.run_messenger_recover()
     assert out["answered"] == 1 and gw.sent == [reply, reply] and not redis.kv[mc.INBOX]
