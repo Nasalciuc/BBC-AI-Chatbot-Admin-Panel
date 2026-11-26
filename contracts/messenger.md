@@ -118,13 +118,16 @@ What the API does with an event:
   token>`, for 2 minutes, renewed every 40 seconds while its turn runs and only while it still holds that token,
   then the replies given and who sent them, a day): a delivery made again gets the same replies and no second turn
   (none when the API sent them itself); one made while the first is still answered, however long its turn takes,
-  gets 409. An event that fails clears its claim (only its own), so the next delivery is answered. A turn whose
+  gets 409. A turn starts only on a claim it took: one let go of between the delivery's SET NX and its read (run
+  out, or its turn failed) is taken again, and one let go of each time it is looked at reads as still answered
+  (409). An event that fails clears its claim (only its own), so the next delivery is answered. A turn whose
   claim ran out (its renewal failing) and whose event another delivery or pass took since never renews, clears or
   answers over theirs: its answer is not written (`claim_lost`), and a recovery pass's is never sent beside theirs.
   An answer Redis did not take as its turn ended is held by its process and written at its next minute, in place of
   the turn's claim or of nothing (`answer_unkept`): a delivery made again meanwhile gets it from that process, with
   no second turn, and the process keeps the event's claim (a new expiry each minute) until it is written, so no other
-  delivery or pass answers the event again. A shutdown writes what the process holds; one Redis still refuses then
+  delivery or pass answers the event again; a newer one of the event, held meanwhile, is never dropped by an older
+  one's write. A shutdown writes what the process holds; one Redis still refuses then
   goes with it (`answer_dropped`), and its event may be answered again once its claim runs out. Redis down: answered
   without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
@@ -156,14 +159,18 @@ What the API does with an event:
   inbox. A delivery of a kept event from the gateway takes the same right, with its answer, in one step and only
   while it still holds the event's claim, before its replies go back to the gateway (`gateway:<when>`): a recovery
   pass of the event that lost its claim mid-turn sends nothing beside it, a delivery that lost its claim gives the
-  gateway none, and one whose send the API began first gets none either. The right reads as on its way for 90
+  gateway none, and one whose send the API began first gets none either: its own answer is kept as the API's to send
+  while that send is on its way (never one with none: should that send go nowhere, the next pass sends from it), one
+  with none once it is over. The right reads as on its way for 90
   seconds (past the gateway's own 60), then as over: never sent by the API. An event given to the gateway while a
   later one of the person's waits in the inbox stays there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
   (`recover_unsure`); one begun lately, or by a process still alive, is on its way, and the event waits: every old
   mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not. Only
-  a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again; its mark
+  a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
+  event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
+  claim or answer), so the same replies go, with no second turn; its mark
   not cleared then (Redis failing), or written with its answer lost, its process clears it at its next minute, or
   when it next looks at the event, however long Redis took; a send that ended and whose end could not be written has
   its event let go of then (out of the inbox, never sent again). A process that stopped first leaves its marks to read
@@ -211,7 +218,9 @@ says how many there were. 401 a call not signed by the API, 404 a Page the gatew
 
 The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
-the live push: an agent's "joined" line and their message never cross, however long an insert's answer takes); each
+the live push, even when the request that stored it was cancelled meanwhile (the cancel waits for the insert's
+answer, 12 seconds at most): an agent's "joined" line and their message never cross, however long an insert's answer
+takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
