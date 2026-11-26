@@ -180,6 +180,27 @@ async def startup() -> None:
     app.state.log_flush_task = asyncio.create_task(run_flush_forever(), name="log_flush")
 
 
+# How long a shutdown waits for the Messenger recovery to stop before the answers its process holds are written.
+RECOVER_STOP_S = 5.0
+
+
+async def _stop_messenger_recover() -> None:
+    """The scheduler's Messenger recovery (scheduler_messenger_recover) stopped and waited for, RECOVER_STOP_S at most:
+    a turn of it still on its way could hold an answer Redis refused after the held ones are written (write_held), and
+    that one would go with the process. Not stopped in time: logged (an answer it holds after may go with it)."""
+    import asyncio
+
+    task = next((t for t in getattr(app.state, "scheduler_tasks", []) if t.get_name() == "scheduler_messenger_recover"),
+                None)
+    if task is None or task.done():
+        return
+    task.cancel()
+    _, pending = await asyncio.wait({task}, timeout=RECOVER_STOP_S)
+    if pending:
+        logger.warning(f"[messenger] shutdown: the recovery not stopped within {RECOVER_STOP_S:.0f} s: an answer it "
+                       f"holds after the flush may go with the process")
+
+
 @app.on_event("shutdown")
 async def shutdown() -> None:
     # First, while the database and Redis still answer: the Messenger messages on their way get a few seconds to go
@@ -187,8 +208,10 @@ async def shutdown() -> None:
     from app.services import messenger_channel
 
     await messenger_channel.drain_all()
-    # Then the event answers Redis did not take as their turn ended: written now, so the next process never answers
-    # them a second time.
+    # Then the recovery stopped (a few seconds at most), so no turn of it holds an answer after the flush below; and
+    # the event answers Redis did not take as their turn ended written now, so the next process never answers them a
+    # second time.
+    await _stop_messenger_recover()
     await messenger_channel.write_held()
     flags_task = getattr(app.state, "flags_task", None)
     if flags_task is not None:

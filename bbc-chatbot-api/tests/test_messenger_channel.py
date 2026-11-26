@@ -2201,6 +2201,45 @@ async def test_a_shutdown_writes_the_answers_its_process_holds(chat, redis, monk
 
 
 @pytest.mark.asyncio
+async def test_a_shutdown_stops_the_recovery_before_it_writes_the_held_answers(monkeypatch):
+    """CodeRabbit #288: the recovery may be in a turn as the process stops, and a turn whose answer Redis refuses holds
+    it: the recovery is stopped (waited for, RECOVER_STOP_S at most) before the held answers are written, so none it
+    holds comes after the flush, to go with the process. Rule 5: the other scheduler tasks stop after, as before."""
+    import asyncio
+
+    with patch("app.db.supabase.get_client"):
+        from app import main
+
+    order: list = []
+    started: list = []
+
+    async def looping(name):
+        try:
+            started.append(name)
+            await asyncio.sleep(30)  # in a turn, or between passes
+        except asyncio.CancelledError:
+            order.append(f"{name} stopped")
+            raise
+
+    recover = asyncio.create_task(looping("recovery"), name="scheduler_messenger_recover")
+    sweep = asyncio.create_task(looping("sweep"), name="scheduler_agent_sweep")
+    while len(started) < 2:
+        await asyncio.sleep(0)
+
+    async def write_held(*a, **kw):
+        order.append("held written")
+        return {"written": 0, "dropped": 0}
+
+    monkeypatch.setattr(mc, "drain_all", AsyncMock(return_value={"left": 0}))
+    monkeypatch.setattr(mc, "write_held", write_held)
+    for name, value in (("ledger_task", None), ("flags_task", None), ("scheduler_tasks", [sweep, recover])):
+        monkeypatch.setattr(main.app.state, name, value, raising=False)
+    await main.shutdown()
+    await asyncio.gather(sweep, recover, return_exceptions=True)
+    assert order[:2] == ["recovery stopped", "held written"] and "sweep stopped" in order[2:]
+
+
+@pytest.mark.asyncio
 async def test_a_shutdown_tries_each_held_answer_whatever_redis_said_of_the_one_before(redis, monkeypatch):
     """CodeRabbit #288: the process holds two answers and Redis refuses the first one's write (a key of its own): the
     second is written all the same, and only the first goes with the process (answer_dropped). Rule 5: every one
