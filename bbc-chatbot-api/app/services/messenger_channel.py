@@ -54,9 +54,11 @@ THREAD_DAYS = 7
 INBOX_QUIET = timedelta(minutes=30)
 # "Connecting you with a specialist" is said once in this long, not after each message to an agent.
 QUEUED_EVERY_S = 1800
-# An event being answered, then the replies given for it: what a delivery made again by the gateway gets.
+# An event being answered, then the replies given for it: what a delivery made again by the gateway gets. The replies
+# last as long as the inbox keeps an event (INBOX_KEEP_S), written after its take: an answer kept for the API to send
+# outlives its event's place, however long the channel is off or the gateway away before it goes.
 PENDING_S = 120
-ANSWERED_S = 86400
+ANSWERED_S = 2 * 86400
 # How many times a claim found let go of between SET NX and GET is taken again before the event reads as being answered.
 CLAIM_TRIES = 3
 TARGET_S = 30 * 86400

@@ -4049,6 +4049,31 @@ async def test_an_answer_held_to_send_at_the_last_try_is_sent_never_given_up(cha
 
 
 @pytest.mark.asyncio
+async def test_an_answer_held_while_the_channel_is_off_for_more_than_a_day_is_still_sent_once(chat, redis, monkeypatch):
+    """CodeRabbit #288: an answer kept for the API to send (the channel turned off during its turn, at the event's last
+    try) lasts as long as the inbox keeps its event: the channel off for 25 hours, then on, the answer is still there,
+    sent once, never given up and never answered by a second turn. Rule 5: an answer lasts at least as long as an
+    event can be kept."""
+    from tests.fake_redis import FakeClock
+
+    assert mc.ANSWERED_S >= mc.INBOX_KEEP_S
+    clock = FakeClock()
+    redis.clock = clock  # every expiry from here on runs on a clock the test moves
+    await _fail_once(chat, redis)
+    text = "Hi, two seats to Istanbul in December?"
+    redis.kv[f"{mc.INBOX}:tries:m1"] = str(mc.RECOVER_TRIES - 1)
+    _turned_off_during(chat, monkeypatch, text)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        assert (await mc.run_messenger_recover())["waiting"] == 1 and gw.sent == []
+        clock.advance(25 * 3600)
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        out = await mc.run_messenger_recover()
+    assert (out["answered"], out["given_up"]) == (1, 0) and gw.sent == [f"About: {text}"]
+    assert len(chat.requests) == 2, "the turn that failed, then one turn: never a second"
+
+
+@pytest.mark.asyncio
 async def test_the_recovery_leaves_alone_what_is_recent_and_runs_only_when_on(chat, redis, monkeypatch):
     """Rule 5: an event kept a moment ago is still the gateway's to deliver again; off, nothing runs."""
     async def broken(req, add_message):
