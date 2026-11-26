@@ -158,22 +158,32 @@ What the API does with an event:
   NX: a pass whose turn of the event ends after another's began a send, or after it sent them and the event left the
   inbox, sends nothing), and once it is over (`done`); the mark stays until it expires, past the event's leaving the
   inbox. A delivery of a kept event from the gateway takes the same right, with its answer, in one step and only
-  while it still holds the event's claim, before its replies go back to the gateway (`gateway:<when>`): a recovery
+  while it still holds the event's claim, before its replies go back to the gateway (`gateway:<when>:<id>`, stamped
+  each time it is taken, its id saying whose it is): a recovery
   pass of the event that lost its claim mid-turn sends nothing beside it, a delivery that lost its claim gives the
   gateway none, and one whose send the API began first gets none either: its own answer is kept as the API's to send
   while that send is on its way (never one with none: should that send go nowhere, the next pass sends from it), one
   with none once it is over. One whose giving Redis did not answer (the right and the answer maybe written, maybe
   not) gives the gateway none (409), the event kept, and its process holds the giving: made again, with the same
-  right, at its next minute or when the event is delivered again (a right found its own is a run whose answer was
+  right (its id; stamped with when it is made again, never the first try's time), at its next minute or when the
+  event is delivered again (a right found its own is a run whose answer was
   lost: given), so a delivery made again gets the event's answer from Redis, this one's, or none when another
-  delivery's or the API's send stands; never from the process while Redis fails. The right reads as on its way for 90
-  seconds (past the gateway's own 60), then as over: never sent by the API. An event given to the gateway while a
-  later one of the person's waits in the inbox (or while one could not be looked up: never taken for none) stays
-  there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
+  delivery's or the API's send stands; never from the process while Redis fails. Two turns of the event in one
+  process whose answers Redis did not take (one whose claim ran out while it ran, and the delivery that took the
+  event since) are both held, never one over the other: each is tried in turn when the one before finds another's
+  claim there, the first written stands, the others are dropped then (`claim_lost`), and neither is given from the
+  process meanwhile. The right reads as on its way for 150 seconds (the gateway's own call to the API, 75 seconds,
+  begun before the right, then its 60 seconds to send), then as over: never sent by the API. A delivery made again of
+  replies given to the gateway (it never got that answer, or stopped before sending them, and sends them now) gets
+  the same replies, the right taken again from then while the event is kept; the event let go of since and an event
+  of the person's taken after the right, none (`late_dropped`: never after its replies); Redis failing, 409. An event
+  given to the gateway while a later one of the person's waits in the inbox (or while one could not be looked up:
+  never taken for none) stays there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
-  (`recover_unsure`), let go of only while its mark is still the one read (its process, back meanwhile, may have
-  cleared it: the event then stays, and is sent from its answer); one begun lately, or by a process still alive, is on its way, and the event waits: every old
+  (`recover_unsure`). Either is let go of only while its mark is still the one read (its process, back meanwhile, may
+  have cleared it, and the event is sent from its answer; or the gateway, given its replies again, sends them from
+  then): kept so, or not known (Redis failing), its person's later events wait behind it; one begun lately, or by a process still alive, is on its way, and the event waits: every old
   mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not. Only
   a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
   event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
@@ -185,9 +195,13 @@ What the API does with an event:
   as begun: never sent twice. A process cut off from Redis past its alive mark while it runs, whose event another
   process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, once
   (`sent_late`), in the person's order: it puts the event back in the inbox first, under a new mark of its own (on
-  its way for every process), so a later event of theirs waits behind it, then lets it go again; only while no later
-  event of theirs was taken since (each event taken keeps the person's latest, `msgr:inbox:last:<visitor id>`). One
-  taken since, its replies maybe out already: never sent after them (`late_dropped`), nothing waiting on it.
+  its way for every process), so a later event of theirs waits behind it, then lets it go again; only while no event
+  of theirs was taken after its send began (each take keeps when the person's latest was,
+  `msgr:inbox:last:<visitor id>`: never Meta's time, which two events can share). One taken since, its replies maybe
+  out already: never sent after them (`late_dropped`), nothing waiting on it. A putting back Redis ran and lost the
+  answer of leaves the event in the inbox under the new mark, with nothing sent: its process holds the new mark beside
+  the old one, reads the mark at its next minute, and sends the replies then, once (another process reads the new
+  mark as on its way meanwhile); one that did not run is tried again from the old mark.
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -229,11 +243,14 @@ says how many there were. 401 a call not signed by the API, 404 a Page the gatew
 
 The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
-the live push, even when the request that stored it was cancelled meanwhile (the cancel waits for the insert's
-answer, as a request not cancelled does; one that answers an error leaves the agent's message to the recovery minute
-as `unsure`, before the chat's next row may go: stored, its agent is told it was not sent; one stored has what its
-place left to do, its delivery crossed out or its agent told, done before the cancel goes on): an agent's "joined" line
-and their message never cross, however long an insert's answer takes); each
+the live push, even when the request that stored it was cancelled meanwhile. Outside a Messenger turn (an agent's
+message, a "joined" line) a row's save is one piece of work that holds the chat's order to its end: the insert, its
+retry under the same id (a row stored with its answer lost comes back, stored before), the `unsure` mark when its
+save is still not known (the recovery minute looks its row up while the process lives: stored, its agent is told it
+was not sent), and what its place leaves to do (its delivery crossed out, its agent told). A request cancelled
+meanwhile only stops waiting for it, at once: never the save, whose insert may land all the same, and the chat's next
+row waits for the save, never for a request. A turn's rows join the turn's answer, a row stored while a cancel waits
+included. An agent's "joined" line and their message never cross, however long an insert's answer takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
@@ -294,7 +311,8 @@ code read from a body cut short, longer than the 64 KiB read, or not Meta's shap
 says nothing, and only the status decides. A 200 is a message sent, whatever its body.
 A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. An event's replies
 have the same 60 seconds as an agent's send, the wait for the person's other sends and the tries included, so they
-are over within the 90 seconds the API reads the gateway's right to send them as on its way (`timeout`, counted as
+are over within the 150 seconds the API reads the gateway's right to send them as on its way, from when it gave them
+back (or gave them again to a delivery made again): the call's 75 seconds, then these 60 (`timeout`, counted as
 `out_of_time`, once the time is up). The rest is counted by kind.
 
 ## Redis (the API's)
@@ -305,9 +323,9 @@ are over within the 90 seconds the API reads the gateway's right to send them as
 | `msgr:inbox` | sorted set | the events taken and not answered yet, by when they were taken | until answered |
 | `msgr:inbox:<key>` | string | one of them, as the gateway handed it over | 2 days |
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
-| `msgr:inbox:sending:<key>` | string | the API's send of its replies: `<when it began>:<process>`, then `done`; or the gateway's right to send them, `gateway:<when>` | 2 days |
+| `msgr:inbox:sending:<key>` | string | the API's send of its replies: `<when it began>:<process>`, then `done`; or the gateway's right to send them, `gateway:<when>:<id>` (stamped each time it is taken) | 2 days |
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
-| `msgr:inbox:last:<visitor id>` | string | the Meta time of the latest event of the person's taken, answered since or not | 2 days, renewed |
+| `msgr:inbox:last:<visitor id>` | string | when the person's latest event was taken (a first take, a delivery made again, or the recovery's), answered since or not | 2 days, renewed |
 | `msgr:recover:lock` | string | the pass's own token: one process recovers at a time | 5 min, renewed while the pass runs |
 | `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery (`state`: `waiting`, `sending`, `untold`, `unsure`) | until sent or told |
 | `msgr:outbox:cursor` | string | the part of the outbox the recovery is on (an HSCAN cursor) | 2 days |
