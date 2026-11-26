@@ -4839,6 +4839,36 @@ async def test_replies_a_stopped_process_was_sending_are_never_sent_again(chat, 
 
 
 @pytest.mark.asyncio
+async def test_one_persons_waiting_events_never_fill_the_passs_batch(chat, redis, monkeypatch):
+    """CodeRabbit #288: the oldest kept events are one person's, their first one's replies on their way through the
+    gateway: the others of theirs wait behind it without a look, and those are never charged to the pass's batch, so
+    another person's event after them is answered in the same pass. Rule 5: the batch still holds the events looked
+    at (one past it waits for the next pass), and the first person's later ones still wait, none of them answered."""
+    _turns(chat, fail_first=100)
+    for mid, ts in (("m1", 100), ("m2", 200), ("m3", 300)):
+        with pytest.raises(mc.EventFailed):
+            await mc.handle(event(mid=mid, text=f"Mine {mid}", timestamp=ts))
+    for mid, psid in (("q1", "PSID-8"), ("s1", "PSID-9")):
+        with pytest.raises(mc.EventFailed):
+            await mc.handle(event(mid=mid, psid=psid, text=f"Theirs {mid}", timestamp=400))
+    order = await redis.zrangebyscore(mc.INBOX, "-inf", "+inf")
+    assert order == ["m1", "m2", "m3", "q1", "s1"]
+    redis.kv[mc._sending_key("m1")] = f"gateway:{time.time()}:d1"  # the gateway sending the first one's replies
+    _turns(chat)
+    turns_before = len(chat.requests)
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)
+    monkeypatch.setattr(mc, "RECOVER_BATCH", 2)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert (out["answered"], out["waiting"]) == (1, 3) and gw.sent == ["About: Theirs q1"]
+        assert set(redis.kv[mc.INBOX]) == {"m1", "m2", "m3", "s1"}, "s1 past the batch: the next pass's"
+        out = await mc.run_messenger_recover()
+    assert (out["answered"], out["waiting"]) == (1, 3) and gw.sent == ["About: Theirs q1", "About: Theirs s1"]
+    assert set(redis.kv[mc.INBOX]) == {"m1", "m2", "m3"} and len(chat.requests) == turns_before + 2
+
+
+@pytest.mark.asyncio
 async def test_a_pass_lets_go_only_of_its_own_lock_and_starts_nothing_past_its_budget(chat, redis, monkeypatch):
     """CodeRabbit #288: a pass that outlived its lock (another took it after it expired) leaves that other one's
     alone when it lets go; past its budget it starts no event (the next minute does). Rule 5: its own lock goes, and

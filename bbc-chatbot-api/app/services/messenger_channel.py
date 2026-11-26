@@ -2530,12 +2530,19 @@ async def run_messenger_recover() -> dict:
         keys = await r.zrangebyscore(INBOX, "-inf", await _redis_now(r) - RECOVER_AFTER_S)
         if keys or out["told"]:
             out["state"] = "ran"
-        # Oldest first; a person whose event still waits has their later ones wait too, in order.
+        # Oldest first; a person whose event still waits has their later ones wait too, in order. Those wait without
+        # a look ("behind"), never charged to the batch: one person's events at the front never keep another's out.
         waiting: set[str] = set()
-        for k in keys[:RECOVER_BATCH]:
-            if time.monotonic() - started >= RECOVER_BUDGET_S or held["lost"]:
+        looked = 0
+        for k in keys:
+            if looked >= RECOVER_BATCH or time.monotonic() - started >= RECOVER_BUDGET_S or held["lost"]:
                 break  # the rest next minute (or the pass that holds the lock now)
-            out[await _recover_one(r, k, waiting)] += 1
+            done = await _recover_one(r, k, waiting)
+            if done == "behind":
+                out["waiting"] += 1
+                continue
+            looked += 1
+            out[done] += 1
     except Exception as e:
         redis_failed("messenger recover", e)
         logger.error(f"[messenger] the recovery stopped: {type(e).__name__}: {e}")
@@ -2673,8 +2680,8 @@ async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> 
 
 async def _recover_one(r, k: str, waiting: set[str]) -> str:
     """One kept event: "answered" (its replies sent, or none to send, or a send of them had before: never made
-    again), "waiting" (the next minute tries again; its person's later events wait behind it, `waiting`), or
-    "given_up"."""
+    again), "waiting" (the next minute tries again; its person's later events wait behind it, `waiting`), "behind"
+    (an earlier one of its person's waits this minute: it waits too, without a look), or "given_up"."""
     raw = await r.get(f"{INBOX}:{k}")
     event: Optional[InboundEvent] = None
     if raw:
@@ -2684,7 +2691,7 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
             logger.error(f"[messenger] a kept event not readable ({e.error_count()} errors): given up")
     who = _who(event) if event is not None else None
     if who is not None and who in waiting:
-        return "waiting"  # behind an earlier one of theirs this minute
+        return "behind"  # behind an earlier one of theirs this minute
     # Its replies sent already (the inbox not cleared after), or being sent, or left half sent by a process that
     # stopped: never sent again.
     sending, mark = await _send_state_of(r, k)
