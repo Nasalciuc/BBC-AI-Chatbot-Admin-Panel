@@ -170,6 +170,9 @@ def redis():
     from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
 
     r = FakeRedis()
+    # Redis's clock moves with messenger_channel's own here (a test moving `mc.time` moves both), unless a test gives
+    # its processes clocks of their own (_Clock).
+    r.wall = lambda: mc.time.time()
     # The recovery's lock, and an event's claim, renewed and let go only while still the pass's or the turn's own
     # (conversation_lock's scripts); an event's answer written only over its turn's own claim, or nothing, and given
     # to the gateway with the right to send it only then.
@@ -2893,6 +2896,57 @@ async def test_a_late_sends_putting_back_whose_answer_was_lost_sends_its_replies
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["a_later_one_taken", "nothing_taken"])
+async def test_a_late_send_never_goes_after_a_later_events_replies_whatever_the_processes_clocks(chat, redis,
+                                                                                                  monkeypatch, since):
+    """CodeRabbit #288: as above, with the processes' clocks far apart: A's (the late send's) ten minutes ahead, B's
+    (which lets the event go, then takes the person's later message and answers it) ten minutes behind. A send's mark
+    and every take are stamped on Redis's clock (_redis_now), never on a process's: the later message, taken after
+    A's send began, still stops it (late_dropped), and nothing that may have gone is sent again. Rule 5: nothing taken
+    since, A sends them late, once, the clocks as far apart."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    clock = _Clock()
+    monkeypatch.setattr(mc, "time", clock)
+    redis.wall = time.time  # Redis's own clock, whatever the processes' say
+
+    def become(boot, knows, offset):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+        clock.offset = offset
+
+    sending_s = mc.SENDING_S
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {}, 600.0)
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        # A's send over and its event old enough for B's minute, however far apart A's clock and B's are.
+        monkeypatch.setattr(mc, "SENDING_S", -1500.0)
+        redis.kv[mc.INBOX]["m1"] -= 1200
+        become("process-b", {}, -600.0)
+        assert (await mc.run_messenger_recover())["answered"] == 1 and not redis.kv[mc.INBOX], "B let it go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        if since == "a_later_one_taken":
+            out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+            assert [r["text"] for r in out["replies"]] == ["About: Second"]
+        become("process-a", a_knows, 600.0)  # A reaches Redis again
+        await mc.run_messenger_recover()
+        await mc.run_messenger_recover()
+    if since == "a_later_one_taken":
+        assert gw.sent == [reply], "never sent after the later one's"
+        assert mc.MESSENGER_HEALTH["late_dropped"] == 1 and mc.MESSENGER_HEALTH["sent_late"] == 0
+    else:
+        assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1
+    assert not mc._UNSENT and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_a_send_whose_end_could_not_be_written_is_let_go_of_by_its_process(chat, redis, monkeypatch):
     """CodeRabbit #288: a recovered send went out and neither its end ("done") nor the event's leaving the inbox
     could be written (Redis failing). Another process meeting its mark waits while this one is alive (it is a mark
@@ -3120,6 +3174,30 @@ async def test_a_later_message_never_comes_before_an_earlier_one_whose_turn_fail
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clocks", ["apart", "in_step"])
+async def test_a_later_message_never_comes_before_an_earlier_one_whatever_the_processes_clocks(chat, redis,
+                                                                                               monkeypatch, clocks):
+    """CodeRabbit #288: the person's first message failed on process A (kept in the inbox), and the gateway delivers
+    their second to process B, whose clock is twenty minutes behind A's. Each event's place among the person's is
+    taken on Redis's clock (_redis_now), never on its process's: the first is still the earlier one, answered and
+    sent before the second's turn. Rule 5: the clocks in step, the same."""
+    clock = _Clock()
+    monkeypatch.setattr(mc, "time", clock)
+    redis.wall = time.time  # Redis's own clock, whatever the processes' say
+    apart = 600.0 if clocks == "apart" else 0.0
+    _turns(chat, fail_first=1)
+    clock.offset = apart  # process A
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    clock.offset = -apart  # process B
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["answered_first"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_later_message_waits_while_an_earlier_one_is_still_being_answered_or_sent(chat, redis):
     _turns(chat, fail_first=1)
     with pytest.raises(mc.EventFailed):
@@ -3289,6 +3367,35 @@ async def test_replies_given_to_the_gateway_and_delivered_again_are_given_from_t
         assert float(right[8:]) > old + 100, "taken again from now"
         with pytest.raises(mc.StillAnswering):
             await mc.handle(event(mid="m2", text="Second", timestamp=200))  # behind the gateway's send from now
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["a_later_one_taken", "nothing_taken"])
+async def test_replies_delivered_again_are_never_given_after_a_later_ones_whatever_the_processes_clocks(
+        chat, redis, monkeypatch, since):
+    """CodeRabbit #288: as above, the first given to the gateway by process A, whose clock is ten minutes ahead, and
+    let go of (nothing waits behind it); process B, ten minutes behind, takes the person's later message and gives its
+    replies. The gateway delivers the first again: the right and the takes are stamped on Redis's clock
+    (_redis_now), so the later one is still found taken after the right, and the first's replies are never given after
+    its (late_dropped). Rule 5: nothing taken since, the same replies, the clocks as far apart."""
+    clock = _Clock()
+    monkeypatch.setattr(mc, "time", clock)
+    redis.wall = time.time  # Redis's own clock, whatever the processes' say
+    _turns(chat)
+    clock.offset = 600.0  # process A
+    first = await mc.handle(event(mid="m1", text="First"))  # given, and let go of: nothing waits behind it
+    assert [r["text"] for r in first["replies"]] == ["About: First"] and not redis.kv[mc.INBOX]
+    clock.offset = -600.0  # process B
+    if since == "a_later_one_taken":
+        assert [r["text"] for r in (await mc.handle(event(mid="m2", text="Second", timestamp=200)))["replies"]] == [
+            "About: Second"]
+    turns = len(chat.requests)
+    again = await mc.handle(event(mid="m1", text="First"))  # its first answer never reached the gateway
+    assert len(chat.requests) == turns, "no second turn"
+    if since == "a_later_one_taken":
+        assert again["replies"] == [] and mc.MESSENGER_HEALTH["late_dropped"] == 1
+        return
+    assert [r["text"] for r in again["replies"]] == ["About: First"] and mc.MESSENGER_HEALTH["late_dropped"] == 0
 
 
 @pytest.mark.asyncio

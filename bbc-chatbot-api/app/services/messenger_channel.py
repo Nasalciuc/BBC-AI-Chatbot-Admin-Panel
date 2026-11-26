@@ -993,9 +993,10 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
 
 async def _give(r, key: str, k: str, replies: list, token: str, answer: str, right_id: str) -> int:
     """GIVE_TO_GATEWAY_LUA for one delivery (its token, answer and right's id): 1, 2 or 0. The right is stamped with
-    now, so the gateway's send of the replies is read as on its way from when it may get them: a giving made again
-    (Redis did not answer the first) starts it from then, never from the first try. Redis failing raises."""
-    right = f"{SENT_BY_GATEWAY}:{time.time()}:{right_id}"
+    now, on Redis's clock (_redis_now), so the gateway's send of the replies is read as on its way from when it may
+    get them, by every process alike: a giving made again (Redis did not answer the first) starts it from then, never
+    from the first try. Redis failing raises."""
+    right = f"{SENT_BY_GATEWAY}:{await _redis_now(r)}:{right_id}"
     return int(await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
                             json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S, right, INBOX_KEEP_S,
                             json.dumps({"replies": replies, "by": "api"}), f":{right_id}"))
@@ -1036,7 +1037,9 @@ async def _give_again(event: InboundEvent) -> Optional[bool]:
         return True  # no Redis: no inbox, and no right to take again
     k = event.key()
     try:
-        out = int(await r.eval(GIVE_AGAIN_LUA, 3, _sending_key(k), INBOX, _last_key(event), k, repr(time.time()),
+        # Redis's time: the right, and the takes it is compared with, were stamped from that clock too (_redis_now).
+        now = await _redis_now(r)
+        out = int(await r.eval(GIVE_AGAIN_LUA, 3, _sending_key(k), INBOX, _last_key(event), k, repr(now),
                                INBOX_KEEP_S))
     except Exception as e:
         redis_failed("messenger inbox", e)
@@ -1357,9 +1360,19 @@ def _last_key(event: InboundEvent) -> str:
     return f"{INBOX}:last:{visitor_id_for(event.page_id, event.psid)}"
 
 
+async def _redis_now(r) -> float:
+    """Redis's own clock (TIME), the one clock every time the inbox keeps and compares is read from: an event's take
+    (and its place among its person's), a send's mark, the gateway's right, a kept event's age. Two processes whose
+    own clocks disagree, however far, still tell which came first (a take after a send began, an event before
+    another), for both read the same clock. Redis failing raises."""
+    seconds, micros = await r.time()
+    return int(seconds) + int(micros) / 1_000_000
+
+
 # The person's latest take of an event: its time kept only when later than the one there (ARGV[1]), for INBOX_KEEP_S.
 # A time of the take, never Meta's time of the event: two events of the person's with the same Meta time are still
-# told apart (a late send's replies are never sent after those of one taken after its send began, _send_late).
+# told apart (a late send's replies are never sent after those of one taken after its send began, _send_late). Read
+# from Redis's clock, as the send's mark it is compared with is (_redis_now).
 LAST_TAKEN_LUA = """
 local v = tonumber(redis.call('get', KEYS[1]) or '0')
 if tonumber(ARGV[1]) > v then
@@ -1381,12 +1394,15 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         return False
     k = event.key()
     try:
+        # Redis's time, never this process's: the person's events keep their order, and a late send of an earlier
+        # one's replies is told from a take after it, whatever the clocks of the processes that took them.
+        now = await _redis_now(r)
         # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
-        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(time.time()), INBOX_KEEP_S)
+        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(now), INBOX_KEEP_S)
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
         taken = await r.zscore(INBOX, k)
         if taken is None:
-            taken = time.time()
+            taken = now
             await r.zadd(INBOX, {k: taken})
         await r.zadd(_who(event), {k: taken})
         await r.expire(_who(event), INBOX_KEEP_S)
@@ -1461,7 +1477,8 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
     before that by another process still alive, which may know that nothing went out, for as long as its minutes could
     still clear it: ALIVE_S), "begun" (begun and never over: its process stopped in it, or this one, which is not at
     it: let go of only while that mark is still there, _send_ended), "done" (over, and the event not taken out of the
-    inbox after). Redis failing raises."""
+    inbox after). How long ago a mark or a right was taken is told on Redis's clock, the one they were stamped from
+    (_redis_now), never on this process's. Redis failing raises."""
     known = _UNSENT.get(k)  # what this process knew of the send before the read: never one it writes meanwhile
     raw = await r.get(_sending_key(k))
     mark = str(raw or "")
@@ -1479,7 +1496,7 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
             at = float(mark.split(":")[1] or 0) if ":" in mark else 0.0
         except ValueError as e:
             logger.warning(f"[messenger] the gateway's right to send not readable, taken for one over: {e}")
-        return ("on_its_way" if time.time() - at < GATEWAY_SENDING_S else "done"), mark
+        return ("on_its_way" if await _redis_now(r) - at < GATEWAY_SENDING_S else "done"), mark
     ended = _ENDED.get(k)
     if ended is not None and ended[0] == raw:
         _ENDED.pop(k, None)
@@ -1506,7 +1523,7 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
         since = float(head)
     except ValueError as e:
         logger.warning(f"[messenger] a send's mark not readable, taken for one begun long ago: {e}")
-    if time.time() - since < SENDING_S:
+    if await _redis_now(r) - since < SENDING_S:
         return "on_its_way", mark
     if owner and owner != BOOT and await r.exists(f"msgr:alive:{owner}"):
         # Its process lives: an old mark of its own is one it knows of (_UNSENT, _ENDED), and its minutes settle it
@@ -1544,9 +1561,9 @@ async def _clear_unsent(r, k: str, mark: str, replies: list) -> int:
 
 async def _begin_send(r, event: InboundEvent, k: str, replies: list[dict]) -> Optional[str]:
     """A send of a kept event's replies written down before it starts, by one sender only (SET NX): its mark ("<when>:
-    <this process>"), from which on they are never sent again; None when another send of them was begun (that one's
-    to finish: this one sends nothing)."""
-    mark = f"{time.time()}:{BOOT}"
+    <this process>", when on Redis's clock: _redis_now), from which on they are never sent again; None when another
+    send of them was begun (that one's to finish: this one sends nothing). Redis failing raises."""
+    mark = f"{await _redis_now(r)}:{BOOT}"  # nothing written yet when this fails
     try:
         taken = await r.set(_sending_key(k), mark, nx=True, ex=INBOX_KEEP_S)
     except Exception as e:
@@ -1758,8 +1775,9 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
         logger.error(f"[messenger] replies to send late, their event not readable ({e.error_count()} errors): given up")
         return
     who = _who(event)
-    place = event.timestamp / 1000 if event.timestamp else time.time()
-    fresh = f"{time.time()}:{BOOT}"
+    now = await _redis_now(r)  # the new mark's time, on the clock its old one and every take were read from
+    place = event.timestamp / 1000 if event.timestamp else now
+    fresh = f"{now}:{BOOT}"
     began = 0.0  # unreadable: taken for one begun long ago (any take since passes it)
     try:
         began = float(mark.partition(":")[0])
@@ -2250,7 +2268,8 @@ async def run_messenger_recover() -> dict:
     keeper = asyncio.create_task(_keep_lock(r, token, held))
     try:
         out["told"] = await _tell_left(r, started + TELL_BUDGET_S)
-        keys = await r.zrangebyscore(INBOX, "-inf", time.time() - RECOVER_AFTER_S)
+        # Their places were taken on Redis's clock (_keep_event): their age is told on it.
+        keys = await r.zrangebyscore(INBOX, "-inf", await _redis_now(r) - RECOVER_AFTER_S)
         if keys or out["told"]:
             out["state"] = "ran"
         # Oldest first; a person whose event still waits has their later ones wait too, in order.

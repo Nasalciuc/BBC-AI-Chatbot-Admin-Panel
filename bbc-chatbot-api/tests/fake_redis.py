@@ -33,6 +33,9 @@ class FakeRedis:
         self.kv: dict[str, Any] = {}
         self.expires: dict[str, float] = {}
         self.clock: Callable[[], float] = time.monotonic
+        # What TIME answers: Redis's own wall clock, the one its callers read alike whatever their own clocks say (a
+        # test sets its own, beside the clocks it gives its processes).
+        self.wall: Callable[[], float] = time.time
         self.down = False
         # HSCAN's COUNT is a hint: Redis gives a small hash whole in one part, whatever the COUNT. True does that.
         self.scan_whole = False
@@ -66,6 +69,13 @@ class FakeRedis:
     def register(self, script: str, fn) -> None:
         """Teach the fake what a script does: fn(fake, keys, args) -> result."""
         self.scripts[script] = fn
+
+    async def time(self) -> tuple[int, int]:
+        """TIME, as redis-py gives it: (seconds, microseconds) on Redis's own clock (`wall`)."""
+        self._check("time")
+        now = self.wall()
+        seconds = int(now)
+        return seconds, int((now - seconds) * 1_000_000)
 
     # ── strings ──────────────────────────────────────────────
     async def set(self, key: str, value: Any, nx: bool = False, xx: bool = False,
