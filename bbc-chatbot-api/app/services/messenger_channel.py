@@ -1669,11 +1669,14 @@ async def _settle_own(r) -> None:
             fresh = _PUTTING_BACK.get(k)
             if fresh is not None:
                 if await r.get(_sending_key(k)) == fresh:
-                    # Its late send's putting back ran and its answer was lost: the event is in the inbox under the
-                    # new mark, and nothing was sent: they go now, once, never from a second turn.
+                    # Its late send's putting back ran and its answer was lost: nothing was sent, and the mark is the
+                    # new one, known to this process from now on. They go late from it as from the old one
+                    # (_send_late): only while no event of the person's was taken since it (this process cut off
+                    # again meanwhile, another may have let the event go and answered a later one), never straight
+                    # from here; never from a second turn.
                     _PUTTING_BACK.pop(k, None)
-                    _drop_unsent(k, entry)
-                    await _send_put_back_kept(r, k, kept_event, replies, fresh)
+                    _UNSENT[k] = (fresh, kept_event, replies)
+                    await _send_late(r, k, kept_event, replies, fresh)
                     continue
                 _PUTTING_BACK.pop(k, None)  # it did not run: the old mark is looked at as before
             cleared = await _clear_unsent(r, k, mark, replies)
@@ -1792,7 +1795,8 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
     already, whatever Meta's time of it), they are never sent after it: dropped, counted (late_dropped). Never
     reaching the gateway again: held, the event in the inbox, and its mark cleared at the next minute, so the recovery
     sends them. Redis failing raises (the caller logs): held, unless they went out already; the putting back's answer
-    lost, the new mark is held beside the old one (_PUTTING_BACK), and its next minute sends them if it ran."""
+    lost, the new mark is held beside the old one (_PUTTING_BACK), and its next minute sends them late from it if it
+    ran, through this same check."""
     try:
         event = InboundEvent.model_validate_json(kept_event)
     except ValidationError as e:
@@ -1825,9 +1829,10 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
 
 
 # Late sends whose putting back (REKEEP_LUA) Redis did not answer, each with the new mark it would have written,
-# beside the old one in _UNSENT: at its next minute this process reads the mark. The new one there, it ran (the
-# event back in the inbox under it, nothing sent yet): the replies go now, once. Not there, it did not: the old one is
-# looked at as before. Another process meeting the new mark meanwhile reads it as on its way (_send_state_of).
+# beside the old one in _UNSENT: at its next minute this process reads the mark. The new one there, it ran (nothing
+# sent yet): the replies go late from the new mark, through the same check (_send_late: never after an event of the
+# person's taken since). Not there, it did not: the old one is looked at as before. Another process meeting the new
+# mark meanwhile reads it as on its way while this one lives (_send_state_of).
 _PUTTING_BACK: dict[str, str] = {}
 
 
@@ -1862,17 +1867,6 @@ async def _send_put_back(r, k: str, event: InboundEvent, kept_event: str, replie
                        f"{type(e).__name__}: {e}")
         return
     await _release_event(k, who)
-
-
-async def _send_put_back_kept(r, k: str, kept_event: str, replies: list, mark: str) -> None:
-    """_send_put_back for a late send's event as this process kept it (its JSON); unreadable: given up (logged)."""
-    try:
-        event = InboundEvent.model_validate_json(kept_event)
-    except ValidationError as e:
-        logger.error(f"[messenger] replies put back to send late, their event not readable ({e.error_count()} "
-                     f"errors): given up")
-        return
-    await _send_put_back(r, k, event, kept_event, replies, mark)
 
 
 @contextlib.asynccontextmanager

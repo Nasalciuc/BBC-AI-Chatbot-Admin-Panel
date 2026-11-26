@@ -3004,6 +3004,75 @@ async def test_a_late_sends_putting_back_whose_answer_was_lost_sends_its_replies
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("since", ["a_later_one_taken", "nothing_taken"])
+async def test_a_late_sends_putting_back_whose_answer_was_lost_never_goes_after_a_later_events_replies(
+        chat, redis, monkeypatch, since):
+    """CodeRabbit #288: as above, A's putting back runs and its answer is lost (the event back in the inbox under A's
+    new mark, nothing sent), and A is cut off again past ALIVE_S: process B takes the new mark for a send begun, lets
+    the event go, and takes and answers the person's later message. A, back, finds its new mark there and sends late
+    from it through the same check as from the old one (_send_late): an event of the person's taken since, they are
+    never sent after its replies (late_dropped). Rule 5: nothing taken since, A sends them late, once."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    sending_s = mc.SENDING_S
+
+    def become(boot, knows, putting):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+        mc._PUTTING_BACK.clear()
+        mc._PUTTING_BACK.update(putting)
+
+    async def b_lets_it_go():
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        become("process-b", {}, {})
+        assert (await mc.run_messenger_recover())["answered"] == 1 and not redis.kv[mc.INBOX], "B let it go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {}, {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        a_knows = mc._UNSENT.copy()
+        blinks["on"] = False
+        await b_lets_it_go()
+        real_eval = redis.eval
+        once = {"on": True}
+
+        async def eval_(script, numkeys, *keys_and_args):
+            if script == mc.REKEEP_LUA and once["on"]:
+                once["on"] = False
+                await real_eval(script, numkeys, *keys_and_args)
+                raise RedisConnectionError("Connection closed by server.")  # it ran: only its answer lost
+            return await real_eval(script, numkeys, *keys_and_args)
+
+        monkeypatch.setattr(redis, "eval", eval_)
+        become("process-a", a_knows, {})  # A reaches Redis again
+        await mc.run_messenger_recover()  # its minute: the late send, its putting back's answer lost
+        assert gw.sent == [reply] and "m1" in redis.kv[mc.INBOX], "back in the inbox under the new mark, nothing sent"
+        a_knows, a_putting = mc._UNSENT.copy(), dict(mc._PUTTING_BACK)
+        redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+        await b_lets_it_go()  # A cut off again: B takes the new mark for a send begun
+        if since == "a_later_one_taken":
+            out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+            assert [r["text"] for r in out["replies"]] == ["About: Second"]
+        become("process-a", a_knows, a_putting)  # A back, its new mark still there
+        await mc.run_messenger_recover()
+        await mc.run_messenger_recover()
+    if since == "a_later_one_taken":
+        assert gw.sent == [reply], "never sent after the later one's"
+        assert mc.MESSENGER_HEALTH["late_dropped"] == 1 and mc.MESSENGER_HEALTH["sent_late"] == 0
+    else:
+        assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1
+    assert not mc._UNSENT and not mc._PUTTING_BACK and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["a_later_one_taken", "nothing_taken"])
 async def test_a_late_send_never_goes_after_a_later_events_replies_whatever_the_processes_clocks(chat, redis,
                                                                                                   monkeypatch, since):
     """CodeRabbit #288: as above, with the processes' clocks far apart: A's (the late send's) ten minutes ahead, B's
