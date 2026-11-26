@@ -2173,6 +2173,33 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_of
 
 
 @pytest.mark.asyncio
+async def test_a_cross_out_refused_at_the_minute_never_keeps_its_pass_from_running(chat, redis):
+    """CodeRabbit #288: this process's off-skipped message's cross-out (_settle_off), at the start of the minute,
+    refused with Redis away for that call (its cooldown begun, process wide): the pass takes its client before that,
+    and runs all the same: a kept event is answered and sent. The message stays this process's, crossed out at a
+    later minute. Rule 5: the cross-out taken, nothing is held."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    mc._OFF_UNSETTLED["e-off"] = CONV
+    real_hdel = redis.hdel
+    once = {"on": True}
+
+    async def refused_once(key, *fields):
+        if once["on"] and key == mc.OUTBOX:
+            once["on"] = False
+            raise ConnectionError("Connection reset by peer")
+        return await real_hdel(key, *fields)
+
+    gw = Gateway([])
+    with patch.object(redis, "hdel", new=refused_once), patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert not once["on"] and mc._OFF_UNSETTLED == {"e-off": CONV}, "refused: kept for a later minute"
+        assert (out["state"], out["answered"]) == ("ran", 1) and len(gw.sent) == 1, "the pass ran"
+        await mc.run_messenger_recover()
+    assert not mc._OFF_UNSETTLED and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_a_shutdown_waits_a_little_then_tells_each_agent_what_did_not_go_out(redis):
     import asyncio
 

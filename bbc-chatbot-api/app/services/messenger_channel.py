@@ -2628,11 +2628,14 @@ async def run_messenger_recover() -> dict:
     at the minute: no pass, and only a process still holding marks of its own sends says it is alive
     (_alive_while_off)."""
     out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0, "told": 0}
-    await _settle_off()  # this process's own off-skipped messages its cross-out missed: every minute, on or off
     if not enabled():
+        await _settle_off()  # this process's own off-skipped messages its cross-out missed: every minute, on or off
         await _alive_while_off()
         return {**out, "state": "off"}
+    # The pass's client taken before those are crossed out (CodeRabbit #288): one refused, Redis away for that call,
+    # begins a cooldown (process wide) that would read as no Redis for the whole pass. They stay for a later minute.
     r = get_redis()
+    await _settle_off()
     if r is None:
         return {**out, "state": "no_redis"}
     token = uuid.uuid4().hex
