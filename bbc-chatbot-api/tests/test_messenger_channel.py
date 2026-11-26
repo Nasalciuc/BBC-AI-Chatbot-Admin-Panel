@@ -1136,12 +1136,13 @@ async def test_a_request_cancelled_while_its_message_is_written_down_leaves_noth
     import asyncio
 
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
-    gate = asyncio.Event()
+    gate, blocked = asyncio.Event(), asyncio.Event()
     real_hset = redis.hset
 
     async def held_up(*a, **kw):
         if lands:
             await real_hset(*a, **kw)
+        blocked.set()  # the write landed (or not), and its answer is held up
         await gate.wait()
         return 1
 
@@ -1153,7 +1154,7 @@ async def test_a_request_cancelled_while_its_message_is_written_down_leaves_noth
 
             monkeypatch.setattr(redis, "hset", held_up)
             saving = asyncio.create_task(add_message(CONV, "agent", "Cancelled while written down"))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(blocked.wait(), 1)
             saving.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await saving
@@ -1576,6 +1577,78 @@ async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the
 
 
 @pytest.mark.asyncio
+async def test_another_processs_send_mark_is_never_cleared_for_one_that_sent_nothing(chat, redis, monkeypatch):
+    """CodeRabbit #288: this process's send never reached the gateway, and the clear of its mark applied on Redis but
+    its answer was lost. Another process then begins a send of the same replies and stops in the middle of it. This
+    process clears only the mark it wrote (compare and delete): the other's stays, is taken for a send begun once that
+    process is gone (maybe with the person, counted), and the replies are never sent again."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    calls: list = []
+    hanging = asyncio.Event()
+
+    async def gw(page_id, psid, messages, tag=None):
+        calls.append(messages[0]["text"])
+        if len(calls) == 1:
+            return {"sent": 0, "failed": {"kind": "gateway"}}
+        if len(calls) == 2:
+            hanging.set()
+            await asyncio.sleep(30)  # the other process stops in the middle of it
+        return {"sent": 1}
+
+    real_eval, real_delete = redis.eval, redis.delete
+    lose = {"on": True}
+
+    def sending(key) -> bool:
+        return str(key).startswith(f"{mc.INBOX}:sending:")
+
+    async def eval_(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if lose["on"] and script == mc.RELEASE_LUA and sending(keys_and_args[0]):
+            lose["on"] = False
+            raise ConnectionError("the connection dropped before the answer")
+        return out
+
+    async def delete(*keys):
+        out = await real_delete(*keys)
+        if lose["on"] and any(sending(k) for k in keys):
+            lose["on"] = False
+            raise ConnectionError("the connection dropped before the answer")
+        return out
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(redis, "eval", eval_)
+        monkeypatch.setattr(redis, "delete", delete)
+        become("process-a", type(mc._UNSENT)())
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        assert f"{mc.INBOX}:sending:m1" not in redis.kv, "the clear applied, its answer lost"
+        redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+        a_knows = mc._UNSENT.copy()
+        assert a_knows, "this process takes its send for one that sent nothing"
+        become("process-b", type(mc._UNSENT)())
+        b = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(hanging.wait(), 1)
+        b.cancel()
+        await asyncio.gather(b, return_exceptions=True)
+        assert f"{mc.INBOX}:sending:m1" in redis.kv, "the other's send begun, never over"
+        redis.kv.pop("msgr:alive:process-b")  # and that process gone
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        become("process-a", a_knows)
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and mc.MESSENGER_HEALTH["recover_unsure"] == 1
+    assert calls == [reply, reply], "the other's send may be with the person: never made again"
+    assert not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_an_event_that_keeps_failing_is_given_up_after_its_tries(chat, redis):
     await _fail_once(chat, redis)
     redis.kv[f"{mc.INBOX}:tries:m1"] = str(mc.RECOVER_TRIES)
@@ -1974,33 +2047,61 @@ async def test_a_pass_keeps_its_lock_while_a_slow_event_runs_and_starts_nothing_
                                                                                                monkeypatch, lost):
     """CodeRabbit #288: an event that takes longer than the lock's own time: the pass renews its lock while it runs,
     so a pass that starts meanwhile finds it busy, and both events are answered by the one pass. Rule 5: the lock
-    found lost (another pass holds it now), the pass starts no other event and leaves that pass's lock alone."""
+    found lost (another pass holds it now), the pass starts no other event and leaves that pass's lock alone. The
+    lock's time runs on a clock the test moves (FakeClock), only after a renewal: never on the machine's speed."""
     import asyncio
+
+    from tests.fake_redis import FakeClock
 
     await _fail_once(chat, redis)
     redis.kv[mc.INBOX]["m1"] -= 1  # the oldest
     with pytest.raises(mc.EventFailed):
         await mc.handle(event(mid="q1", psid="PSID-8", text="Hello"))
     redis.kv[mc.INBOX]["q1"] -= mc.RECOVER_AFTER_S + 1
+    clock = FakeClock()
+    redis.clock = clock
+    entered, go_on, renewed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    renewals: list = []  # each renewal of the lock: 1 renewed, 0 found another's token
+    real_eval = redis.eval
 
-    async def slow(ev, *, by="gateway"):
-        if lost and ev.mid == "m1":
-            await redis.set(mc.RECOVER_LOCK, "another-pass", ex=60)
-        await asyncio.sleep(0.5)
+    async def watched(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.RENEW_LUA and keys_and_args[0] == mc.RECOVER_LOCK:
+            renewals.append(out)
+            renewed.set()
+        return out
+
+    async def slow(ev, *, by="gateway", client=None):
+        if ev.mid == "m1":
+            entered.set()
+            await go_on.wait()
         return {"replies": []}
 
+    monkeypatch.setattr(redis, "eval", watched)
     monkeypatch.setattr(mc, "RECOVER_LOCK_S", 0.3)
     monkeypatch.setattr(mc, "handle", slow)
     first = asyncio.create_task(mc.run_messenger_recover())
-    await asyncio.sleep(0.4)  # past the lock's own time, m1 still on its way
+    await asyncio.wait_for(entered.wait(), 1)  # m1 on its way
+    if lost:
+        await redis.set(mc.RECOVER_LOCK, "another-pass", ex=60)
+        while not renewals or renewals[-1] != 0:  # the pass's keeper has found another's token
+            renewed.clear()
+            await asyncio.wait_for(renewed.wait(), 2)
+    else:
+        # Twice the lock's own time, in steps shorter than it, each after a renewal.
+        for _ in range(4):
+            renewed.clear()
+            await asyncio.wait_for(renewed.wait(), 2)
+            clock.advance(mc.RECOVER_LOCK_S / 2)
     second = await mc.run_messenger_recover()
-    out = await first
+    go_on.set()
+    out = await asyncio.wait_for(first, 2)
     assert second["state"] == "busy"
     if lost:
         assert out["answered"] == 1 and set(redis.kv[mc.INBOX]) == {"q1"}
         assert redis.kv[mc.RECOVER_LOCK] == "another-pass"
     else:
-        assert out["answered"] == 2 and not redis.kv[mc.INBOX] and mc.RECOVER_LOCK not in redis.kv
+        assert all(renewals) and out["answered"] == 2 and not redis.kv[mc.INBOX] and mc.RECOVER_LOCK not in redis.kv
 
 
 @pytest.mark.asyncio
@@ -2012,6 +2113,8 @@ async def test_an_event_whose_pass_lost_its_lock_mid_turn_is_sent_at_most_once(c
     Rule 5: the claim lost too (its renewal failing as well), the second pass answers and sends it; the first, ending
     after, sends nothing (the right to send is taken by one sender, and a send's mark stays past the release)."""
     import asyncio
+
+    from tests.fake_redis import FakeClock
 
     await _fail_once(chat, redis)
     _turns(chat)
@@ -2027,12 +2130,18 @@ async def test_an_event_whose_pass_lost_its_lock_mid_turn_is_sent_at_most_once(c
         return await turn(req, add_message)
 
     chat.answer = first_hangs
+    clock = FakeClock()
+    redis.clock = clock
+    renewed = asyncio.Event()
     real_eval = redis.eval
 
     async def renewal_fails(script, numkeys, *keys_and_args):
         if script == mc.RENEW_LUA and (keys_and_args[0] == mc.RECOVER_LOCK or claim == "lost"):
             raise ResponseError("LOADING Redis is loading the dataset in memory")
-        return await real_eval(script, numkeys, *keys_and_args)
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.RENEW_LUA:
+            renewed.set()  # the claim renewed
+        return out
 
     monkeypatch.setattr(redis, "eval", renewal_fails)
     monkeypatch.setattr(mc, "RECOVER_LOCK_S", 0.3)
@@ -2041,7 +2150,15 @@ async def test_an_event_whose_pass_lost_its_lock_mid_turn_is_sent_at_most_once(c
     with patch.object(mc, "send", new=gw):
         first = asyncio.create_task(mc.run_messenger_recover())
         await asyncio.wait_for(inside.wait(), 1)  # the first pass's turn begun, its send not written down
-        await asyncio.sleep(0.45)  # past the lock's own time (and the claim's, when its renewal fails too)
+        if claim == "kept":
+            # Past the lock's own time, in steps shorter than the claim's, each after the claim's renewal: the lock
+            # (never renewed) runs out, the claim does not. On a clock the test moves (FakeClock).
+            for _ in range(3):
+                renewed.clear()
+                await asyncio.wait_for(renewed.wait(), 2)
+                clock.advance(mc.PENDING_S / 2)
+        else:
+            clock.advance(mc.PENDING_S * 1.5)  # both run out: neither is renewed
         second = await mc.run_messenger_recover()
         release.set()
         out = await asyncio.wait_for(first, 2)

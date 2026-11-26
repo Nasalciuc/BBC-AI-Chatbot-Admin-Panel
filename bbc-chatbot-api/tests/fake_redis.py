@@ -3,25 +3,42 @@
 Strings with NX/PX/EX and expiry, sets, sorted sets, hashes, lists, counters, pipelines and the
 Lua scripts the app sends (matched by text, never run). `down = True` makes every call
 raise ConnectionError, as a Redis that does not answer would. A test whose code sends a
-script the fake does not know fails loudly instead of passing on a guess.
+script the fake does not know fails loudly instead of passing on a guess. Expiries run on
+`clock` (time.monotonic), or on a test's own FakeClock: a lease then runs out only when the
+test moves the clock, however slow the machine.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+
+class FakeClock:
+    """A clock that moves only when told (FakeRedis.clock): advance(seconds)."""
+
+    def __init__(self, start: Optional[float] = None) -> None:
+        self.now = time.monotonic() if start is None else start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeRedis:
     def __init__(self) -> None:
         self.kv: dict[str, Any] = {}
         self.expires: dict[str, float] = {}
+        self.clock: Callable[[], float] = time.monotonic
         self.down = False
         # HSCAN's COUNT is a hint: Redis gives a small hash whole in one part, whatever the COUNT. True does that.
         self.scan_whole = False
-        # Each hash's fields in the places HSCAN walks (a field deleted leaves its place empty, as a bucket in Redis:
-        # a scan's later parts never move when earlier fields go).
+        # Each hash's fields in the places HSCAN walks, for the iteration on (a field deleted leaves its place empty,
+        # as a bucket in Redis: a scan's later parts never move when earlier fields go; a new iteration starts from
+        # the fields there then).
         self._places: dict[str, list[str]] = {}
         self.calls: list[str] = []
         self.scripts: dict[str, Any] = {}  # script text -> python function(keys, args)
@@ -34,16 +51,16 @@ class FakeRedis:
 
     def _alive(self, key: str) -> bool:
         exp = self.expires.get(key)
-        if exp is not None and time.monotonic() >= exp:
+        if exp is not None and self.clock() >= exp:
             self.kv.pop(key, None)
             self.expires.pop(key, None)
         return key in self.kv
 
     def _set_expiry(self, key: str, px: Optional[int] = None, ex: Optional[int] = None) -> None:
         if px is not None:
-            self.expires[key] = time.monotonic() + px / 1000.0
+            self.expires[key] = self.clock() + px / 1000.0
         elif ex is not None:
-            self.expires[key] = time.monotonic() + ex
+            self.expires[key] = self.clock() + ex
         else:
             self.expires.pop(key, None)
 
@@ -70,6 +87,7 @@ class FakeRedis:
         self._check("delete")
         n = 0
         for k in keys:
+            self._places.pop(k, None)
             if self._alive(k):
                 self.kv.pop(k, None)
                 self.expires.pop(k, None)
@@ -99,7 +117,7 @@ class FakeRedis:
         if not self._alive(key):
             return -2
         exp = self.expires.get(key)
-        return -1 if exp is None else max(0, int(exp - time.monotonic()))
+        return -1 if exp is None else max(0, int(exp - self.clock()))
 
     async def incr(self, key: str, amount: int = 1) -> int:
         self._check("incr")
@@ -249,6 +267,7 @@ class FakeRedis:
             # As Redis: a hash with no field left is no key at all (and no expiry).
             self.kv.pop(key, None)
             self.expires.pop(key, None)
+            self._places.pop(key, None)
         return n
 
     async def hscan(self, key: str, cursor: int = 0, match: Optional[str] = None,
@@ -262,6 +281,8 @@ class FakeRedis:
             return 0, {}
         h = self.kv[key]
         places = self._places.setdefault(key, [])
+        if int(cursor) == 0:
+            places[:] = [f for f in places if f in h]  # a new iteration: the places of fields gone before it go
         known = set(places)
         places.extend(f for f in h if f not in known)  # a field new since: a place after the others
         n = len(places) if self.scan_whole else (count or 10)
