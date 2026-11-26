@@ -170,7 +170,8 @@ What the API does with an event:
   its answer to write and renews the claim meanwhile), counts none and waits; the give-up itself happens only while
   nothing holds the event, in one step, so a claim taken since the pass looked leaves it to that turn; a try counted
   as the pass looked is given back when no turn of it runs after all, so the last one is never spent waiting on
-  another's turn)
+  another's turn, and only while its count is still there: an event let go of meanwhile, answered by that turn, gets
+  no count written back, which would stay with no expiry)
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
