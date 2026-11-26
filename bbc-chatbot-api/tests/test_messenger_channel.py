@@ -1881,8 +1881,8 @@ async def test_a_cooldown_after_the_later_event_is_kept_never_lets_it_past_an_ea
 
     real_keep, real_found = mc._keep_event, mc._earlier_kept
 
-    async def kept_then(ev):
-        out = await real_keep(ev)
+    async def kept_then(ev, client=None):
+        out = await real_keep(ev, client)
         if ev.mid == "m2" and when in ("kept", "down"):
             cool()
         return out
@@ -1932,6 +1932,42 @@ async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_re
         # Delivered again by the gateway: the same replies, no second turn.
         assert (await mc.handle(event()))["replies"] == out["replies"]
     assert gw.sent == [] and len(chat.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("then", ["cooling", "down"])
+async def test_a_cooldown_begun_during_a_recovery_pass_never_answers_its_event_again(chat, redis, monkeypatch, then):
+    """CodeRabbit #288: the first recovery's send never reached the gateway (its replies kept). In the next pass,
+    another call's failure starts Redis's cooldown (process wide) after the pass took its client: the pass reads the
+    event's mark through that client, finds the replies kept and sends them, with no second turn. Rule 5: Redis
+    really failing then, the event is left for a later pass, kept, its turn not run again; once Redis answers, the
+    kept replies go."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    real_handle = mc.handle
+
+    async def after_the_client(ev, **kw):
+        if then == "cooling":
+            redis_client.redis_failed("another call", ConnectionError("reset by peer"))
+        else:
+            redis.down = True
+        return await real_handle(ev, **kw)
+
+    with patch.object(mc, "send", new=gw):
+        assert (await mc.run_messenger_recover())["waiting"] == 1  # its send never reached the gateway
+        monkeypatch.setattr(mc, "handle", after_the_client)
+        out = await mc.run_messenger_recover()
+        monkeypatch.setattr(mc, "handle", real_handle)
+        redis.down = False
+        redis_client.set_client_for_tests(redis)  # the cooldown over
+        if then == "down":
+            assert out["state"] == "failed" and "m1" in redis.kv[mc.INBOX] and gw.sent == [reply]
+            redis.kv.pop(mc.RECOVER_LOCK, None)  # not let go while Redis failed: it expires
+            out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == [reply, reply] and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == 2, "one turn for the failure, one after it: never a third"
 
 
 @pytest.mark.asyncio

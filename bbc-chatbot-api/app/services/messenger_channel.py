@@ -747,15 +747,18 @@ class EventFailed(Exception):
         self.kept = kept
 
 
-async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gateway") -> dict:
+async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gateway", client: Any = None) -> dict:
     """One event: {"replies": [{"text", "quick_replies"?}, …]}, the replies to send in order. `by` is who sends
     them: the gateway (the inbound route) or the API itself (run_messenger_recover). A delivery made again gets the
     replies given the first time, none when the other way sent them; one made while the first is still answered
-    raises StillAnswering; a failure raises EventFailed, and the gateway delivers the event again."""
+    raises StillAnswering; a failure raises EventFailed, and the gateway delivers the event again. `client`: the
+    recovery's Redis client. The event's mark and its place in the inbox are read and written through it, a cooldown
+    begun since or not, and Redis failing raises: a kept event is never answered without its mark (its replies kept
+    from a turn whose send never reached the gateway would be made again), it is left for a later pass."""
     if by == "gateway":
         MESSENGER_HEALTH["events"] += 1
     key = f"msgr:event:{event.key()}"
-    state, kept = await _claim(key)
+    state, kept = await _claim(key, client)
     if state == "pending":
         MESSENGER_HEALTH["still_answering"] += 1
         raise StillAnswering()
@@ -764,7 +767,7 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
             return {"replies": []}
         MESSENGER_HEALTH["duplicates"] += 1
         return {"replies": kept.get("replies") or []}
-    in_inbox = await _keep_event(event)
+    in_inbox = await _keep_event(event, client)
     replies: list[dict] = []
     try:
         async with _claim_kept(key):
@@ -842,7 +845,8 @@ async def _answer_earlier(event: InboundEvent) -> None:
 async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     """("new", {}) for an event not seen, ("pending", {}) while it is being answered, ("done", {"replies", "by"})
     after. With Redis down an event is answered without its mark (counted); with `client` given (a person's earlier
-    event, answered for a later one that is kept), Redis failing raises: never answered without its mark."""
+    event, answered for a later one that is kept, or the recovery's event), Redis failing raises: never answered
+    without its mark."""
     r = client if client is not None else get_redis()
     if r is None:
         MESSENGER_HEALTH["no_dedupe"] += 1
@@ -856,7 +860,7 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     except Exception as e:
         redis_failed("messenger dedupe", e)
         if client is not None:
-            logger.warning(f"[messenger] an earlier event's mark not read: {type(e).__name__}: {e}")
+            logger.warning(f"[messenger] a kept event's mark not read: {type(e).__name__}: {e}")
             raise
         MESSENGER_HEALTH["no_dedupe"] += 1
         logger.warning(f"[messenger] an event answered without its dedupe: {type(e).__name__}: {e}")
@@ -907,10 +911,11 @@ def _who(event: InboundEvent) -> str:
     return f"{INBOX}:who:{visitor_id_for(event.page_id, event.psid)}"
 
 
-async def _keep_event(event: InboundEvent) -> bool:
+async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     """The event in the inbox until it is answered, and among its person's there, by when it was first taken: True
-    once it is there; False when Redis could not take it (counted: one that fails then is not answered later)."""
-    r = get_redis()
+    once it is there; False when Redis could not take it (counted: one that fails then is not answered later). With
+    `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
+    r = client if client is not None else get_redis()
     if r is None:
         MESSENGER_HEALTH["not_kept"] += 1
         return False
@@ -926,6 +931,9 @@ async def _keep_event(event: InboundEvent) -> bool:
         return True
     except Exception as e:
         redis_failed("messenger inbox", e)
+        if client is not None:
+            logger.warning(f"[messenger] a kept event's place in the inbox not written: {type(e).__name__}: {e}")
+            raise
         MESSENGER_HEALTH["not_kept"] += 1
         logger.warning(f"[messenger] an event not kept in the inbox: {type(e).__name__}: {e}")
         return False
@@ -1596,7 +1604,9 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
                      f"({event.kind if event else 'gone or unreadable'})")
         return "given_up"
     try:
-        out = await handle(event, by="api")
+        # Through this pass's client: a cooldown begun since (another call's failure, process wide) never reads as an
+        # event with no mark, and Redis failing stops the pass, the event left for the next one.
+        out = await handle(event, by="api", client=r)
     except StillAnswering as e:
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
