@@ -182,6 +182,11 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # First, while the database and Redis still answer: the Messenger messages on their way get a few seconds to go
+    # out, and each agent whose message did not is told so in the chat (app.services.messenger_channel).
+    from app.services import messenger_channel
+
+    await messenger_channel.drain_all()
     flags_task = getattr(app.state, "flags_task", None)
     if flags_task is not None:
         flags_task.cancel()

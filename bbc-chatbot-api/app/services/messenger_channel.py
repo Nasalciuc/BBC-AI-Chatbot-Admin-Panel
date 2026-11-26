@@ -8,6 +8,10 @@ the blocklist, the chat's doors, an agent who holds the chat, the card's buttons
 the person goes back in the answer to the gateway, which sends it; an agent's message from the panel (and anything
 else stored outside a turn) goes out through the gateway's POST /v1/send.
 
+An event is kept in Redis (the inbox) from the moment it is taken until it is answered: one whose turn failed is
+answered a few minutes later by run_messenger_recover (the scheduler's minute), whatever became of the gateway's
+own tries, and its replies go out through /v1/send.
+
 MESSENGER_CHANNEL (app.flags, off at merge), with MESSENGER_GATEWAY_URL and MESSENGER_GATEWAY_SECRET set: off,
 the inbound route answers 503 and nothing goes out.
 
@@ -26,12 +30,13 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.flags import flag
 from app.infra.redis_client import get_redis, redis_failed
@@ -49,9 +54,29 @@ QUEUED_EVERY_S = 1800
 PENDING_S = 120
 ANSWERED_S = 86400
 TARGET_S = 30 * 86400
-# The gateway waits for Meta, with its retries (bbc-messenger: 10 s a call, 2 + 5 + 15 s between): never longer.
+# The gateway waits for Meta, with its retries, within its own budget (bbc-messenger SendBudget, 60 s): never longer.
 GATEWAY_TIMEOUT_S = 80.0
 SIGNED_SKEW_S = 300
+_SIGNATURE = re.compile(r"sha256=[0-9a-f]{64}")
+
+# The events taken and not answered yet: kept until answered (a sorted set by when they were taken, each event's
+# JSON beside it), so one whose turn failed is answered later (run_messenger_recover).
+INBOX = "msgr:inbox"
+INBOX_KEEP_S = 2 * 86400
+# Longer than the gateway's own tries of an event the API keeps (bbc-messenger forward: Retries, each call up to
+# APITimeout): the recovery never races a delivery still on its way.
+RECOVER_AFTER_S = 600
+# One try a minute: an event still failing after an hour of them is given up (counted, logged without its words).
+RECOVER_TRIES = 60
+RECOVER_BATCH = 20
+RECOVER_LOCK = "msgr:recover:lock"
+RECOVER_LOCK_S = 300
+# A row an event stored, by the event's key: a delivery made again never stores it twice.
+SAVED_S = 86400
+# A row whose save had no answer is looked for among the chat's last ones, this recent.
+STORED_LATELY_S = 600
+# What a shutdown gives the deliveries still on their way (app.main).
+DRAIN_S = 8.0
 
 # What a message with no text but an attachment is kept as, and what Skye says to it.
 _ATTACHMENTS = {"image": "[photo]", "audio": "[voice message]", "video": "[video]", "file": "[file]",
@@ -65,8 +90,13 @@ NOT_SENT = {
     "unavailable": ("Not sent on Messenger: the client can't be reached there (they may have blocked the Page). "
                     "Reach them by SMS or email."),
     "thread_owned": "Not sent on Messenger: the chat is being answered from the Page's inbox now.",
+    "unknown": ("Maybe not sent on Messenger: Meta did not confirm it (the connection dropped). If the client "
+                "doesn't reply, send it again."),
 }
 NOT_SENT_OTHER = "Not sent on Messenger. Try again in a minute; if it keeps failing, tell an admin."
+NOT_SENT_RESTART = "Not sent on Messenger: the server was restarting. Send it again in a minute."
+PARTLY_SENT = ("Only part of this message reached the client on Messenger: the first {sent} of {parts} pieces. Send "
+               "them the rest, not the whole message again.")
 
 MESSENGER_HEALTH: dict[str, int] = {
     "events": 0,             # events the gateway handed over, signed
@@ -74,21 +104,30 @@ MESSENGER_HEALTH: dict[str, int] = {
     "replies": 0,            # replies given back to the gateway
     "duplicates": 0,         # deliveries made again, answered with the replies kept
     "still_answering": 0,    # deliveries made again while the first was being answered (409, the gateway waits)
-    "turns_failed": 0,       # events that failed: the gateway delivers them again
+    "turns_failed": 0,       # events that failed: the gateway delivers them again, the recovery answers them later
     "turns_refused": 0,      # turns the chat refused (blocklist, a limit): kept, no reply
     "kept_unanswered": 0,    # messages kept without a reply: another app owns the thread, or the Page's inbox spoke
     "inbox_replies": 0,      # messages written from the Page's inbox, kept in the chat
     "attachments": 0,        # messages with no text, answered with ATTACHMENT_REPLY
     "referrals": 0,          # where a person came from (an m.me link, an ad), kept
     "no_dedupe": 0,          # events answered with Redis down: a delivery made again could be answered twice
+    "saved_once": 0,         # rows a delivery made again found saved already: not saved twice
+    "not_kept": 0,           # events not put in the inbox (Redis down): one that fails is not answered later
+    "recovered": 0,          # events answered by the recovery, their replies sent
+    "recover_waiting": 0,    # recovery tries that failed again: the next minute tries again
+    "recover_given_up": 0,   # events still failing after RECOVER_TRIES, or unreadable: given up
     "bad_signature": 0,      # calls refused: not the gateway's
     "sent": 0,               # messages sent out of a turn (an agent's, mostly)
     "send_failed": 0,        # of those, refused or lost; by why below
     "window_closed": 0,
     "unavailable": 0,
     "thread_owned": 0,
+    "unconfirmed": 0,        # Meta did not confirm it: maybe with the person
+    "partly_sent": 0,        # a long one cut short: its first pieces went out
     "gateway_down": 0,       # the gateway did not answer
     "no_target": 0,          # a Messenger chat whose Page and PSID could not be read: nothing sent
+    "off_skipped": 0,        # rows that waited for the chat's previous one while the channel was turned off: not sent
+    "cut_at_shutdown": 0,    # rows a shutdown did not wait for: their agents are told
 }
 
 
@@ -114,16 +153,20 @@ def sign(secret: bytes, unix: int, body: bytes) -> str:
 
 def valid_signed(unix_header: Optional[str], signature: Optional[str], body: bytes, *,
                  now: Optional[float] = None) -> bool:
+    """A call the gateway signed, its time near ours. Only what the gateway sends is read (unix seconds, a
+    lower-case hex signature): anything else is refused here, never raised from the arithmetic or the comparison."""
     secret = _secret()
     if not secret or not unix_header or not signature:
         return False
-    try:
-        unix = int(unix_header.strip())
-    except ValueError:  # noqa: silent — a time that is not a number is a call that is not the gateway's: refused
+    unix_header, signature = unix_header.strip(), signature.strip()
+    if not (unix_header.isascii() and unix_header.isdigit() and len(unix_header) <= 12):
         return False
+    if not _SIGNATURE.fullmatch(signature):
+        return False
+    unix = int(unix_header)
     if abs((now if now is not None else time.time()) - unix) > SIGNED_SKEW_S:
         return False
-    return hmac.compare_digest(sign(secret, unix, body), signature.strip())
+    return hmac.compare_digest(sign(secret, unix, body).encode(), signature.encode())
 
 
 def visitor_id_for(page_id: str, psid: str) -> str:
@@ -191,6 +234,8 @@ def _collecting(conversation_id: str):
 # One delivery after another for each chat in this process: an agent's "joined" line and their message never
 # cross on the way out.
 _LAST: dict[str, asyncio.Task] = {}
+# Set by a shutdown (drain_all): no delivery starts after it.
+_CLOSING = False
 
 
 async def outbound(conversation_id: str, role: str, row: dict) -> None:
@@ -204,6 +249,13 @@ async def outbound(conversation_id: str, role: str, row: dict) -> None:
             return
         if not enabled():
             return
+        if _CLOSING:
+            # The process is going: nothing starts now, and on a Messenger chat the agent is told to send it again.
+            if await _target(conversation_id, role):
+                MESSENGER_HEALTH["cut_at_shutdown"] += 1
+                if role == "agent":
+                    await _tell_agent(conversation_id, NOT_SENT_RESTART)
+            return
         prev = _LAST.get(conversation_id)
         task = asyncio.create_task(_deliver_after(prev, conversation_id, role, row))
         _LAST[conversation_id] = task
@@ -214,44 +266,96 @@ async def outbound(conversation_id: str, role: str, row: dict) -> None:
 
 
 async def drain(conversation_id: str) -> None:
-    """Wait for a chat's deliveries (tests; a shutdown that wants them out)."""
+    """Wait for a chat's deliveries (tests)."""
     task = _LAST.get(conversation_id)
     if task is not None:
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def drain_all(budget_s: float = DRAIN_S) -> dict:
+    """A shutdown (app.main): no delivery starts from now on, the ones on their way get budget_s to go out, and those
+    still waiting then are stopped; each agent whose message did not go out is told so in the chat (not sent, or
+    maybe not, when it was with the gateway already). {"left": how many chats had one stopped}."""
+    global _CLOSING
+    _CLOSING = True
+    tasks = [t for t in _LAST.values() if not t.done()]
+    if not tasks:
+        return {"left": 0}
+    _, pending = await asyncio.wait(tasks, timeout=budget_s)
+    for t in pending:
+        t.cancel()
+    if pending:
+        # Their notes are written before the process goes.
+        await asyncio.wait(pending, timeout=2.0)
+        logger.warning(f"[messenger] shutdown: {len(pending)} chat(s) had a message not sent on Messenger")
+    return {"left": len(pending)}
+
+
 async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, role: str, row: dict) -> None:
-    if prev is not None:
-        await asyncio.gather(prev, return_exceptions=True)
+    state = {"sending": False}
     try:
-        await _deliver(conversation_id, role, row)
+        if prev is not None:
+            await asyncio.gather(prev, return_exceptions=True)
+        if not enabled():
+            # Turned off while this one waited for the chat's previous row: nothing goes out, as for a row stored
+            # with the channel off.
+            MESSENGER_HEALTH["off_skipped"] += 1
+            return
+        await _deliver(conversation_id, role, row, state)
+    except asyncio.CancelledError:
+        # A shutdown that could not wait for it (drain_all): on a Messenger chat its agent is told, as for a send
+        # that failed (maybe sent, when it was with the gateway already).
+        if state["sending"] or await _target(conversation_id, role):
+            MESSENGER_HEALTH["cut_at_shutdown"] += 1
+            if role == "agent":
+                await _tell_agent(conversation_id, NOT_SENT["unknown"] if state["sending"] else NOT_SENT_RESTART)
+        raise
     except Exception as e:
         MESSENGER_HEALTH["send_failed"] += 1
         logger.error(f"[messenger] conv {conversation_id}: delivery broke: {type(e).__name__}: {e}")
 
 
-async def _deliver(conversation_id: str, role: str, row: dict) -> None:
+async def _deliver(conversation_id: str, role: str, row: dict, state: dict) -> None:
     text = str(row.get("content") or "").strip()
     if not text:
         return
     target = await _target(conversation_id, role)
     if not target:
         return
+    state["sending"] = True
     result = await send(target["page_id"], target["psid"], [{"text": text}])
     if result.get("sent"):
         MESSENGER_HEALTH["sent"] += 1
         return
     MESSENGER_HEALTH["send_failed"] += 1
     kind = str((result.get("failed") or {}).get("kind") or "")
+    parts_sent = _count(result.get("parts_sent"))
+    parts = max(_count(result.get("parts")), parts_sent)
     if kind in ("window_closed", "unavailable", "thread_owned"):
         MESSENGER_HEALTH[kind] += 1
-    logger.warning(f"[messenger] conv {conversation_id}: a {role} message not sent on Messenger ({kind or 'no answer'})")
+    elif kind == "unknown":
+        MESSENGER_HEALTH["unconfirmed"] += 1
+    if parts_sent:
+        MESSENGER_HEALTH["partly_sent"] += 1
+    logger.warning(f"[messenger] conv {conversation_id}: a {role} message not sent on Messenger "
+                   f"({kind or 'no answer'}, {parts_sent} of {parts} pieces out)")
     if role == "agent":
-        # The agent sees it in the chat, and only there: the note never goes out.
-        from app.services.conversation_service import add_message
+        # The agent sees it in the chat, and only there: the note never goes out. Part of it out: they send the
+        # rest, never the whole message again.
+        note = PARTLY_SENT.format(sent=parts_sent, parts=parts) if parts_sent else NOT_SENT.get(kind, NOT_SENT_OTHER)
+        await _tell_agent(conversation_id, note)
 
-        await add_message(conversation_id, "system", NOT_SENT.get(kind, NOT_SENT_OTHER), model_used="template",
-                          outbound=False)
+
+def _count(value: Any) -> int:
+    """A count from the gateway's answer (0 when there is none, or it is not one)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+async def _tell_agent(conversation_id: str, note: str) -> None:
+    """A line in the chat for the agent alone: stored, never sent (add_message never raises)."""
+    from app.services.conversation_service import add_message
+
+    await add_message(conversation_id, "system", note, model_used="template", outbound=False)
 
 
 async def _target(conversation_id: str, role: str) -> Optional[dict]:
@@ -295,8 +399,9 @@ async def _keep_target(conversation_id: str, page_id: str, psid: str) -> None:
 
 
 async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str] = None) -> dict:
-    """The gateway's POST /v1/send: {"sent": n, "failed": {"kind", …}?}; {"sent": 0, "failed": {"kind":
-    "gateway"}} when the gateway did not answer (counted)."""
+    """The gateway's POST /v1/send: {"sent": n, "parts": m, "parts_sent": k, "failed": {"kind", …}?} (a long
+    message is several on Messenger: parts_sent of them went out); {"sent": 0, "failed": {"kind": "gateway"}} when
+    the gateway did not answer (counted)."""
     import httpx
     from config.settings import settings
 
@@ -329,64 +434,83 @@ class StillAnswering(Exception):
     """The same event is being answered by an earlier delivery: the gateway tries again in a moment (409)."""
 
 
-async def handle(event: InboundEvent) -> dict:
-    """One event from the gateway: {"replies": [{"text", "quick_replies"?}, …]}, the replies to send in order. A
-    delivery made again gets the replies given the first time; one made while the first is still answered raises
-    StillAnswering; a failure raises, and the gateway delivers the event again."""
-    MESSENGER_HEALTH["events"] += 1
+class EventFailed(Exception):
+    """An event that could not be answered now: the gateway delivers it again. `kept`: it is in the inbox, and the
+    API answers it later itself (run_messenger_recover) if no delivery does first (503 with X-Messenger-Kept)."""
+
+    def __init__(self, kept: bool):
+        super().__init__("kept for later" if kept else "not kept")
+        self.kept = kept
+
+
+async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gateway") -> dict:
+    """One event: {"replies": [{"text", "quick_replies"?}, …]}, the replies to send in order. `by` is who sends
+    them: the gateway (the inbound route) or the API itself (run_messenger_recover). A delivery made again gets the
+    replies given the first time, none when the other way sent them; one made while the first is still answered
+    raises StillAnswering; a failure raises EventFailed, and the gateway delivers the event again."""
+    if by == "gateway":
+        MESSENGER_HEALTH["events"] += 1
     key = f"msgr:event:{event.key()}"
     state, kept = await _claim(key)
     if state == "pending":
         MESSENGER_HEALTH["still_answering"] += 1
         raise StillAnswering()
     if state == "done":
+        if kept.get("by", "gateway") != by:
+            return {"replies": []}
         MESSENGER_HEALTH["duplicates"] += 1
-        return {"replies": kept}
+        return {"replies": kept.get("replies") or []}
+    in_inbox = await _keep_event(event)
     try:
         replies = await _answer(event)
-    except Exception:
+    except Exception as e:
         await _forget(key)
-        raise
-    await _remember(key, replies)
+        raise EventFailed(in_inbox) from e
+    await _remember(key, replies, by)
+    if by == "gateway":
+        await _release_event(event.key())
     MESSENGER_HEALTH["replies"] += len(replies)
     return {"replies": replies}
 
 
-async def _claim(key: str) -> tuple[str, list]:
-    """("new", []) for an event not seen, ("pending", []) while it is being answered, ("done", replies) after."""
+async def _claim(key: str) -> tuple[str, dict]:
+    """("new", {}) for an event not seen, ("pending", {}) while it is being answered, ("done", {"replies", "by"})
+    after."""
     r = get_redis()
     if r is None:
         MESSENGER_HEALTH["no_dedupe"] += 1
-        return "new", []
+        return "new", {}
     raw: Optional[str] = None
-    kept: Any = []
+    kept: Any = None
     try:
         if await r.set(key, "pending", nx=True, ex=PENDING_S):
-            return "new", []
+            return "new", {}
         raw = await r.get(key)
     except Exception as e:
         redis_failed("messenger dedupe", e)
         MESSENGER_HEALTH["no_dedupe"] += 1
         logger.warning(f"[messenger] an event answered without its dedupe: {type(e).__name__}: {e}")
-        return "new", []
+        return "new", {}
     if raw is None:
-        return "new", []
+        return "new", {}
     if raw == "pending":
-        return "pending", []
+        return "pending", {}
     try:
         kept = json.loads(raw)
     except ValueError as e:
         logger.warning(f"[messenger] kept replies not readable, answered as none: {e}")
-        kept = []
-    return "done", kept if isinstance(kept, list) else []
+        kept = None
+    if isinstance(kept, list):
+        kept = {"replies": kept, "by": "gateway"}
+    return "done", kept if isinstance(kept, dict) else {"replies": [], "by": "gateway"}
 
 
-async def _remember(key: str, replies: list) -> None:
+async def _remember(key: str, replies: list, by: str) -> None:
     r = get_redis()
     if r is None:
         return
     try:
-        await r.set(key, json.dumps(replies), ex=ANSWERED_S)
+        await r.set(key, json.dumps({"replies": replies, "by": by}), ex=ANSWERED_S)
     except Exception as e:
         redis_failed("messenger dedupe", e)
         logger.warning(f"[messenger] an event's replies not kept: {type(e).__name__}: {e}")
@@ -401,6 +525,41 @@ async def _forget(key: str) -> None:
     except Exception as e:
         redis_failed("messenger dedupe", e)
         logger.warning(f"[messenger] a failed event's mark not cleared: {type(e).__name__}: {e}")
+
+
+async def _keep_event(event: InboundEvent) -> bool:
+    """The event in the inbox until it is answered: True once it is there; False when Redis could not take it
+    (counted: one that fails then is not answered later)."""
+    r = get_redis()
+    if r is None:
+        MESSENGER_HEALTH["not_kept"] += 1
+        return False
+    k = event.key()
+    try:
+        await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
+        if await r.zscore(INBOX, k) is None:
+            await r.zadd(INBOX, {k: time.time()})
+        return True
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        MESSENGER_HEALTH["not_kept"] += 1
+        logger.warning(f"[messenger] an event not kept in the inbox: {type(e).__name__}: {e}")
+        return False
+
+
+async def _release_event(k: str) -> None:
+    """Out of the inbox: answered (or given up)."""
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        pipe = r.pipeline(transaction=False)
+        pipe.zrem(INBOX, k)
+        pipe.delete(f"{INBOX}:{k}", f"{INBOX}:tries:{k}")
+        await pipe.execute()
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] an answered event not taken out of the inbox: {type(e).__name__}: {e}")
 
 
 def _text_of(event: InboundEvent) -> str:
@@ -427,7 +586,6 @@ def _referral_meta(ref: Optional[Referral]) -> dict:
 
 async def _answer(event: InboundEvent) -> list[dict]:
     from app.db import supabase as db
-    from app.services.conversation_service import add_message
 
     vid = visitor_id_for(event.page_id, event.psid)
     with _collecting("") as turn:
@@ -448,26 +606,94 @@ async def _answer(event: InboundEvent) -> list[dict]:
         meta = conv.get("metadata") if isinstance(conv.get("metadata"), dict) else {}
         if event.kind == "echo":
             # Someone wrote from the Page's inbox: kept so the chat in the panel is whole, never sent back, and Skye
-            # leaves the thread to them a while.
-            MESSENGER_HEALTH["inbox_replies"] += 1
+            # leaves the thread to them a while. That while is what keeps her out of their thread: not saved, the
+            # event fails and is delivered again (the echo is not stored twice).
             if event.text.strip():
-                await add_message(cid, "agent", event.text.strip(), outbound=False)
-            await db.patch_conversation_presence(cid, {"messenger_inbox_at": datetime.now(timezone.utc).isoformat()})
+                await _save_once(event, "echo", turn, cid, "agent", event.text.strip(), outbound=False)
+            if not await db.patch_conversation_presence(cid, {"messenger_inbox_at": datetime.now(timezone.utc).isoformat()}):
+                raise RuntimeError("the inbox's quiet time was not saved")
+            MESSENGER_HEALTH["inbox_replies"] += 1
             return []
         text = _text_of(event)
         if event.standby or _inbox_spoke(meta):
+            await _save_once(event, "user", turn, cid, "user", text)
             MESSENGER_HEALTH["kept_unanswered"] += 1
-            await add_message(cid, "user", text)
             return []
         if event.kind == "message" and not event.text.strip():
             # Rule 4: what they sent is kept first; then Skye asks for words.
+            await _save_once(event, "user", turn, cid, "user", text)
+            await _save_once(event, "prompt", turn, cid, "ai", ATTACHMENT_REPLY, model_used="template")
             MESSENGER_HEALTH["attachments"] += 1
-            await add_message(cid, "user", text)
-            await add_message(cid, "ai", ATTACHMENT_REPLY, model_used="template")
-            return _replies(turn, None, None)
+            return await _replies(turn, None, None)
         button = event.quick_reply if event.quick_reply in _buttons() else None
         resp = await _turn(cid, vid, text, button, event.site)
-        return _replies(turn, resp, button, await _say_queued(cid, resp))
+        return await _replies(turn, resp, button, await _say_queued(cid, resp))
+
+
+async def _save_once(event: InboundEvent, part: str, turn: _Turn, cid: str, role: str, text: str, **kw) -> dict:
+    """A row this event stores, stored once whatever the deliveries: one saved by an earlier delivery is not saved
+    again (Redis keeps the mark by the event's key), and one whose save had no answer is looked for among the chat's
+    last rows before it is saved again. A row skipped so is still said this time. Not saved: raises, and the gateway
+    delivers the event again."""
+    from app.services.conversation_service import add_message
+
+    mark = f"msgr:saved:{event.key()}:{part}"
+    state = await _saved_state(mark)
+    if state == "saved" or (state == "trying" and await _stored_lately(cid, role, text)):
+        MESSENGER_HEALTH["saved_once"] += 1
+        await _mark_saved(mark, "saved")
+        row = {"role": role, "content": text}
+        if kw.get("outbound", True) and role in ("ai", "agent", "system"):
+            turn.rows.append(row)
+        return row
+    await _mark_saved(mark, "trying")
+    row = await add_message(cid, role, text, **kw)
+    if not row:
+        raise RuntimeError(f"the event's {part} row was not saved")
+    await _mark_saved(mark, "saved")
+    return row
+
+
+async def _saved_state(mark: str) -> Optional[str]:
+    """"saved", "trying" (a save that had no answer yet), or None (never tried, or Redis can't say)."""
+    r = get_redis()
+    if r is None:
+        return None
+    try:
+        return await r.get(mark)
+    except Exception as e:
+        redis_failed("messenger saved", e)
+        logger.warning(f"[messenger] an event's saved row not looked up: {type(e).__name__}: {e}")
+        return None
+
+
+async def _mark_saved(mark: str, state: str) -> None:
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.set(mark, state, ex=SAVED_S)
+    except Exception as e:
+        redis_failed("messenger saved", e)
+        logger.warning(f"[messenger] an event's saved row not marked: {type(e).__name__}: {e}")
+
+
+async def _stored_lately(cid: str, role: str, text: str) -> bool:
+    """The chat's last rows hold this one, stored in the last STORED_LATELY_S: a save whose answer was lost."""
+    from app.db import supabase as db
+
+    now = datetime.now(timezone.utc)
+    for row in await db.get_recent_messages(cid, limit=6):
+        if row.get("role") != role or str(row.get("content") or "").strip() != text.strip():
+            continue
+        try:
+            at = datetime.fromisoformat(str(row.get("created_at")).replace("Z", "+00:00"))
+        except ValueError as e:
+            logger.warning(f"[messenger] conv {cid}: a row's time that is not one ({e}): not taken for this one")
+            continue
+        if (now - (at if at.tzinfo else at.replace(tzinfo=timezone.utc))).total_seconds() < STORED_LATELY_S:
+            return True
+    return False
 
 
 async def _thread(vid: str, *, create: bool, event: Optional[InboundEvent] = None) -> Optional[dict]:
@@ -560,8 +786,9 @@ def _gateway_request():
 
 
 async def _turn(cid: str, vid: str, text: str, button: Optional[str], site: str):
-    """The widget's turn for one Messenger message. A turn the chat refuses (the blocklist, a limit) is kept as the
-    chat kept it and gets no reply."""
+    """The widget's turn for one Messenger message. A turn the chat refuses (the blocklist, a limit: a 4xx) is kept
+    as the chat kept it and gets no reply; one it could not take now (a 5xx: the message not saved) raises, and the
+    event is delivered again."""
     from fastapi import HTTPException
 
     from app.api.chat import chat
@@ -574,6 +801,8 @@ async def _turn(cid: str, vid: str, text: str, button: Optional[str], site: str)
     try:
         return await chat(req, _gateway_request(), None, issue(vid))
     except HTTPException as e:
+        if e.status_code >= 500:
+            raise
         MESSENGER_HEALTH["turns_refused"] += 1
         logger.warning(f"[messenger] conv {cid}: the turn was refused ({e.status_code})")
         return None
@@ -597,15 +826,27 @@ async def _say_queued(cid: str, resp) -> bool:
         return True
 
 
-def _replies(turn: _Turn, resp, button: Optional[str], say_queued: bool = False) -> list[dict]:
-    """What the turn said to the person, in order: the rows it stored, then its answer when that was not stored
-    (a queued line once, a door's or a fallback's words), the buttons on the last one."""
+def _answer_stored(turn: _Turn, resp) -> bool:
+    """The turn stored its answer: an AI row among what it stored, or the row its answer names."""
+    mid = getattr(resp, "message_id", None)
+    return any(r.get("role") == "ai" or (mid and r.get("id") == mid) for r in turn.rows)
+
+
+async def _replies(turn: _Turn, resp, button: Optional[str], say_queued: bool = False) -> list[dict]:
+    """What the turn said to the person, in order: the rows it stored, then its answer when that was not stored (a
+    queued line once, an answer whose row could not be stored). Told by what was stored, never by comparing texts:
+    a stored answer went through the output guard and may read otherwise than what the turn returned. What goes
+    out without a row goes through the guard too. The buttons on the last one."""
+    from app.ai.output_guard import guard_ai_text
+
     texts = [str(r.get("content") or "").strip() for r in turn.rows]
     texts = [t for t in texts if t]
     message = str(getattr(resp, "message", "") or "").strip() if resp is not None else ""
-    if message and not getattr(resp, "streaming", False) and message not in texts:
+    if message and not getattr(resp, "streaming", False) and not _answer_stored(turn, resp):
         if getattr(resp, "type", None) != "queued" or say_queued:
-            texts.append(message)
+            guarded = str(await guard_ai_text(message, conversation_id=turn.conversation_id) or "").strip()
+            if guarded:
+                texts.append(guarded)
     replies: list[dict] = [{"text": t} for t in texts]
     quick = _quick_replies(resp, button)
     if replies and quick:
@@ -631,6 +872,93 @@ def _quick_replies(resp, button: Optional[str]) -> list[dict]:
     elif not out and button == "email":
         out.append({"content_type": "user_email"})
     return out[:13]
+
+
+# ── the events whose turn failed ──────────────────────────────────
+
+
+async def run_messenger_recover() -> dict:
+    """The scheduler's minute (app.services.scheduler): each event kept in the inbox longer than RECOVER_AFTER_S
+    (its turn failed, and the gateway's tries are over) is answered now, and its replies go out through the gateway.
+    One process at a time (a lock in Redis). An event still failing after RECOVER_TRIES runs, or unreadable, is given
+    up: counted, and logged without its words."""
+    out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0}
+    if not enabled():
+        return {**out, "state": "off"}
+    r = get_redis()
+    if r is None:
+        return {**out, "state": "no_redis"}
+    try:
+        if not await r.set(RECOVER_LOCK, "1", nx=True, ex=RECOVER_LOCK_S):
+            return {**out, "state": "busy"}
+    except Exception as e:
+        redis_failed("messenger recover", e)
+        logger.warning(f"[messenger] the recovery's lock not taken: {type(e).__name__}: {e}")
+        return {**out, "state": "redis_failed"}
+    try:
+        keys = await r.zrangebyscore(INBOX, "-inf", time.time() - RECOVER_AFTER_S)
+        if keys:
+            out["state"] = "ran"
+        for k in keys[:RECOVER_BATCH]:
+            out[await _recover_one(r, k)] += 1
+    except Exception as e:
+        redis_failed("messenger recover", e)
+        logger.error(f"[messenger] the recovery stopped: {type(e).__name__}: {e}")
+        out["state"] = "failed"
+    finally:
+        try:
+            await r.delete(RECOVER_LOCK)
+        except Exception as e:
+            redis_failed("messenger recover", e)
+            logger.warning(f"[messenger] the recovery's lock not released (it expires): {type(e).__name__}: {e}")
+    return out
+
+
+async def _recover_one(r, k: str) -> str:
+    """One kept event: "answered" (its replies sent, or none to send), "waiting" (the next minute tries again), or
+    "given_up"."""
+    raw = await r.get(f"{INBOX}:{k}")
+    event: Optional[InboundEvent] = None
+    if raw:
+        try:
+            event = InboundEvent.model_validate_json(raw)
+        except ValidationError as e:
+            logger.error(f"[messenger] a kept event not readable ({e.error_count()} errors): given up")
+    tries = await r.incr(f"{INBOX}:tries:{k}")
+    await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
+    if event is None or tries > RECOVER_TRIES:
+        await _release_event(k)
+        MESSENGER_HEALTH["recover_given_up"] += 1
+        logger.error(f"[messenger] a kept event given up after {tries} tries "
+                     f"({event.kind if event else 'gone or unreadable'})")
+        return "given_up"
+    try:
+        out = await handle(event, by="api")
+    except StillAnswering as e:
+        MESSENGER_HEALTH["recover_waiting"] += 1
+        logger.info(f"[messenger] a kept event is being answered by a delivery ({type(e).__name__}): left to it "
+                    f"(try {tries})")
+        return "waiting"
+    except EventFailed as e:
+        MESSENGER_HEALTH["recover_waiting"] += 1
+        cause = e.__cause__
+        logger.warning(f"[messenger] a kept event still not answered (try {tries}): "
+                       f"{type(cause).__name__ if cause else type(e).__name__}")
+        return "waiting"
+    replies = out.get("replies") or []
+    if replies:
+        result = await send(event.page_id, event.psid, replies)
+        failed = result.get("failed") or {}
+        if failed.get("kind") == "gateway":
+            # Kept as answered: the next minute sends the same replies, without a second turn.
+            MESSENGER_HEALTH["recover_waiting"] += 1
+            return "waiting"
+        if failed:
+            MESSENGER_HEALTH["send_failed"] += 1
+            logger.warning(f"[messenger] a recovered event's replies not sent ({failed.get('kind') or 'no kind'})")
+    await _release_event(k)
+    MESSENGER_HEALTH["recovered"] += 1
+    return "answered"
 
 
 def health() -> dict:

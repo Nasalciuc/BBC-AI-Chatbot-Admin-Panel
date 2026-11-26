@@ -1,14 +1,19 @@
 """Other channels' gateways (contracts/messenger.md): PUBLIC, each call signed by its gateway.
 
 POST /api/channels/messenger/inbound: one Facebook Messenger event from bbc-messenger, answered with the replies to
-send ({"replies": [...]}). 401 a call the gateway did not sign; 422 one it could not have made; 503 the channel off
-or an event that failed (the gateway delivers it again); 409 the same event still being answered.
+send ({"replies": [...]}). 401 a call the gateway did not sign; 422 one it could not have made; 409 the same event
+still being answered; 503 an event that failed (the gateway delivers it again; with X-Messenger-Kept the API keeps
+it and answers it later itself), or the channel off (with X-Messenger-Off: nothing kept, the gateway stops there).
 """
 
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
+
+# What the gateway reads on a 503 (bbc-messenger gateway.HeaderKept, gateway.HeaderOff).
+HEADER_KEPT = "X-Messenger-Kept"
+HEADER_OFF = "X-Messenger-Off"
 
 from app.services import messenger_channel
 
@@ -36,8 +41,9 @@ async def _read_capped(request: Request) -> bytes:
 @router.post("/channels/messenger/inbound")
 async def messenger_inbound(request: Request) -> dict:
     if not messenger_channel.enabled():
-        # 503, never 404: a gateway pointed here early is told to wait, not counted as a scan (ban_guard).
-        raise HTTPException(status_code=503, detail="Messenger is off.")
+        # 503, never 404: a gateway pointed here early is told to wait, not counted as a scan (ban_guard). Off, the
+        # event is kept nowhere: the gateway stops trying it.
+        raise HTTPException(status_code=503, detail="Messenger is off.", headers={HEADER_OFF: "1"})
     body = await _read_capped(request)
     if not messenger_channel.valid_signed(request.headers.get("x-gateway-time"),
                                           request.headers.get("x-gateway-signature"), body):
@@ -55,5 +61,9 @@ async def messenger_inbound(request: Request) -> dict:
         raise HTTPException(status_code=409, detail="Still answering this event.") from e
     except Exception as e:
         messenger_channel.MESSENGER_HEALTH["turns_failed"] += 1
-        logger.error(f"[messenger] an event failed, the gateway delivers it again: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=503, detail="Couldn't take the event. Try again.") from e
+        kept = isinstance(e, messenger_channel.EventFailed) and e.kept
+        # The cause's kind only: its words can carry what the person wrote (rule 7).
+        cause = type(e.__cause__ or e).__name__
+        logger.error(f"[messenger] an event failed ({e}), the gateway delivers it again: {cause}")
+        raise HTTPException(status_code=503, detail="Couldn't take the event. Try again.",
+                            headers={HEADER_KEPT: "1"} if kept else None) from e

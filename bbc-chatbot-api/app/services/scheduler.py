@@ -42,6 +42,7 @@ _QUIET_WHEN: dict[str, Callable[[dict], bool]] = {
     "departure_tasks": lambda r: not r.get("created"),
     "qa_sample": lambda r: r.get("state") in ("off", "not_yet", "done"),
     "visit_registry": lambda r: r.get("state") == "empty",
+    "messenger_recover": lambda r: r.get("state") in ("off", "empty", "busy"),
     "crm_chat_api_check": lambda r: r.get("state") in ("ok", "not_configured"),
 }
 _was_quiet: dict[str, Any] = {}
@@ -146,6 +147,7 @@ def start(app_state, settings) -> list[asyncio.Task]:
     from app.services.qa_sample import run_qa_sample
     from app.services.learning import run_learning_tick
     from app.services.visit_registry import run_visit_registry
+    from app.services.messenger_channel import run_messenger_recover
     from app.services.crm_leads_api import check_key as run_crm_chat_api_check
     from app.api.cron import (
         run_abandoned_crm,
@@ -185,6 +187,9 @@ def start(app_state, settings) -> list[asyncio.Task]:
         ("qa_sample", run_qa_sample, 300),
         # Every 60s: the visits bbc-live ended go into site_visits (app/services/visit_registry.py).
         ("visit_registry", run_visit_registry, 60),
+        # Every 60s: a Messenger message whose turn failed is answered once the gateway's tries are over
+        # (app/services/messenger_channel.py; nothing while MESSENGER_CHANNEL is off).
+        ("messenger_recover", run_messenger_recover, 60),
         # At each start, then every 6 h: does the CRM take our chat API key? (crm_leads_api.check_key: no lead made)
         ("crm_chat_api_check", run_crm_chat_api_check, 21600),
         # Hourly: does the edge let a client forge its IP? (ip_selftest)
