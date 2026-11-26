@@ -709,6 +709,34 @@ func TestPastMostHeldARefusedPersonIsNotHeldAndThatIsCounted(t *testing.T) {
 	}
 }
 
+func TestAWaitPastHoldForIsDroppedBeforeItsPersonsRoomIsCounted(t *testing.T) {
+	in := newIntake(time.Hour, 1000, time.Minute)
+	t0 := time.Unix(1_800_000_000, 0)
+	of := func(mid string, ts int64) meta.Inbound {
+		return meta.Inbound{Kind: "message", PageID: pageID, PSID: "PSID-B", MID: mid, Timestamp: ts}
+	}
+	// B waits for mostWaiting refused events, and Meta never delivers them again.
+	var many []meta.Inbound
+	for i := range mostWaiting {
+		many = append(many, of(fmt.Sprintf("b%d", i), int64(i)))
+	}
+	if _, unheld, _ := in.admit(many, t0, func(meta.Inbound) bool { return false }); unheld != 0 {
+		t.Fatalf("%d not held", unheld)
+	}
+	// Past HoldFor, a delivery stops on A's event with B's next one behind it: B's old wait is dropped (counted)
+	// before B's room is counted, so their new event takes its place.
+	later := t0.Add(2 * time.Minute)
+	out, unheld, expired := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), of("b-new", 1000)}, later,
+		func(meta.Inbound) bool { return false })
+	if out[0].v != refused || unheld != 0 || expired != mostWaiting {
+		t.Fatalf("a1: %+v, %d not held, %d no longer waited for", out, unheld, expired)
+	}
+	// Rule 5: B's next one, with room, waits for it, never goes before it.
+	if v, _ := admitOne(in, of("b-newer", 1001), later, true); v != waiting {
+		t.Errorf("b-newer before b-new: %v", v)
+	}
+}
+
 func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 	in := newIntake(time.Hour, 3, time.Minute)
 	t0 := time.Unix(1_800_000_000, 0)
@@ -1189,24 +1217,62 @@ func TestALongAgentsMessageWhoseNextPieceIsUnconfirmedSaysSo(t *testing.T) {
 	}
 }
 
+// clock is a test's time: it moves only when the server waits.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) sleep(ctx context.Context, d time.Duration) bool {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+	return ctx.Err() == nil
+}
+
+// recordingTransport answers each call to the API the same, and keeps when (by the test's clock) each one started.
+type recordingTransport struct {
+	clock  *clock
+	status int
+	starts []time.Time
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.starts = append(rt.starts, rt.clock.Now())
+	return &http.Response{StatusCode: rt.status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("busy")),
+		Request: r}, nil
+}
+
 func TestNoCallToTheAPIStartsOnceKeepForIsOver(t *testing.T) {
-	r := newRigWith(t, 1, 4, func(c *Config) { c.KeepFor = 200 * time.Millisecond; c.LongRetry = 80 * time.Millisecond })
-	var mu sync.Mutex
-	var calls []time.Time
-	r.api.answer = func(int, map[string]any) (int, string) {
-		mu.Lock()
-		calls = append(calls, time.Now())
-		mu.Unlock()
-		return 500, `{}`
+	t0 := time.Unix(1_800_000_000, 0)
+	c := &clock{now: t0}
+	rt := &recordingTransport{clock: c, status: http.StatusInternalServerError}
+	s := &Server{
+		Cfg: Config{APIURL: "https://api.example.test", GatewaySecret: []byte(gwSecret), APITimeout: time.Second,
+			Retries: []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}, KeepFor: time.Hour,
+			LongRetry: time.Minute},
+		API: &http.Client{Transport: rt}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: c.Now,
+		sleep: c.sleep,
 	}
-	body := batch(pageID, messageEvent("m1", "a", 100, ""))
-	r.post(t, body, hubSign(body))
-	until(t, func() bool { return r.srv.Health.ForwardFailed.Load() == 1 }, "given up")
-	mu.Lock()
-	defer mu.Unlock()
-	// The last long wait is cut to what is left of KeepFor, and no call starts after it (a call at ~240 ms, before).
-	if last := calls[len(calls)-1].Sub(calls[0]); last >= 220*time.Millisecond || len(calls) < 5 {
-		t.Errorf("%d calls, the last %v after the first", len(calls), last)
+	if _, err := s.forward(context.Background(), inbound(psid, "m1"), "bbc"); err == nil || s.Health.ForwardFailed.Load() != 1 {
+		t.Fatalf("given up: %v, forward_failed %d", err, s.Health.ForwardFailed.Load())
+	}
+	// At 0, after the Retries (2, 7, 22 s), then every LongRetry: 82 s, ... 3562 s, just before the hour; the last wait
+	// is cut to what was left of it (38 s), and at the hour no call starts.
+	last := rt.starts[len(rt.starts)-1].Sub(t0)
+	if len(rt.starts) != 63 || last != 3562*time.Second || c.Now().Sub(t0) != time.Hour {
+		t.Errorf("%d calls, the last at %v, the clock at %v", len(rt.starts), last, c.Now().Sub(t0))
+	}
+	for i, at := range rt.starts {
+		if at.Sub(t0) >= time.Hour {
+			t.Errorf("call %d started at %v, KeepFor over", i, at.Sub(t0))
+		}
 	}
 }
 

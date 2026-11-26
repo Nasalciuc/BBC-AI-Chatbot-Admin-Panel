@@ -41,6 +41,8 @@ type Server struct {
 	Log    *slog.Logger
 	Health Health
 	Now    func() time.Time
+	// sleep is the wait between an event's tries to the API (wait; a test's clock moves with it instead).
+	sleep func(ctx context.Context, d time.Duration) bool
 
 	intake  *intake
 	queues  []chan meta.Inbound
@@ -56,6 +58,9 @@ type Server struct {
 func (s *Server) Start(ctx context.Context) {
 	if s.Now == nil {
 		s.Now = time.Now
+	}
+	if s.sleep == nil {
+		s.sleep = wait
 	}
 	if s.Cfg.Workers <= 0 {
 		s.Cfg.Workers = 16
@@ -359,7 +364,7 @@ func (s *Server) forward(ctx context.Context, in meta.Inbound, site string) (api
 			if !ok {
 				break
 			}
-			if !wait(ctx, d) {
+			if !s.sleep(ctx, d) {
 				return apiAnswer{}, ctx.Err()
 			}
 			// A long retry starts no call once KeepFor is over (the wait may have taken it to the end).
