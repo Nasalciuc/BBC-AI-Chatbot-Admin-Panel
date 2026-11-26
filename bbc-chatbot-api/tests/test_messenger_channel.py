@@ -4257,10 +4257,15 @@ async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(cha
     count, the event one try short of its last): no turn runs, and the try counted is given back too, so the last
     one is never spent waiting on another's turn. Rule 5: an event nothing holds is still given up after its tries
     (test_an_event_that_keeps_failing_is_given_up_after_its_tries)."""
+    from tests.fake_redis import FakeClock
+
     await _fail_once(chat, redis)
+    clock = FakeClock()
+    redis.clock = clock
     tries_key = f"{mc.INBOX}:tries:m1"
     start = mc.RECOVER_TRIES - 1 if seen == "only_as_its_turn_starts" else mc.RECOVER_TRIES
     redis.kv[tries_key] = str(start)
+    redis._set_expiry(tries_key, ex=mc.INBOX_KEEP_S)
     redis.kv["msgr:event:m1"] = "pending:another-process-turn"
     blind = None
     if seen != "as_the_pass_looks":
@@ -4279,6 +4284,7 @@ async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(cha
         assert (out["waiting"], out["given_up"]) == (1, 0) and "m1" in redis.kv[mc.INBOX]
         assert f"{mc.INBOX}:m1" in redis.kv and mc.MESSENGER_HEALTH["recover_given_up"] == 0
         assert redis.kv[tries_key] == str(start), "no try spent while another turn holds it"
+        assert redis.expires[tries_key] == clock() + mc.INBOX_KEEP_S, "its count's expiry kept"
         assert len(chat.requests) == 1, "no turn of this pass's own"
         # That process writes its answer, its claim over.
         redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "Their answer"}], "by": "api"})
@@ -4331,6 +4337,28 @@ async def test_a_try_given_back_for_an_event_let_go_of_meanwhile_writes_no_count
     assert "m1" not in redis.kv[mc.INBOX] and f"{mc.INBOX}:m1" not in redis.kv
     assert tries_key not in redis.kv, "no count written back for an event let go of"
     assert gw.sent == [] and len(chat.requests) == 1, "no turn nor send of this pass's own"
+
+
+@pytest.mark.asyncio
+async def test_a_try_given_back_keeps_its_counts_expiry(redis):
+    """CodeRabbit #288: a try given back (GIVE_BACK_LUA: DECR) keeps the expiry of its count, which still runs out at
+    its own deadline: never a count rewritten for good. Rule 5: none there, none written
+    (test_a_try_given_back_for_an_event_let_go_of_meanwhile_writes_no_count)."""
+    from tests.fake_redis import FakeClock
+
+    clock = FakeClock()
+    redis.clock = clock
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = "5"
+    redis._set_expiry(tries_key, ex=100)
+    deadline = redis.expires[tries_key]
+    clock.advance(40)
+    await mc._give_back(redis, "m1")
+    assert redis.kv[tries_key] == "4" and redis.expires[tries_key] == deadline, "its expiry kept"
+    clock.advance(59)
+    assert await redis.get(tries_key) == "4"
+    clock.advance(1)
+    assert await redis.get(tries_key) is None, "gone at its own deadline"
 
 
 @pytest.mark.asyncio
