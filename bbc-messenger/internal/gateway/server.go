@@ -212,39 +212,46 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		}
 		ours = append(ours, in)
 	}
-	for i, in := range ours {
-		v, expired := s.intake.admit(in, now, func() bool { return s.enqueue(in) })
-		if expired {
+	// One step for the whole delivery: what stops it (a full queue, a person waiting) holds the people of the rest
+	// before any other delivery can be taken (contracts/messenger.md).
+	results, unheld := s.intake.admit(ours, now, s.enqueue)
+	stop, last := taken, meta.Inbound{}
+	for _, a := range results {
+		if a.expired {
 			s.Health.HoldExpired.Add(1)
-			s.Log.Warn("a refused event never came again: the person's events are taken again", logAttrs(in)...)
+			s.Log.Warn("a refused event never came again: the person's events are taken again", logAttrs(a.ev)...)
 		}
-		switch v {
+		switch a.v {
 		case duplicate:
 			s.Health.Duplicates.Add(1)
-			continue
 		case taken:
 			s.Health.Events.Add(1)
-			continue
 		case waiting:
 			s.Health.Held.Add(1)
-			s.Log.Warn("an earlier event of this person was refused: this one waits for it", logAttrs(in)...)
-		case refused:
-			if s.isClosed() {
-				s.Health.Closing.Add(1)
-				http.Error(w, "stopping", http.StatusServiceUnavailable)
-				return
-			}
-			s.Health.QueueFull.Add(1)
-			s.Log.Error("queue full: Meta will deliver again", logAttrs(in)...)
+			s.Log.Warn("an earlier event of this person was refused: this one waits for it", logAttrs(a.ev)...)
 		}
-		// Nothing more of this batch is taken now, and Meta delivers it again (what was taken comes back as
-		// duplicates). Each person in the rest waits for their first event: a later delivery of theirs is refused
-		// until that one is taken, so it can never overtake it.
-		s.intake.holdRest(ours[i:], now)
-		http.Error(w, "busy", http.StatusServiceUnavailable)
-		return
+		stop, last = a.v, a.ev
 	}
-	w.WriteHeader(http.StatusOK)
+	if unheld > 0 {
+		s.Health.HoldFull.Add(int64(unheld))
+		s.Log.Error("too many people wait for a refused event: these do not, and a later event of theirs may "+
+			"overtake it", "people", unheld)
+	}
+	// What stopped the delivery: nothing more of it is taken now, and Meta delivers it again (what was taken comes
+	// back as duplicates), each person in the rest waiting for their first event there.
+	switch {
+	case stop == refused && s.isClosed():
+		s.Health.Closing.Add(1)
+		http.Error(w, "stopping", http.StatusServiceUnavailable)
+	case stop == refused:
+		s.Health.QueueFull.Add(1)
+		s.Log.Error("queue full: Meta will deliver again", logAttrs(last)...)
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	case stop == waiting:
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	default:
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 func (s *Server) enqueue(in meta.Inbound) bool {

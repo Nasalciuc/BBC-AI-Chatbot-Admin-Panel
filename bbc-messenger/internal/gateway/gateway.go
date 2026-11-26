@@ -61,7 +61,7 @@ type Health struct {
 	OwnEchoes, Skipped, ForwardFailed, ForwardRefused, SendFailed          atomic.Int64
 	WindowClosed, Unavailable, ThreadOwned, TokenFailed, RateLimited       atomic.Int64
 	ActionFailed, BadCalls, DroppedAtShutdown                              atomic.Int64
-	NotReady, Closing, Held, HoldExpired, ForwardKept, APIOff              atomic.Int64
+	NotReady, Closing, Held, HoldExpired, HoldFull, ForwardKept, APIOff    atomic.Int64
 	Unconfirmed, OutOfTime                                                 atomic.Int64
 }
 
@@ -78,8 +78,8 @@ func (h *Health) snapshot() map[string]int64 {
 		"action_failed": h.ActionFailed.Load(), "bad_calls": h.BadCalls.Load(),
 		"dropped_at_shutdown": h.DroppedAtShutdown.Load(), "not_ready": h.NotReady.Load(),
 		"closing": h.Closing.Load(), "held": h.Held.Load(), "hold_expired": h.HoldExpired.Load(),
-		"forward_kept": h.ForwardKept.Load(), "api_off": h.APIOff.Load(), "unconfirmed": h.Unconfirmed.Load(),
-		"out_of_time": h.OutOfTime.Load(),
+		"hold_full": h.HoldFull.Load(), "forward_kept": h.ForwardKept.Load(), "api_off": h.APIOff.Load(),
+		"unconfirmed": h.Unconfirmed.Load(), "out_of_time": h.OutOfTime.Load(),
 	}
 }
 
@@ -87,8 +87,14 @@ func (h *Health) snapshot() map[string]int64 {
 // nothing was in flight, so what went out is exactly what was counted.
 var errOutOfTime = errors.New("out of time")
 
-// kindOf is the kind of a send's failure (meta.KindOf), "timeout" when its time ran out.
+// kindOf is the kind of a send's failure (meta.KindOf), "timeout" when its time ran out before a call to Meta went
+// out. A call Meta had whole stays "unknown" whatever ended the wait for its answer (Meta client's own timeout
+// included, which is a deadline too): it may be with the person.
 func kindOf(err error) string {
+	var ue *meta.Unconfirmed
+	if errors.As(err, &ue) {
+		return "unknown"
+	}
 	if errors.Is(err, errOutOfTime) || errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
@@ -161,6 +167,11 @@ const (
 // too until Meta delivers it again, so none of them can overtake it, whenever Meta's deliveries come. The rest go
 // to their worker, and only an event its queue took is marked taken (one refused is taken when Meta delivers it
 // again). One process's memory: the API checks again by Meta's message id, across restarts.
+//
+// The order is kept within two bounds, past which Messenger staying up wins over it: a person waits HoldFor at most
+// (hold_expired; Meta unsubscribes an app whose deliveries fail for an hour, so no one's are refused near that
+// long), and at most mostHeld people wait at once (memory: hold_full). Past either, a later event of theirs may
+// reach the API before the refused one, which the API still answers once.
 type intake struct {
 	mu   sync.Mutex
 	ttl  time.Duration
@@ -168,10 +179,11 @@ type intake struct {
 	at   map[string]time.Time // key → when it was taken
 	// The keys in the order they were taken: the oldest go first, when they expire or when room is needed, so a
 	// full map never costs a scan.
-	order   []stamp
-	head    int
-	holdFor time.Duration
-	held    map[string]hold // person → their first event still to take
+	order    []stamp
+	head     int
+	holdFor  time.Duration
+	held     map[string]hold // person → their first event still to take
+	mostHeld int
 }
 
 type stamp struct {
@@ -185,11 +197,12 @@ type hold struct {
 }
 
 // mostHeld is the most people who wait for a refused event at once; past it a refused batch still answers 503, and
-// its people are not held.
+// its people are not held (counted).
 const mostHeld = 10_000
 
 func newIntake(ttl time.Duration, most int, holdFor time.Duration) *intake {
-	return &intake{at: map[string]time.Time{}, ttl: ttl, most: most, holdFor: holdFor, held: map[string]hold{}}
+	return &intake{at: map[string]time.Time{}, ttl: ttl, most: most, holdFor: holdFor, held: map[string]hold{},
+		mostHeld: mostHeld}
 }
 
 // person is one person on one Page: a hold's key.
@@ -197,13 +210,36 @@ func person(in meta.Inbound) string {
 	return in.PageID + "\x00" + in.PSID
 }
 
-// admit is one event's check and queueing, as one step: a duplicate is left out; a person waiting for an earlier
-// event is refused (waiting); otherwise enqueue is tried, and the key is marked only when it took the event.
-// expired says a hold that outlived HoldFor was dropped (Meta never delivered its event again).
-func (in *intake) admit(ev meta.Inbound, now time.Time, enqueue func() bool) (v verdict, expired bool) {
-	key, p := ev.Key(), person(ev)
+// admission is one event of a delivery as the intake took it: its verdict, and whether a hold on its person that
+// outlived HoldFor was dropped (Meta never delivered that event again).
+type admission struct {
+	ev      meta.Inbound
+	v       verdict
+	expired bool
+}
+
+// admit is one delivery's check and queueing, as one step under the intake's lock. Each event in order is a
+// duplicate (left out), taken (enqueue took it, and only then is its key marked), or it stops the delivery
+// (refused: its queue was full or the gateway is closing; waiting: its person waits for an earlier event). In that
+// same step each person with an event in the rest, from the one that stopped it on, is held for their first event
+// there: no delivery made meanwhile, whenever it comes, can overtake it. unheld is how many people of the rest
+// could not be held (mostHeld reached).
+func (in *intake) admit(events []meta.Inbound, now time.Time, enqueue func(meta.Inbound) bool) (out []admission, unheld int) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	out = make([]admission, 0, len(events))
+	for i, ev := range events {
+		v, expired := in.admitLocked(ev, now, enqueue)
+		out = append(out, admission{ev: ev, v: v, expired: expired})
+		if v == waiting || v == refused {
+			return out, in.holdLocked(events[i:], now)
+		}
+	}
+	return out, 0
+}
+
+func (in *intake) admitLocked(ev meta.Inbound, now time.Time, enqueue func(meta.Inbound) bool) (v verdict, expired bool) {
+	key, p := ev.Key(), person(ev)
 	if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
 		return duplicate, false
 	}
@@ -215,7 +251,7 @@ func (in *intake) admit(ev meta.Inbound, now time.Time, enqueue func() bool) (v 
 			return waiting, false
 		}
 	}
-	if !enqueue() {
+	if !enqueue(ev) {
 		return refused, expired
 	}
 	delete(in.held, p)
@@ -223,11 +259,10 @@ func (in *intake) admit(ev meta.Inbound, now time.Time, enqueue func() bool) (v 
 	return taken, expired
 }
 
-// holdRest makes each person with an event in rest (a batch's events from the one refused on) wait for their first
-// one there, unless they already wait for an earlier one.
-func (in *intake) holdRest(rest []meta.Inbound, now time.Time) {
-	in.mu.Lock()
-	defer in.mu.Unlock()
+// holdLocked makes each person with an event in rest wait for their first one there, unless they already wait for
+// an earlier one. It answers how many people it could not hold.
+func (in *intake) holdLocked(rest []meta.Inbound, now time.Time) (unheld int) {
+	var left map[string]bool
 	for _, ev := range rest {
 		key, p := ev.Key(), person(ev)
 		if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
@@ -236,11 +271,19 @@ func (in *intake) holdRest(rest []meta.Inbound, now time.Time) {
 		if h, ok := in.held[p]; ok && now.Sub(h.at) < in.holdFor {
 			continue
 		}
-		if len(in.held) >= mostHeld {
+		if len(in.held) >= in.mostHeld {
+			if left == nil {
+				left = map[string]bool{}
+			}
+			if !left[p] {
+				left[p] = true
+				unheld++
+			}
 			continue
 		}
 		in.held[p] = hold{key: key, at: now}
 	}
+	return unheld
 }
 
 // forget drops what expired: keys past their time, holds past HoldFor.

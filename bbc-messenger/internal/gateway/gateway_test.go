@@ -165,16 +165,18 @@ func newRigWith(t *testing.T, workers, queue int, set func(*Config)) *rig {
 		APIURL: as.URL, GatewaySecret: []byte(gwSecret), Workers: workers, QueueSize: queue,
 		APITimeout: 5 * time.Second, Retries: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond},
 		KeepFor: 200 * time.Millisecond, LongRetry: 5 * time.Millisecond,
-		SendBudget: 2 * time.Second, CallTimeout: 100 * time.Millisecond, HoldFor: time.Second,
+		SendBudget: 2 * time.Second, CallTimeout: 500 * time.Millisecond, HoldFor: time.Second,
 	}
 	if set != nil {
 		set(&cfg)
 	}
 	srv := &Server{
-		Cfg:  cfg,
-		Meta: &meta.Client{HTTP: gs.Client(), Base: gs.URL, Version: "v26.0"},
-		API:  as.Client(),
-		Log:  slog.New(slog.NewJSONHandler(&lockedWriter{w: logs}, nil)),
+		Cfg: cfg,
+		// As main.go makes it: a call to Meta waits CallTimeout for its answer.
+		Meta: &meta.Client{HTTP: &http.Client{Transport: gs.Client().Transport, Timeout: cfg.CallTimeout}, Base: gs.URL,
+			Version: "v26.0"},
+		API: as.Client(),
+		Log: slog.New(slog.NewJSONHandler(&lockedWriter{w: logs}, nil)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	srv.Start(ctx)
@@ -455,37 +457,126 @@ func TestAFullQueueAsksMetaToDeliverAgainAndNothingOvertakesTheRefusedEvent(t *t
 	}
 }
 
+func TestPastMostHeldTheWebhookCountsThePeopleItCouldNotHold(t *testing.T) {
+	r := newRig(t, 1, 1)
+	release := make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	r.api.answer = func(n int, _ map[string]any) (int, string) {
+		if n == 1 {
+			<-release
+		}
+		return 200, `{"replies":[]}`
+	}
+	first := batch(pageID, messageEvent("m1", "a", 100, ""))
+	r.post(t, first, hubSign(first))
+	until(t, func() bool { return len(r.api.seen()) == 1 }, "the worker busy on m1")
+	second := batch(pageID, messageEvent("m2", "b", 200, ""))
+	if code := r.post(t, second, hubSign(second)); code != 200 {
+		t.Fatalf("m2 queued: %d", code)
+	}
+	r.srv.intake.mu.Lock()
+	r.srv.intake.mostHeld = 0
+	r.srv.intake.mu.Unlock()
+	third := batch(pageID, messageEvent("m3", "c", 300, ""))
+	if code := r.post(t, third, hubSign(third)); code != 503 || r.srv.Health.HoldFull.Load() != 1 {
+		t.Fatalf("full, nobody held: %d %v", code, r.srv.Health.snapshot())
+	}
+	free()
+	until(t, func() bool { return len(r.api.seen()) == 2 }, "m2")
+	// Not held: the person's later message is taken before m3 comes again, counted above (the bound past which
+	// the order gives way, contracts/messenger.md).
+	fourth := batch(pageID, messageEvent("m4", "d", 400, ""))
+	if code := r.post(t, fourth, hubSign(fourth)); code != 200 {
+		t.Errorf("m4: %d", code)
+	}
+}
+
+// admitOne is the intake's verdict on a delivery of one event, its queue with room or not.
+func admitOne(in *intake, ev meta.Inbound, now time.Time, room bool) (verdict, bool) {
+	out, _ := in.admit([]meta.Inbound{ev}, now, func(meta.Inbound) bool { return room })
+	return out[0].v, out[0].expired
+}
+
+func inbound(sender, mid string) meta.Inbound {
+	return meta.Inbound{Kind: "message", PageID: pageID, PSID: sender, MID: mid}
+}
+
 func TestARefusedEventMetaNeverDeliversAgainHoldsThePersonNoLongerThanHoldFor(t *testing.T) {
 	in := newIntake(time.Hour, 100, time.Minute)
 	t0 := time.Unix(1_800_000_000, 0)
-	ev := func(mid string) meta.Inbound {
-		return meta.Inbound{Kind: "message", PageID: pageID, PSID: psid, MID: mid}
-	}
-	full := func() bool { return false }
-	room := func() bool { return true }
-	if v, _ := in.admit(ev("m3"), t0, full); v != refused {
+	if v, _ := admitOne(in, inbound(psid, "m3"), t0, false); v != refused {
 		t.Fatalf("m3: %v", v)
 	}
-	in.holdRest([]meta.Inbound{ev("m3")}, t0)
-	if v, _ := in.admit(ev("m4"), t0.Add(30*time.Second), room); v != waiting {
+	if v, _ := admitOne(in, inbound(psid, "m4"), t0.Add(30*time.Second), true); v != waiting {
 		t.Fatalf("m4 while m3 is awaited: %v", v)
 	}
-	// m3 never came again: after HoldFor the person's events are taken again.
-	v, expired := in.admit(ev("m4"), t0.Add(61*time.Second), room)
+	// m3 never came again: after HoldFor the person's events are taken again (the order's bound in time).
+	v, expired := admitOne(in, inbound(psid, "m4"), t0.Add(61*time.Second), true)
 	if v != taken || !expired {
 		t.Fatalf("m4 after the hold: %v %v", v, expired)
+	}
+}
+
+func TestARefusalHoldsItsPeopleBeforeAnyOtherDeliveryIsTaken(t *testing.T) {
+	in := newIntake(time.Hour, 100, time.Minute)
+	t0 := time.Unix(1_800_000_000, 0)
+	other := make(chan []admission, 1)
+	decided := false
+	full := func(meta.Inbound) bool {
+		// While m3 is refused, another delivery, of the same person's m4, tries to get in, with room for it: it
+		// is decided only after the refusal and its holds, never between them.
+		go func() {
+			out, _ := in.admit([]meta.Inbound{inbound(psid, "m4")}, t0, func(meta.Inbound) bool { return true })
+			other <- out
+		}()
+		time.Sleep(20 * time.Millisecond)
+		decided = len(other) > 0
+		return false
+	}
+	out, unheld := in.admit([]meta.Inbound{inbound(psid, "m3"), inbound("PSID-8", "q1")}, t0, full)
+	if decided {
+		t.Fatal("another delivery was decided in the middle of this one")
+	}
+	if len(out) != 1 || out[0].v != refused || unheld != 0 {
+		t.Fatalf("m3: %+v, %d not held", out, unheld)
+	}
+	if got := <-other; got[0].v != waiting {
+		t.Errorf("m4 got in before m3 was held: %v", got[0].v)
+	}
+	// The rest of the refused delivery waits too, each person for their first event there.
+	if v, _ := admitOne(in, inbound("PSID-8", "q2"), t0, true); v != waiting {
+		t.Errorf("q2 before q1: %v", v)
+	}
+	// Rule 5: someone with no event in it does not wait.
+	if v, _ := admitOne(in, inbound("PSID-9", "z1"), t0, true); v != taken {
+		t.Errorf("another person: %v", v)
+	}
+}
+
+func TestPastMostHeldARefusedPersonIsNotHeldAndThatIsCounted(t *testing.T) {
+	in := newIntake(time.Hour, 100, time.Minute)
+	in.mostHeld = 1
+	t0 := time.Unix(1_800_000_000, 0)
+	out, unheld := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1"), inbound("PSID-B", "b2")}, t0,
+		func(meta.Inbound) bool { return false })
+	if out[0].v != refused || unheld != 1 {
+		t.Fatalf("a1: %+v, %d not held", out, unheld)
+	}
+	// A waits for a1; B could not be held: their later event is taken (the order's bound in memory).
+	if v, _ := admitOne(in, inbound("PSID-A", "a2"), t0, true); v != waiting {
+		t.Errorf("a2: %v", v)
+	}
+	if v, _ := admitOne(in, inbound("PSID-B", "b3"), t0, true); v != taken {
+		t.Errorf("b3: %v", v)
 	}
 }
 
 func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 	in := newIntake(time.Hour, 3, time.Minute)
 	t0 := time.Unix(1_800_000_000, 0)
-	room := func() bool { return true }
-	ev := func(mid string) meta.Inbound {
-		return meta.Inbound{Kind: "message", PageID: pageID, PSID: psid, MID: mid}
-	}
 	for i, mid := range []string{"k1", "k2", "k3", "k4"} {
-		if v, _ := in.admit(ev(mid), t0.Add(time.Duration(i)*time.Second), room); v != taken {
+		if v, _ := admitOne(in, inbound(psid, mid), t0.Add(time.Duration(i)*time.Second), true); v != taken {
 			t.Fatalf("%s: %v", mid, v)
 		}
 	}
@@ -493,10 +584,10 @@ func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 	if len(in.at) != 3 {
 		t.Fatalf("%d keys kept, the limit is 3", len(in.at))
 	}
-	if v, _ := in.admit(ev("k2"), t0.Add(5*time.Second), room); v != duplicate {
+	if v, _ := admitOne(in, inbound(psid, "k2"), t0.Add(5*time.Second), true); v != duplicate {
 		t.Errorf("k2 is still a duplicate: %v", v)
 	}
-	if v, _ := in.admit(ev("k1"), t0.Add(5*time.Second), room); v != taken {
+	if v, _ := admitOne(in, inbound(psid, "k1"), t0.Add(5*time.Second), true); v != taken {
 		t.Errorf("k1, the oldest, was forgotten: %v", v)
 	}
 	// Past their time, all go.
@@ -505,10 +596,10 @@ func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 		t.Errorf("expired keys kept: %d", len(in.at))
 	}
 	// Rule 5: a refused event is never marked (it is taken when Meta delivers it again).
-	if v, _ := in.admit(ev("k9"), t0.Add(3*time.Hour), func() bool { return false }); v != refused {
+	if v, _ := admitOne(in, inbound(psid, "k9"), t0.Add(3*time.Hour), false); v != refused {
 		t.Fatalf("k9: %v", v)
 	}
-	if v, _ := in.admit(ev("k9"), t0.Add(3*time.Hour), room); v != taken {
+	if v, _ := admitOne(in, inbound(psid, "k9"), t0.Add(3*time.Hour), true); v != taken {
 		t.Errorf("k9 again: %v", v)
 	}
 }
@@ -875,6 +966,77 @@ func TestAnAgentsSendMetaMayHaveCarriedOutIsNeverSentTwice(t *testing.T) {
 	}
 	if got := len(r.graph.messages()); got != 1 || r.srv.Health.Unconfirmed.Load() != 1 {
 		t.Errorf("sent %d times: %v", got, r.srv.Health.snapshot())
+	}
+}
+
+func TestASendWithNoSureAnswerIsUnknownAndNeverSentAgain(t *testing.T) {
+	for name, answer := range map[string]func() (int, string){
+		"a proxy's 504":           func() (int, string) { return 504, "upstream timed out" },
+		"a 500 that does not say": func() (int, string) { return 500, `{"error":{"message":"An unknown error occurred","code":1}}` },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, 1, 4)
+			r.graph.answer = func(map[string]any) (int, string) { return answer() }
+			code, out := signedSend(t, r, agentCall("Hi, I'm Ana."), time.Now(), gwSecret)
+			failed, _ := out["failed"].(map[string]any)
+			if code != 200 || out["sent"] != float64(0) || failed["kind"] != "unknown" {
+				t.Errorf("unconfirmed: %d %v", code, out)
+			}
+			if got := len(r.graph.messages()); got != 1 || r.srv.Health.Unconfirmed.Load() != 1 {
+				t.Errorf("sent %d times: %v", got, r.srv.Health.snapshot())
+			}
+		})
+	}
+	// Rule 5: Meta saying it could not take the call now (503, no code) is tried again.
+	r := newRig(t, 1, 4)
+	var n atomic.Int32
+	r.graph.answer = func(map[string]any) (int, string) {
+		if n.Add(1) == 1 {
+			return 503, ""
+		}
+		return 200, `{"message_id":"mid.1"}`
+	}
+	if code, out := signedSend(t, r, agentCall("Hi, I'm Ana."), time.Now(), gwSecret); code != 200 || out["sent"] != float64(1) || n.Load() != 2 {
+		t.Errorf("503 then sent: %d %v, %d calls", code, out, n.Load())
+	}
+}
+
+func TestASendWhoseAnswerOutlivedTheCallTimeoutIsUnknownNotOutOfTime(t *testing.T) {
+	r := newRigWith(t, 1, 4, func(c *Config) { c.CallTimeout = 100 * time.Millisecond })
+	release := make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	r.graph.answer = func(map[string]any) (int, string) {
+		<-release
+		return 200, `{"message_id":"mid.late"}`
+	}
+	code, out := signedSend(t, r, agentCall("Hi, I'm Ana."), time.Now(), gwSecret)
+	failed, _ := out["failed"].(map[string]any)
+	// Meta had it whole: the wait running out is a message that may be with the person, never "not sent".
+	if code != 200 || failed["kind"] != "unknown" || r.srv.Health.OutOfTime.Load() != 0 {
+		t.Errorf("no answer in time: %d %v", code, out)
+	}
+	if got := len(r.graph.messages()); got != 1 || r.srv.Health.Unconfirmed.Load() != 1 {
+		t.Errorf("sent %d times: %v", got, r.srv.Health.snapshot())
+	}
+}
+
+func TestALongAgentsMessageWhoseNextPieceIsUnconfirmedSaysSo(t *testing.T) {
+	r := newRig(t, 1, 4)
+	var n atomic.Int32
+	r.graph.answer = func(map[string]any) (int, string) {
+		if n.Add(1) == 1 {
+			return 200, `{"message_id":"mid.1"}`
+		}
+		return 504, "upstream timed out"
+	}
+	code, out := signedSend(t, r, agentCall(strings.Repeat("word ", 900)), time.Now(), gwSecret) // 3 pieces
+	failed, _ := out["failed"].(map[string]any)
+	// The first piece is with the person and the second may be: neither is sent again, and the API is told
+	// which is which (it tells the agent).
+	if code != 200 || out["parts"] != float64(3) || out["parts_sent"] != float64(1) || failed["kind"] != "unknown" ||
+		n.Load() != 2 {
+		t.Errorf("cut short, unconfirmed: %d %v, %d calls", code, out, n.Load())
 	}
 }
 
