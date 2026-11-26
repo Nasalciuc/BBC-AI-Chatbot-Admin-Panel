@@ -1146,17 +1146,25 @@ async def chat(
             role="user",
             content=clean_message,
         )
-        await conversation_service.add_message(
+        _cached_row = await conversation_service.add_message(
             conversation_id=req.conversation_id,
             role="ai",
             content=_cached_response,
             model_used="cache",
             cost=0.0,
         )
+        # What the client is given is what was stored, as for the pipeline's answer: the output guard ran on it in
+        # add_message, for this conversation (a cached answer was guarded for the one it was made in). Not stored:
+        # guarded here, so it never goes out raw.
+        _cached_said = _cached_row.get("content") if isinstance(_cached_row, dict) else None
+        if not isinstance(_cached_said, str):
+            from app.ai.output_guard import guard_ai_text
+
+            _cached_said = await guard_ai_text(_cached_response, conversation_id=req.conversation_id) or ""
         logger.info(f"[{req.conversation_id}] Cache HIT — skipped pipeline")
         return ChatResponse(
             conversation_id=req.conversation_id,
-            message=_cached_response,
+            message=_cached_said,
             streaming=False,
             type="ai",
             model_used="cache",
