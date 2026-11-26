@@ -187,6 +187,9 @@ async def shutdown() -> None:
     from app.services import messenger_channel
 
     await messenger_channel.drain_all()
+    # Then the event answers Redis did not take as their turn ended: written now, so the next process never answers
+    # them a second time.
+    await messenger_channel.write_held()
     flags_task = getattr(app.state, "flags_task", None)
     if flags_task is not None:
         flags_task.cancel()

@@ -1801,6 +1801,70 @@ async def test_an_earlier_events_answer_redis_did_not_take_is_never_sent_before_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("redis_then", ["answers", "refuses"])
+async def test_a_shutdown_writes_the_answers_its_process_holds(chat, redis, monkeypatch, redis_then):
+    """CodeRabbit #288: Redis refused an event's answer as its turn ended (held by this process), and the process
+    stops before its next minute: the shutdown writes it, so the next process gives the same replies, with no second
+    turn. Redis still refusing then: it goes with the process, counted (answer_dropped) and logged."""
+    _turns(chat)
+    refuse = _refuse_answers(redis, monkeypatch)
+    reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
+    assert (await mc.handle(event()))["replies"] == reply and mc._UNKEPT
+    refuse["on"] = redis_then == "refuses"
+    out = await mc.write_held(0.5)
+    if redis_then == "refuses":
+        assert out == {"written": 0, "dropped": 1} and mc.MESSENGER_HEALTH["answer_dropped"] == 1
+        return
+    assert out == {"written": 1, "dropped": 0} and not mc._UNKEPT
+    assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1, "no second turn"
+
+
+@pytest.mark.asyncio
+async def test_an_event_whose_answer_a_process_holds_is_never_taken_by_another_meanwhile(chat, redis, monkeypatch):
+    """CodeRabbit #288: Redis keeps refusing the answer of process A's recovery turn, minute after minute. A keeps the
+    event's claim meanwhile (a new expiry each minute), so process B's recovery never takes the event and answers it a
+    second time, however long it lasts; once Redis takes the answer, it is sent, once. Rule 5: a claim nobody holds
+    an answer for runs out as before, and the event is answered again (test_a_turn_that_fails_can_be_delivered_again)."""
+    from tests.fake_redis import FakeClock
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    clock = FakeClock()
+    redis.clock = clock
+    real_eval = redis.eval
+    refuse = {"on": True}
+
+    async def refusing(script, numkeys, *keys_and_args):
+        if refuse["on"] and script in (mc.KEEP_ANSWER_LUA, mc.GIVE_TO_GATEWAY_LUA):
+            raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    def become(boot, holds):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNKEPT.clear()
+        mc._UNKEPT.update(holds)
+
+    monkeypatch.setattr(redis, "eval", refusing)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1  # answered, its answer held
+        held = mc._UNKEPT.copy()
+        for _ in range(3):  # minutes go by, past the claim's own time, Redis refusing the answer each one
+            clock.advance(60)
+            become("process-a", held)
+            await mc.run_messenger_recover()
+            held = mc._UNKEPT.copy()
+            become("process-b", {})
+            assert (await mc.run_messenger_recover())["waiting"] == 1, "B finds the event still claimed"
+        refuse["on"] = False
+        become("process-a", held)
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == ["About: Hi, two seats to Istanbul in December?"]
+    assert len(chat.requests) == 2, "the failure, then one turn"
+
+
+@pytest.mark.asyncio
 async def test_a_send_that_sent_nothing_goes_again_after_its_mark_could_not_be_cleared(chat, redis, monkeypatch):
     """CodeRabbit #288: the recovery's send never reached the gateway, and clearing its mark failed (Redis
     blinking): once Redis answers, the same replies go, with no second turn, however long the mark has waited (past

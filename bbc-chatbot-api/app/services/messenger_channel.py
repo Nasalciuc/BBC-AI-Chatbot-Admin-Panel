@@ -160,6 +160,8 @@ MESSENGER_HEALTH: dict[str, int] = {
                              # its next minute, never a second turn; the API sends none until it is written
     "sent_late": 0,          # replies a process knew never went out, of an event another process let go of meanwhile
                              # (taking it, cut off from Redis, for one stopped): sent by it once Redis answered
+    "answer_dropped": 0,     # answers still not taken by Redis when their process stopped: their event may be answered
+                             # again once its claim runs out
     "bad_signature": 0,      # calls refused: not the gateway's
     "sent": 0,               # messages sent out of a turn (an agent's, mostly)
     "send_failed": 0,        # of those, refused or lost; by why below
@@ -1298,18 +1300,23 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
 
 async def _settle_own(r) -> None:
     """This process's own marks it could not settle then (Redis failing). An answer Redis did not take (_UNKEPT) is
-    written, in place of its turn's claim or of nothing, so the recovery sends it without a second turn; a send that
+    written, in place of its turn's claim or of nothing, so the recovery sends it without a second turn (not written
+    still, its claim is kept, so no other delivery or pass answers the event again meanwhile); a send that
     sent nothing (_UNSENT) has its mark cleared, each only while it is still the one this process wrote, and its
     replies go again (its event let go of meanwhile, the mark still this one's: sent from here, _send_late); a send
     that ended (_ENDED) has its event let go of, out of the inbox: never sent again. Redis failing still: left for the
     next minute (logged)."""
+    unwritten = False
     for key in list(_UNKEPT):
         try:
             await _write_held(r, key)
         except Exception as e:
             redis_failed("messenger dedupe", e)
             logger.warning(f"[messenger] an answer held by this process still not written: {type(e).__name__}: {e}")
-            return
+            unwritten = True
+            await _keep_held_claim(r, key)
+    if unwritten:
+        return
     for k, (mark, kept_event, replies) in list(_UNSENT.items()):
         try:
             if await r.zscore(INBOX, k) is not None:
@@ -1337,6 +1344,50 @@ async def _settle_own(r) -> None:
             logger.warning(f"[messenger] an event whose send ended still not let go of: {type(e).__name__}: {e}")
             return
         _ENDED.pop(k, None)
+
+
+async def _keep_held_claim(r, key: str) -> None:
+    """The claim of an event whose answer this process holds and Redis still did not take, given a new expiry (a
+    write refused may still let an expiry through): no other delivery or pass takes the event and answers it a second
+    time meanwhile. Only while it is still the turn's own; failing, it runs out as any claim (logged)."""
+    token = (_UNKEPT.get(key) or ("",))[0]
+    if not token:
+        return
+    try:
+        await r.eval(RENEW_LUA, 1, key, token, int(PENDING_S * 1000))
+    except Exception as e:
+        redis_failed("messenger dedupe", e)
+        logger.warning(f"[messenger] the claim of an event whose answer is held not renewed: {type(e).__name__}: {e}")
+
+
+async def write_held(budget_s: float = NOTES_S) -> dict:
+    """A shutdown (app.main, after drain_all): the answers this process holds (Redis did not take them as their turn
+    ended, _UNKEPT) written now, within budget_s, so the next process never answers their events a second time. One
+    still not written goes with the process, counted (answer_dropped) and logged: its event may be answered again once
+    its claim runs out. {"written", "dropped"}."""
+    written = 0
+    r = get_redis(even_cooling_down=True) if _UNKEPT else None
+
+    async def write_all() -> None:
+        nonlocal written
+        for key in list(_UNKEPT):
+            if await _write_held(r, key):
+                written += 1
+
+    if r is not None:
+        try:
+            await asyncio.wait_for(write_all(), budget_s)
+        except Exception as e:
+            redis_failed("messenger dedupe", e)
+            logger.warning(f"[messenger] shutdown: the answers held by this process not all written: "
+                           f"{type(e).__name__}: {e}")
+    dropped = len(_UNKEPT)
+    if dropped:
+        MESSENGER_HEALTH["answer_dropped"] += dropped
+        logger.error(f"[messenger] shutdown: {dropped} answer(s) Redis did not take go with this process: their events "
+                     f"may be answered again once their claim runs out")
+        _UNKEPT.clear()
+    return {"written": written, "dropped": dropped}
 
 
 async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> None:
