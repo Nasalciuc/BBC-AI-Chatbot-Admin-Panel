@@ -3992,6 +3992,34 @@ async def test_an_event_that_keeps_failing_is_given_up_after_its_tries(chat, red
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held_by", ["the_channel_turned_off", "the_gateway_not_reached"])
+async def test_an_answer_held_to_send_at_the_last_try_is_sent_never_given_up(chat, redis, monkeypatch, held_by):
+    """CodeRabbit #288: a kept event whose turn runs at its last try, its answer kept as the API's to send and not sent
+    then (the channel turned off during the turn, or the gateway not reached). The next pass counts no try for it and
+    never gives it up for its tries: it sends that answer, once, without a second turn. Tries bound turns that fail,
+    not a send. Rule 5: an event whose turn keeps failing is still given up after its tries
+    (test_an_event_that_keeps_failing_is_given_up_after_its_tries)."""
+    await _fail_once(chat, redis)
+    text = "Hi, two seats to Istanbul in December?"
+    redis.kv[f"{mc.INBOX}:tries:m1"] = str(mc.RECOVER_TRIES - 1)
+    if held_by == "the_channel_turned_off":
+        _turned_off_during(chat, monkeypatch, text)
+        gw = Gateway([])
+    else:
+        _turns(chat)
+        gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()  # its last try: its turn runs, its answer held
+        assert out["waiting"] == 1 and redis.kv[f"{mc.INBOX}:tries:m1"] == str(mc.RECOVER_TRIES)
+        assert json.loads(redis.kv["msgr:event:m1"]) == {"replies": [{"text": f"About: {text}"}], "by": "api"}
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        out = await mc.run_messenger_recover()
+    assert (out["answered"], out["given_up"]) == (1, 0) and mc.MESSENGER_HEALTH["recover_given_up"] == 0
+    assert gw.sent[-1] == f"About: {text}" and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == 2, "the turn that failed, then one turn: never a second"
+
+
+@pytest.mark.asyncio
 async def test_the_recovery_leaves_alone_what_is_recent_and_runs_only_when_on(chat, redis, monkeypatch):
     """Rule 5: an event kept a moment ago is still the gateway's to deliver again; off, nothing runs."""
     async def broken(req, add_message):

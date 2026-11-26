@@ -2759,6 +2759,24 @@ async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> 
     return 0
 
 
+async def _held_to_send(r, k: str) -> bool:
+    """Whether a kept event's answer is the API's to send, its turn over: written as such (by "api", with replies), or
+    held by this process to write (_UNKEPT). An answer that cannot be read counts as none (logged). Redis failing
+    raises: the pass stops, and the event is left for the next one."""
+    key = f"msgr:event:{k}"
+    if key in _UNKEPT:
+        return True
+    raw = await r.get(key)
+    if not raw or str(raw).startswith("pending"):
+        return False
+    try:
+        kept = json.loads(raw)
+    except ValueError as e:
+        logger.warning(f"[messenger] a kept event's answer not readable, its try counted: {e}")
+        return False
+    return isinstance(kept, dict) and kept.get("by") == "api" and bool(kept.get("replies"))
+
+
 async def _recover_one(r, k: str, waiting: set[str]) -> str:
     """One kept event: "answered" (its replies sent, or none to send, or a send of them had before: never made
     again), "waiting" (the next minute tries again; its person's later events wait behind it, `waiting`), "behind"
@@ -2796,14 +2814,19 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         MESSENGER_HEALTH["off_skipped"] += 1
         waiting.add(who)
         return "waiting"
-    tries = await r.incr(f"{INBOX}:tries:{k}")
-    await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
-    if event is None or tries > RECOVER_TRIES:
-        await _release_event(k, who)
-        MESSENGER_HEALTH["recover_given_up"] += 1
-        logger.error(f"[messenger] a kept event given up after {tries} tries "
-                     f"({event.kind if event else 'gone or unreadable'})")
-        return "given_up"
+    # Its tries bound turns that fail, never a send: one whose answer is kept for the API to send (its turn over: the
+    # channel turned off before its send, or the gateway not reached) counts none and is never given up for them; its
+    # send goes on until the inbox lets it go.
+    tries = 0
+    if event is None or not await _held_to_send(r, k):
+        tries = await r.incr(f"{INBOX}:tries:{k}")
+        await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
+        if event is None or tries > RECOVER_TRIES:
+            await _release_event(k, who)
+            MESSENGER_HEALTH["recover_given_up"] += 1
+            logger.error(f"[messenger] a kept event given up after {tries} tries "
+                         f"({event.kind if event else 'gone or unreadable'})")
+            return "given_up"
     try:
         # Through this pass's client: a cooldown begun since (another call's failure, process wide) never reads as an
         # event with no mark, and Redis failing stops the pass, the event left for the next one.
