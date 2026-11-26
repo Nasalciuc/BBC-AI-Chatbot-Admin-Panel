@@ -90,9 +90,10 @@ What the API does with an event:
   after the sale, as the widget's chat); else the chat is found as the widget's is (an open one of theirs), or a
   new one starts: tunnel sales, metadata `site`, `chat_channel: "messenger"`, `messenger: {page_id, psid}`,
   `utm_source: "messenger"`, `utm_medium` (`messenger_ads` for an ad, else `messenger`), `utm_campaign` (the ref),
-  `messenger_referral`. A referral before the first message waits in Redis for the chat; one to a chat that goes on
-  is saved to it, or the event fails and is delivered again (the next message goes on in that chat, and never reads
-  the one kept in Redis).
+  `messenger_referral`. A referral before the first message waits in Redis for the chat; with no chat yet, Redis is
+  the only place it lives, so one Redis does not keep fails the event, delivered again (no Redis at all: nothing to
+  keep it in, best effort). One to a chat that goes on is saved to it, or the event fails and is delivered again (the
+  next message goes on in that chat, and never reads the one kept in Redis).
 - **The turn.** A message (or a Page button, as its words) takes the widget's own turn (`app.api.chat.chat`): the
   blocklist, the message limit, the chat's doors, an agent who holds the chat, the card's buttons (a quick reply whose
   payload is a button's kind is that button), the cache, Skye. What the turn stores for the person (Skye's answer,
@@ -160,12 +161,16 @@ What the API does with an event:
   can be any size, and not always the same one for a cursor: HSCAN's COUNT is a hint), so a pass goes on from those
   not looked at yet whatever left the part meanwhile, the events always get their part, and a note that keeps
   failing, or hangs, never keeps the others from their turn. After 60
-  tries, or unreadable, the event is given up
+  tries, or unreadable, the event is given up (tries count only looks that may run a turn: an event whose answer is
+  kept for the API to send, its turn over, counts none and is never given up for them; its send goes on until the
+  inbox lets it go)
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
   that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send).
-  The switch is read right before each turn starts and right before each call to the gateway: off before a send's
+  The switch is read right before each turn starts (a delivery from the gateway's too: turned off while it is taken,
+  its turn never starts, 409, and kept, it is the recovery's once the channel is on) and right before each call to
+  the gateway: off before a send's
   mark is written, nothing is written; off after it, no call is made and the send is taken for one that never
   reached the gateway (its mark cleared, its answer kept as the API's to send). The same replies go once the
   channel is on again, without a second turn (`off_skipped`).
@@ -310,7 +315,8 @@ its turn stopped with no answer joins nothing and is never sent on its own (`tur
 again. An agent's "joined" line and their message never cross, however long an insert's answer takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
-(`off_skipped`). Where a
+(`off_skipped`), nor one the channel went off for while its going to the gateway was written down (crossed out, no
+note: nothing went out). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
 chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
