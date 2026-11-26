@@ -2441,6 +2441,85 @@ async def test_an_event_whose_pass_lost_its_lock_mid_turn_is_sent_at_most_once(c
 
 
 @pytest.mark.asyncio
+async def test_a_delivery_from_the_gateway_and_a_recovery_that_lost_its_claim_never_both_send(chat, redis,
+                                                                                            monkeypatch):
+    """CodeRabbit #288, the real handle: a recovery pass of a kept event is in its turn when its claim runs out (its
+    renewal failing), and a delivery of the same event from the gateway (one that never got X-Messenger-Kept) answers
+    it: the gateway's delivery takes the right to send them, as the API's sends take it, so the recovery, ending
+    after, sends nothing."""
+    import asyncio
+
+    from tests.fake_redis import FakeClock
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    turn = chat.answer
+    inside, release = asyncio.Event(), asyncio.Event()
+    started = {"n": 0}
+
+    async def first_hangs(req, add_message):
+        started["n"] += 1
+        if started["n"] == 1:
+            inside.set()
+            await release.wait()
+        return await turn(req, add_message)
+
+    chat.answer = first_hangs
+    clock = FakeClock()
+    redis.clock = clock
+    real_eval = redis.eval
+
+    async def claim_renewal_fails(script, numkeys, *keys_and_args):
+        if script == mc.RENEW_LUA and str(keys_and_args[0]).startswith("msgr:event:"):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", claim_renewal_fails)
+    monkeypatch.setattr(mc, "PENDING_S", 0.3)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        recovery = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(inside.wait(), 1)
+        clock.advance(mc.PENDING_S * 2)  # the recovery's claim runs out
+        delivered = await mc.handle(event())  # the gateway's, again
+        release.set()
+        out = await asyncio.wait_for(recovery, 2)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    assert [r["text"] for r in delivered["replies"]] == [reply], "the gateway sends them"
+    assert gw.sent == [] and out["waiting"] == 1, "the recovery, ending after, sends nothing"
+    assert redis.kv[f"{mc.INBOX}:sending:m1"] == mc.SENT_BY_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_from_the_gateway_leaves_the_replies_to_a_recovery_that_took_them_first(chat, redis):
+    """Rule 5 of the same: the recovery took the right to send first (its send on its way) and the event's mark is
+    lost meanwhile: the gateway's delivery, answering it again, gets no replies; the recovery's go, once."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    sent: list = []
+
+    async def slow(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        sending.set()
+        await go_on.wait()
+        return {"sent": 1}
+
+    with patch.object(mc, "send", new=slow):
+        recovery = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        redis.kv.pop("msgr:event:m1")  # the event's mark lost meanwhile
+        delivered = await mc.handle(event())
+        go_on.set()
+        out = await asyncio.wait_for(recovery, 2)
+    assert delivered["replies"] == [] and mc.MESSENGER_HEALTH["duplicates"] == 1
+    assert sent == ["About: Hi, two seats to Istanbul in December?"] and out["answered"] == 1
+    assert not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_notes_that_keep_failing_never_keep_the_others_from_their_turn(chat, redis, monkeypatch):
     """CodeRabbit #288: Redis gives the outbox whole in one part (HSCAN's COUNT is only a hint), and the first notes
     in it keep failing to be saved: each pass goes on after the last delivery it looked at, so the others are told

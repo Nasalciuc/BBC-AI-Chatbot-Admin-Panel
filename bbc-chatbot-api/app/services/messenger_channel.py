@@ -801,11 +801,36 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
     except Exception as e:
         await _forget(key)
         raise EventFailed(in_inbox) from e
+    if by == "gateway" and in_inbox and replies and not await _gateway_takes_send(event.key()):
+        # A pass of the recovery on this event (its claim lost mid-turn) took the right to send them first: its to
+        # send, and to let go of. The gateway gets none.
+        MESSENGER_HEALTH["duplicates"] += 1
+        await _remember(key, [], by)
+        return {"replies": []}
     await _remember(key, replies, by)
     if by == "gateway":
         await _release_event(event.key(), _who(event))
     MESSENGER_HEALTH["replies"] += len(replies)
     return {"replies": replies}
+
+
+async def _gateway_takes_send(k: str) -> bool:
+    """A kept event's replies given back to the gateway take the right to send them, as the API's own sends take it
+    (_begin_send): a pass of the recovery on the same event never sends them beside the gateway. False when the
+    recovery took it first; True when it is the gateway's (now, or from an earlier delivery of the event). Redis
+    failing: True, the replies given all the same (logged)."""
+    r = get_redis(even_cooling_down=True)
+    if r is None:
+        return True
+    try:
+        if await r.set(_sending_key(k), SENT_BY_GATEWAY, nx=True, ex=INBOX_KEEP_S):
+            return True
+        return await r.get(_sending_key(k)) == SENT_BY_GATEWAY
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] a kept event's replies given to the gateway without their right to send: "
+                       f"{type(e).__name__}: {e}")
+        return True
 
 
 async def _answer_earlier(event: InboundEvent) -> None:
@@ -993,6 +1018,9 @@ _UNSENT: dict[str, str] = {}
 # never sent again). With _UNSENT, every old mark of a live process is one it knows of and settles itself: another
 # process waits on it while that process is alive (_send_state).
 _ENDED: dict[str, tuple[str, Optional[str]]] = {}
+# The right to send a kept event's replies, taken by its delivery from the gateway (handle): the gateway sends them,
+# and the API never does.
+SENT_BY_GATEWAY = "gateway"
 
 
 async def _send_state(r, k: str) -> str:
@@ -1002,7 +1030,7 @@ async def _send_state(r, k: str) -> str:
     (begun and never over: its process stopped in it, or this one, which is not at it), "done" (over, and the event
     not taken out of the inbox after). Redis failing raises."""
     raw = await r.get(_sending_key(k))
-    if raw is None or raw == "done":
+    if raw is None or raw in ("done", SENT_BY_GATEWAY):
         _UNSENT.pop(k, None)
         return "none" if raw is None else "done"
     ended = _ENDED.get(k)
