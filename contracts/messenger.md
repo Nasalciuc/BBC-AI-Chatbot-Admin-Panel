@@ -216,11 +216,16 @@ What the API does with an event:
   sent yet (the gateway could not be reached: the recovery sends them, without a second turn), or being sent now,
   makes this one wait (409: the
   gateway tries again); one failing again makes this one fail too, kept behind it, and so does one Redis could
-  not read (never taken for one gone: this one is never answered past it). One there and unreadable is left to the
-  recovery to give up. Redis down before anything was written (this one not kept): there is no inbox to look in. A
-  take Redis may have run with its answer lost makes this one wait (409, `take_unsure`): the delivery made again looks
-  in Redis even while it cools down, so this one is never answered past an earlier one as one not kept; Redis still
-  away after 30 s, it is answered as one not kept. Once this one is kept, a Redis
+  not read (never taken for one gone: this one is never answered past it). One read as gone, or there and no event,
+  is left to the recovery to give up, and passed over only while that is still what is there: one put back since for
+  a late send of its replies is looked at again, and this one waits behind that send. Redis down before anything was
+  written (this one not kept): there is no inbox to look in. Every take looks in Redis even while its process cools
+  down (another call's failure, process wide): only Redis failing the take itself sends an event the way of one not
+  kept. A take Redis may have run with its answer lost makes this one wait (409, `take_unsure`): the delivery made
+  again, at this process or another, finds the take that ran while Redis answers, so this one is never answered past
+  an earlier one as one not kept. Redis still away from this process after 30 s, or away from another process the
+  delivery reaches (which never heard of the take), it is answered as one not kept, as any event is while no process
+  can look in the inbox. Once this one is kept, a Redis
   cooldown begun since (another call's failure, process wide, while Redis may answer) never reads as "nothing
   earlier": they are looked up all the same, and Redis failing makes this one fail, kept. This one goes on only once
   one step finds none of the earlier ones left and marks its passing as the person's latest take: an earlier one put
