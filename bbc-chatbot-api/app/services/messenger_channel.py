@@ -925,6 +925,10 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
             # first, now. Redis down (this one not kept, not_kept): there is no inbox to look in.
             if in_inbox:
                 await _answer_earlier(event)
+            if by == "api" and not enabled():
+                # Turned off since the recovery read the switch: its turn never starts, the event left kept.
+                MESSENGER_HEALTH["off_skipped"] += 1
+                raise StillAnswering()
             replies = await _answer(event)
     except StillAnswering:
         await _forget(key, token)
@@ -1198,6 +1202,11 @@ async def _answer_these(r, found: list[str], unreadable: dict[str, str]) -> None
                 # replies never go after this one's.
                 if await _earlier_kept(r, earlier, unreadable):
                     MESSENGER_HEALTH["still_answering"] += 1
+                    raise StillAnswering()
+                if not enabled():
+                    # Turned off: its turn never starts, and this one waits behind it (both answered in order once
+                    # the channel is on again).
+                    MESSENGER_HEALTH["off_skipped"] += 1
                     raise StillAnswering()
                 replies = await _answer(earlier)
         except Exception:
@@ -1750,8 +1759,14 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
     """A kept event's replies sent through the gateway, the send written down already (_begin_send: `mark`). True
     once the event is done with: they went out, or may have, or Meta refused them (counted, never sent again); False
     when the call never reached the gateway (nothing went out: the mark is cleared, and they go again later; Redis
-    failing then, this process clears it later, _UNSENT)."""
-    result = await send(event.page_id, event.psid, replies)
+    failing then, this process clears it later, _UNSENT). The channel turned off since the send was written down:
+    no call is made, and the send is taken for one that never reached the gateway (off_skipped)."""
+    if enabled():
+        result = await send(event.page_id, event.psid, replies)
+    else:
+        MESSENGER_HEALTH["off_skipped"] += 1
+        logger.info("[messenger] a kept event's send met the channel turned off: kept, sent once it is on again")
+        result = {"sent": 0, "failed": {"kind": "gateway"}}
     failed = result.get("failed") or {}
     kind = str(failed.get("kind") or "")
     if failed and kind == "gateway":
@@ -2002,9 +2017,16 @@ _PUTTING_BACK: dict[str, str] = {}
 async def _send_put_back(r, k: str, event: InboundEvent, kept_event: str, replies: list, mark: str) -> None:
     """A late send's replies, its event back in the inbox under its new mark (REKEEP_LUA ran): sent now, once
     (sent_late), then the event let go of. Never reaching the gateway: held, the event in the inbox, its mark cleared
-    at the next minute, and the recovery sends them. Redis failing raises (the caller logs)."""
+    at the next minute, and the recovery sends them. The channel turned off since it was put back: no call is made,
+    and they are held the same way (off_skipped). Redis failing raises (the caller logs)."""
     who = _who(event)
     fresh = mark
+    if not enabled():
+        MESSENGER_HEALTH["off_skipped"] += 1
+        _UNSENT[k] = (fresh, kept_event, replies)
+        logger.info("[messenger] replies to send late met the channel turned off: sent by the recovery from the inbox "
+                    "once it is on again")
+        return
     result = await send(event.page_id, event.psid, replies)
     failed = result.get("failed") or {}
     kind = str(failed.get("kind") or "")
@@ -2724,6 +2746,12 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
                 waiting.add(who)
             return "waiting"
         return "answered"
+    if event is not None and not enabled():
+        # Turned off since the pass read the switch: no turn starts and no try is counted; its person's later events
+        # wait behind it.
+        MESSENGER_HEALTH["off_skipped"] += 1
+        waiting.add(who)
+        return "waiting"
     tries = await r.incr(f"{INBOX}:tries:{k}")
     await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
     if event is None or tries > RECOVER_TRIES:
