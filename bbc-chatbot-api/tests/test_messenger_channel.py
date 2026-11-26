@@ -63,12 +63,13 @@ def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.GIVE_TO_GATEWAY_LUA does."""
     event_key, sending_key = keys
     token, answer, none_given, ex, right, right_ex = args[0], args[1], args[2], int(args[3]), args[4], int(args[5])
+    api_to_send = args[6]
     held = fake.kv.get(event_key) if fake._alive(event_key) else None
     if held is not None and held != token:
         return 0
     sending = fake.kv.get(sending_key) if fake._alive(sending_key) else None
     if sending is not None and not sending.startswith("gateway"):
-        fake.kv[event_key] = none_given
+        fake.kv[event_key] = none_given if sending == "done" else api_to_send
         fake._set_expiry(event_key, ex=ex)
         return 2
     fake.kv[sending_key] = right
@@ -1828,6 +1829,68 @@ async def test_a_recovered_answer_redis_did_not_take_is_written_before_it_is_sen
         assert (await mc.run_messenger_recover())["answered"] == 1
     assert gw.sent == [reply, reply] and len(chat.requests) == 2, "one turn for the failure, one after it"
     assert not redis.kv[mc.INBOX] and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meanwhile", ["delivered_again", "nothing"])
+async def test_a_recovered_answer_gone_during_its_send_is_kept_for_the_send_made_again(chat, redis, meanwhile):
+    """CodeRabbit #288: the recovery's send of a kept event is on its way when the event's answer goes from Redis (its
+    day over, or let go of), and that send never reaches the gateway. Delivered again by the gateway meanwhile: that
+    delivery gets none (the API's send began), and its own answer is kept as the API's to send, never an empty one
+    that would let the event go unsent. Nothing meanwhile: the recovery's answer is written back before its mark is
+    cleared, so no second turn. Either way the next pass sends the replies, once."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    sent: list = []
+    answers = [{"sent": 0, "failed": {"kind": "gateway"}}]
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if len(sent) == 1:
+            sending.set()
+            await go_on.wait()
+        return answers.pop(0) if answers else {"sent": 1}
+
+    with patch.object(mc, "send", new=gw):
+        recovery = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        redis.kv.pop("msgr:event:m1")  # the event's answer goes from Redis meanwhile
+        if meanwhile == "delivered_again":
+            assert (await mc.handle(event()))["replies"] == [], "the API's send began: the gateway gets none"
+        go_on.set()
+        assert (await asyncio.wait_for(recovery, 2))["waiting"] == 1  # it never reached the gateway
+        out = await mc.run_messenger_recover()
+    reply = "About: Hi, two seats to Istanbul in December?"
+    assert out["answered"] == 1 and sent == [reply, reply] and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == (3 if meanwhile == "delivered_again" else 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sending", ["on_its_way", "over", "not_begun"])
+async def test_a_gateway_delivery_keeps_an_empty_answer_only_once_the_apis_send_is_over(redis, sending):
+    """Rule 5 of the same: the API's send on its way, the delivery's own answer is kept as the API's to send; over
+    ("done"), an answer with none is kept (the replies went: never again); none begun, the delivery takes the right to
+    send them and keeps its own answer. The gateway gets them only in the last."""
+    key, k, token = "msgr:event:m1", "m1", "pending:mine"
+    redis.kv[key] = token
+    if sending == "on_its_way":
+        redis.kv[mc._sending_key(k)] = f"{time.time()}:{mc.BOOT}"
+    elif sending == "over":
+        redis.kv[mc._sending_key(k)] = "done"
+    replies = [{"text": "Hi"}]
+    given = await mc._give_to_gateway(key, k, replies, token)
+    kept = json.loads(redis.kv[key])
+    if sending == "on_its_way":
+        assert given == "theirs" and kept == {"replies": replies, "by": "api"}
+    elif sending == "over":
+        assert given == "theirs" and kept == {"replies": [], "by": "gateway"}
+        assert redis.kv[mc._sending_key(k)] == "done"
+    else:
+        assert given == "kept" and kept == {"replies": replies, "by": "gateway"}
+        assert redis.kv[mc._sending_key(k)].startswith(f"{mc.SENT_BY_GATEWAY}:")
 
 
 @pytest.mark.asyncio

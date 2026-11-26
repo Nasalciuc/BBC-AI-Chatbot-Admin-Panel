@@ -861,8 +861,9 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
 
 # A kept event's replies given back to the gateway, which takes the right to send them, and their answer kept, in one
 # step, only while the delivery still holds the event's claim (its token, or nothing): 1; 2 when the API's own send of
-# them began first (the gateway gets none: an answer with none is kept); 0 when another delivery or pass holds the
-# event, or answered it (nothing written).
+# them began first, and the gateway gets none: over ("done"), an answer with none is kept; still on its way, this
+# turn's answer is kept as the API's to send, should that send go nowhere (never an empty one, which would let the
+# event go unsent); 0 when another delivery or pass holds the event, or answered it (nothing written).
 GIVE_TO_GATEWAY_LUA = """
 local v = redis.call('get', KEYS[1])
 if v and v ~= ARGV[1] then
@@ -870,7 +871,11 @@ if v and v ~= ARGV[1] then
 end
 local s = redis.call('get', KEYS[2])
 if s and string.sub(s, 1, 7) ~= 'gateway' then
-  redis.call('set', KEYS[1], ARGV[3], 'EX', ARGV[4])
+  if s == 'done' then
+    redis.call('set', KEYS[1], ARGV[3], 'EX', ARGV[4])
+  else
+    redis.call('set', KEYS[1], ARGV[7], 'EX', ARGV[4])
+  end
   return 2
 end
 redis.call('set', KEYS[2], ARGV[5], 'EX', ARGV[6])
@@ -893,7 +898,8 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
     try:
         given = await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
                              json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S,
-                             f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S)
+                             f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S,
+                             json.dumps({"replies": replies, "by": "api"}))
     except Exception as e:
         redis_failed("messenger inbox", e)
         _UNKEPT[key] = (token, answer)
@@ -1275,6 +1281,8 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
     kind = str(failed.get("kind") or "")
     if failed and kind == "gateway":
         try:
+            # The same replies go again from the event's answer: written back first where it went meanwhile.
+            await _answer_back(r, k, replies)
             await r.eval(RELEASE_LUA, 1, _sending_key(k), mark)
         except Exception as e:
             redis_failed("messenger inbox", e)
@@ -1296,6 +1304,14 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
             MESSENGER_HEALTH["unconfirmed"] += 1
         logger.warning(f"[messenger] a kept event's replies not sent ({kind or 'no kind'})")
     return True
+
+
+async def _answer_back(r, k: str, replies: list) -> None:
+    """A kept event's answer written back as the API's to send, only where there is none (it went meanwhile: its day
+    over, or Redis let it go), before a send known not to have gone out has its mark cleared: the same replies go
+    again from it, never from a second turn. Never over another's claim or answer. Redis failing raises."""
+    await r.eval(KEEP_ANSWER_LUA, 1, f"msgr:event:{k}", "", json.dumps({"replies": replies, "by": "api"}),
+                 ANSWERED_S)
 
 
 async def _settle_own(r) -> None:
@@ -1320,7 +1336,9 @@ async def _settle_own(r) -> None:
     for k, (mark, kept_event, replies) in list(_UNSENT.items()):
         try:
             if await r.zscore(INBOX, k) is not None:
-                # Still kept: its mark cleared (only while it is this one's), and the recovery sends them again.
+                # Still kept: its answer written back where it went meanwhile, its mark cleared (only while it is this
+                # one's), and the recovery sends the same replies again.
+                await _answer_back(r, k, replies)
                 await r.eval(RELEASE_LUA, 1, _sending_key(k), mark)
                 _UNSENT.pop(k, None)
             elif await r.get(_sending_key(k)) == mark:
