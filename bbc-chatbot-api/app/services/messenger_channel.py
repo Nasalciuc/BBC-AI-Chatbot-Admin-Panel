@@ -1196,11 +1196,14 @@ def _who(event: InboundEvent) -> str:
 
 
 def _last_key(event: InboundEvent) -> str:
-    """The Meta time of the latest event of one person's taken (_keep_event), answered since or not."""
+    """When one person's latest event was taken (_keep_event: its first take, a delivery made again, or the
+    recovery's), answered since or not."""
     return f"{INBOX}:last:{visitor_id_for(event.page_id, event.psid)}"
 
 
-# The person's latest event taken: its Meta time kept only when later than the one there (ARGV[1]), for INBOX_KEEP_S.
+# The person's latest take of an event: its time kept only when later than the one there (ARGV[1]), for INBOX_KEEP_S.
+# A time of the take, never Meta's time of the event: two events of the person's with the same Meta time are still
+# told apart (a late send's replies are never sent after those of one taken after its send began, _send_late).
 LAST_TAKEN_LUA = """
 local v = tonumber(redis.call('get', KEYS[1]) or '0')
 if tonumber(ARGV[1]) > v then
@@ -1223,7 +1226,7 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     k = event.key()
     try:
         # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
-        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), event.timestamp, INBOX_KEEP_S)
+        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(time.time()), INBOX_KEEP_S)
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
         taken = await r.zscore(INBOX, k)
         if taken is None:
@@ -1545,8 +1548,9 @@ async def write_held(budget_s: float = NOTES_S) -> dict:
 # A late send's event put back in the inbox, and among its person's there, before its replies go (its JSON, ARGV[5];
 # ARGV[4], its place: before any taken after it), its send's mark made a new one (ARGV[7]: on its way from now, for
 # every process, this one too), only while the mark is still this process's (ARGV[1]): 0 when it is not; -1 when an
-# event of the person's later than it (ARGV[2], Meta's time) was taken since, whose replies may be out already (never
-# sent after them); 1 once it is back, so a later one taken now waits behind it.
+# event of the person's was taken after its send began (ARGV[2], the time in its mark: never Meta's time, which two
+# events can share), whose replies may be out already (never sent after them); 1 once it is back, so a later one
+# taken now waits behind it.
 REKEEP_LUA = """
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
   return 0
@@ -1568,8 +1572,9 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
     took this one's mark for a send a stopped process began (this one, cut off from Redis past ALIVE_S, could not say
     it was alive), maybe out, and sent nothing. No one sends them while the mark is this one's, so they go from here,
     under it, once (sent_late), in the person's order: the event is put back in the inbox first, so a later event of
-    theirs waits behind it, and then let go of again; a later one taken since (its replies maybe out already), they
-    are never sent after it: dropped, counted (late_dropped). Never reaching the gateway again: held, the event in
+    theirs waits behind it, and then let go of again; one of theirs taken after its send began (its replies maybe out
+    already, whatever Meta's time of it), they are never sent after it: dropped, counted (late_dropped). Never
+    reaching the gateway again: held, the event in
     the inbox, and its mark cleared at the next minute, so the recovery sends them. Redis failing raises (the caller
     logs): held, unless they went out already."""
     try:
@@ -1581,8 +1586,13 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
     who = _who(event)
     place = event.timestamp / 1000 if event.timestamp else time.time()
     fresh = f"{time.time()}:{BOOT}"
+    began = 0.0  # unreadable: taken for one begun long ago (any take since passes it)
+    try:
+        began = float(mark.partition(":")[0])
+    except ValueError as e:
+        logger.warning(f"[messenger] a late send's mark not readable, taken for one begun long ago: {e}")
     back = int(await r.eval(REKEEP_LUA, 5, _sending_key(k), _last_key(event), INBOX, who, f"{INBOX}:{k}", mark,
-                            event.timestamp, k, place, kept_event, INBOX_KEEP_S, fresh))
+                            repr(began), k, place, kept_event, INBOX_KEEP_S, fresh))
     _UNSENT.pop(k, None)  # its mark this one's no more, or on its way under the new one: never cleared as unsent
     if back == 0:
         return  # the mark ran out, or is another's: not this one's to send

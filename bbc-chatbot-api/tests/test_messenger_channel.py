@@ -2626,13 +2626,15 @@ async def test_a_send_this_process_knows_sent_nothing_is_cleared_with_its_answer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("meta_time", ["later", "same"])
 @pytest.mark.parametrize("later", ["taken_before", "delivered_during"])
-async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, monkeypatch, later):
+async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, monkeypatch, later, meta_time):
     """CodeRabbit #288, the person's order: as above, process B let go of an event whose send A knows sent nothing,
     A cut off from Redis. A later message of the person's taken before A is back (its replies maybe out already): A
-    never sends the earlier replies after them (dropped, late_dropped). One delivered while A's late send is on its
-    way waits behind it (409): the event is back in the inbox, its mark a new one of A's, and the later one goes once
-    the send is over, after it. Rule 5: with no later message, they go late, once
+    never sends the earlier replies after them (dropped, late_dropped), whatever Meta's times of the two (the same
+    included: it is when the later one was taken that counts). One delivered while A's late send is on its way waits
+    behind it (409): the event is back in the inbox, its mark a new one of A's, and the later one goes once the send
+    is over, after it. Rule 5: with no later message, they go late, once
     (test_a_send_that_sent_nothing_goes_from_its_process_after_another_let_its_event_go)."""
     import asyncio
 
@@ -2655,7 +2657,7 @@ async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, 
         mc._UNSENT.clear()
         mc._UNSENT.update(knows)
 
-    second = event(mid="m2", text="Second", timestamp=200)
+    second = event(mid="m2", text="Second", timestamp=200 if meta_time == "later" else 100)
     sending_s = mc.SENDING_S
     with patch.object(mc, "send", new=gw):
         blinks = _blink_send_marks(redis, monkeypatch)
