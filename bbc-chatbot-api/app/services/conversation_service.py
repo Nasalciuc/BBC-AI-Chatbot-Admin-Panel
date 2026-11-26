@@ -74,6 +74,11 @@ async def add_message(conversation_id: str, role: str, content: str,
                 # this process lives: stored, the agent is told it was not sent; not stored, crossed out. Cancelled
                 # before its insert's end was known: left written down, for the next process's minute.
                 await messenger_channel.unsure(entry, conversation_id, message_id)
+            # Stored and placed while the cancel waited: what its place left to do (its entry crossed out, its agent
+            # told) is done before the cancel goes on, in the chat's order still, never left unawaited.
+            for follow in follows:
+                if follow is not None:
+                    await follow
             raise
         if not row and entry is not None:
             # Its insert may have landed with its answer lost: asked again under the same id, the row stored before

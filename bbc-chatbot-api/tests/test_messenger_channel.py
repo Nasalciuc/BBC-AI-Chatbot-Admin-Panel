@@ -1126,6 +1126,63 @@ async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the
 
 
 @pytest.mark.asyncio
+async def test_a_cancelled_agents_message_stored_as_the_channel_went_off_is_crossed_out_before_the_cancel_goes_on(
+        redis, monkeypatch):
+    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, the
+    channel is turned off meanwhile, and the insert stores the row. Its place has nothing to send and crosses its
+    written-down delivery out: that is done before the cancel goes on, never left unawaited (no note for a message
+    that was never to go). Rule 5: not cancelled, the same is done once the insert answers
+    (test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next, its user row)."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+
+    def insert_row(payload):
+        def execute():
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert_row
+    landed, answer = asyncio.Event(), asyncio.Event()
+
+    async def run_sync(fn, **kw):
+        out = fn()
+        if out.data[0]["role"] == "agent" and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    gw = Gateway([])
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock()):
+        from app.services.conversation_service import add_message
+
+        first = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+        await asyncio.wait_for(landed.wait(), 1)
+        assert len(await redis.hgetall(mc.OUTBOX)) == 1, "written down before it was stored"
+        first.cancel()  # the request goes, its insert on its way
+        monkeypatch.setattr(settings, "messenger_gateway_url", "")  # the channel off meanwhile
+        answer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not await redis.hgetall(mc.OUTBOX), "crossed out before the cancel went on"
+    assert [r["content"] for r in stored] == ["Hi, I'm Ana."] and gw.sent == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("insert", ["stored_answer_lost", "refused"])
 async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_the_recovery_minute(redis, insert):
     """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, and
