@@ -195,7 +195,9 @@ What the API does with an event:
   as begun: never sent twice. A process cut off from Redis past its alive mark while it runs, whose event another
   process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, once
   (`sent_late`), in the person's order: it puts the event back in the inbox first, under a new mark of its own (on
-  its way for every process), so a later event of theirs waits behind it, then lets it go again; only while no event
+  its way for every process), in its place among the person's (never later than its send began, Meta's time when it
+  has one, and before any of theirs still kept), so a later event of theirs waits behind it, one taken as it is put
+  back included, then lets it go again; only while no event
   of theirs was taken after its send began (each take keeps when the person's latest was,
   `msgr:inbox:last:<visitor id>`: never Meta's time, which two events can share). One taken since, its replies maybe
   out already: never sent after them (`late_dropped`), nothing waiting on it. A putting back Redis ran and lost the
