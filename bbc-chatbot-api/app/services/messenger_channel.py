@@ -1767,11 +1767,12 @@ async def write_held(budget_s: float = NOTES_S) -> dict:
 
 
 # A late send's event put back in the inbox, and among its person's there, before its replies go (its JSON, ARGV[5];
-# ARGV[4], its place: before any taken after it), its send's mark made a new one (ARGV[7]: on its way from now, for
-# every process, this one too), only while the mark is still this process's (ARGV[1]): 0 when it is not; -1 when an
-# event of the person's was taken after its send began (ARGV[2], the time in its mark: never Meta's time, which two
-# events can share), whose replies may be out already (never sent after them); 1 once it is back, so a later one
-# taken now waits behind it.
+# ARGV[4], its place: never later than its send began, and moved before the first of the person's still there, KEYS[4],
+# all of them later than it), its send's mark made a new one (ARGV[7]: on its way from now, for every process, this
+# one too), only while the mark is still this process's (ARGV[1]): 0 when it is not; -1 when an event of the person's
+# was taken after its send began (ARGV[2], the time in its mark: never Meta's time, which two events can share), whose
+# replies may be out already (never sent after them); 1 once it is back, so a later one taken now, its time read
+# before this ran or after, waits behind it.
 REKEEP_LUA = """
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
   return 0
@@ -1779,10 +1780,20 @@ end
 if tonumber(redis.call('get', KEYS[2]) or '0') > tonumber(ARGV[2]) then
   return -1
 end
+local place = tonumber(ARGV[4])
+for _, m in ipairs(redis.call('zrange', KEYS[4], 0, 1)) do
+  if m ~= ARGV[3] then
+    local first = tonumber(redis.call('zscore', KEYS[4], m))
+    if first and first <= place then
+      place = first - 0.001
+    end
+    break
+  end
+end
 redis.call('set', KEYS[1], ARGV[7], 'EX', ARGV[6])
 redis.call('set', KEYS[5], ARGV[5], 'EX', ARGV[6])
-redis.call('zadd', KEYS[3], ARGV[4], ARGV[3])
-redis.call('zadd', KEYS[4], ARGV[4], ARGV[3])
+redis.call('zadd', KEYS[3], place, ARGV[3])
+redis.call('zadd', KEYS[4], place, ARGV[3])
 redis.call('expire', KEYS[4], ARGV[6])
 return 1
 """
@@ -1807,13 +1818,16 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
         return
     who = _who(event)
     now = await _redis_now(r)  # the new mark's time, on the clock its old one and every take were read from
-    place = event.timestamp / 1000 if event.timestamp else now
     fresh = f"{now}:{BOOT}"
     began = 0.0  # unreadable: taken for one begun long ago (any take since passes it)
     try:
         began = float(mark.partition(":")[0])
     except ValueError as e:
         logger.warning(f"[messenger] a late send's mark not readable, taken for one begun long ago: {e}")
+    # Its place among the person's: never later than its send began (Meta's time when it has one, an event with none
+    # the send's start), then before any of theirs still kept (REKEEP_LUA), never "now": a later one taken while it is
+    # put back, its take's time read before the putting back ran, still comes behind it.
+    place = min(event.timestamp / 1000, began) if event.timestamp else began
     # The new mark held first, beside the old one: Redis may run the putting back and lose its answer.
     _PUTTING_BACK[k] = fresh
     back = int(await r.eval(REKEEP_LUA, 5, _sending_key(k), _last_key(event), INBOX, who, f"{INBOX}:{k}", mark,

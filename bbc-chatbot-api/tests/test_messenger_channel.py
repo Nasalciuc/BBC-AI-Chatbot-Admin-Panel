@@ -105,6 +105,9 @@ def rekeep(fake: FakeRedis, keys: list, args: list) -> int:
         return 0
     if float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0) > at:
         return -1
+    others = sorted((s, m) for m, s in fake._zset(who).items() if m != k)
+    if others and others[0][0] <= place:
+        place = others[0][0] - 0.001  # before the first of the person's still there
     fake.kv[sending_key] = args[6]
     fake._set_expiry(sending_key, ex=ex)
     fake.kv[event_key] = kept_event
@@ -3152,6 +3155,90 @@ async def test_a_late_sends_putting_back_whose_answer_was_lost_never_goes_after_
     else:
         assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1
     assert not mc._UNSENT and not mc._PUTTING_BACK and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("then", ["taken_as_it_was_put_back", "kept_from_before", "with_its_meta_time"])
+async def test_a_late_send_puts_its_event_back_before_the_persons_later_ones(chat, redis, monkeypatch, then):
+    """CodeRabbit #288: as above, A's late send puts the person's first message back in the inbox, an event with no
+    Meta time (0): its place is never later than its send began, and before any of the person's still kept, never
+    "now". Their second, taken by B as the first is put back (B's take reads Redis's clock, the putting back runs,
+    then B's take is written), or taken before A's send began and kept since, is behind it: it waits (409) while A's
+    send of the first is on its way, then goes after it, nothing sent twice. Rule 5: the first with its Meta time,
+    the same."""
+    import asyncio
+
+    first = event(mid="m1", timestamp=100 if then == "with_its_meta_time" else 0)
+    second = event(mid="m2", text="Second", timestamp=200)
+    _turns(chat, fail_first=2 if then == "kept_from_before" else 1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(first)
+    if then == "kept_from_before":
+        with pytest.raises(mc.EventFailed):
+            await mc.handle(second)  # kept behind the first, taken before A's send began
+    redis.kv[mc.INBOX]["m1"] -= mc.RECOVER_AFTER_S + 1  # old enough for the recovery (the second is not)
+    reply = f"About: {first.text}"
+    sent: list = []
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    answers = [{"sent": 0, "failed": {"kind": "gateway"}}]
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if len(sent) == 2:  # A's late send of the first, on its way
+            sending.set()
+            await go_on.wait()
+        return answers.pop(0) if answers else {"sent": 1}
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    sending_s = mc.SENDING_S
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1 and mc._UNSENT, "nothing sent, its mark left"
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        become("process-b", {})
+        await mc.run_messenger_recover()
+        assert "m1" not in redis.kv[mc.INBOX], "B let the first go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        real_eval = redis.eval
+        rekept, b_read = asyncio.Event(), asyncio.Event()
+        hold_b = {"on": then != "kept_from_before"}
+
+        async def eval_(script, numkeys, *keys_and_args):
+            if script == mc.LAST_TAKEN_LUA and hold_b["on"]:
+                hold_b["on"] = False
+                b_read.set()
+                await rekept.wait()  # B has read Redis's clock: A's putting back runs before B's take is written
+            out = await real_eval(script, numkeys, *keys_and_args)
+            if script == mc.REKEEP_LUA:
+                rekept.set()
+            return out
+
+        monkeypatch.setattr(redis, "eval", eval_)
+        b = None
+        if then != "kept_from_before":
+            b = asyncio.create_task(mc.handle(second))  # B takes the second
+            await asyncio.wait_for(b_read.wait(), 1)
+        become("process-a", a_knows)  # A reaches Redis again
+        late = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        try:
+            with pytest.raises(mc.StillAnswering):
+                await asyncio.wait_for(b if b is not None else mc.handle(second), 1)  # behind the first's send
+        finally:
+            go_on.set()
+        await asyncio.wait_for(late, 2)
+        become("process-b", {})
+        out = await mc.handle(second)
+    assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order, each once"
+    assert mc.MESSENGER_HEALTH["sent_late"] == 1 and not redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio
