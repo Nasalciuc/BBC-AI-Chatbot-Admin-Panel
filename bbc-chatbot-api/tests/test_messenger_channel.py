@@ -4420,13 +4420,14 @@ async def test_a_try_counts_only_once_its_own_turn_started(chat, redis, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("refused", ["its_claim", "its_place_in_the_inbox"])
+@pytest.mark.parametrize("refused", ["its_claim", "its_claim_written_its_answer_lost", "its_place_in_the_inbox"])
 async def test_a_kept_event_redis_fails_before_its_turn_gives_its_try_back(chat, redis, monkeypatch, refused):
-    """CodeRabbit #288: Redis refuses the recovery's claim of a kept event, or the write of its place in the inbox
-    (_keep_event), before its turn starts. No turn ran: the event fails (EventFailed, turn_ran False) with the try
-    counted for it given back and its claim let go of, so the next pass looks at it again, never giving it up for
-    turns that never ran; the pass goes on. Rule 5: its own turn failing keeps the try
-    (test_a_try_counts_only_once_its_own_turn_started[in_its_turn])."""
+    """CodeRabbit #288: Redis refuses the recovery's claim of a kept event, or takes it with its answer lost (the
+    claim written), or refuses the write of its place in the inbox (_keep_event), before its turn starts. No turn
+    ran: the event fails (EventFailed, turn_ran False) with the try counted for it given back and its claim let go of
+    (token-checked: a claim written with its answer lost too, never left to run out over PENDING_S), so the next pass
+    looks at it again, never giving it up for turns that never ran; the pass goes on. Rule 5: its own turn failing
+    keeps the try (test_a_try_counts_only_once_its_own_turn_started[in_its_turn])."""
     await _fail_once(chat, redis)
     _turns(chat)
     tries_key = f"{mc.INBOX}:tries:m1"
@@ -4435,9 +4436,12 @@ async def test_a_kept_event_redis_fails_before_its_turn_gives_its_try_back(chat,
     once = {"on": True}
 
     async def refusing(key, value, *a, **kw):
-        target = "msgr:event:m1" if refused == "its_claim" else f"{mc.INBOX}:m1"
+        target = f"{mc.INBOX}:m1" if refused == "its_place_in_the_inbox" else "msgr:event:m1"
         if once["on"] and key == target:
             once["on"] = False
+            if refused == "its_claim_written_its_answer_lost":
+                await real_set(key, value, *a, **kw)  # Redis took it; its answer never came back
+                raise ConnectionError("Connection reset by peer")
             raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
         return await real_set(key, value, *a, **kw)
 
@@ -4449,6 +4453,7 @@ async def test_a_kept_event_redis_fails_before_its_turn_gives_its_try_back(chat,
         assert redis.kv[tries_key] == str(mc.RECOVER_TRIES - 1), "no turn of its ran: its try given back"
         assert "msgr:event:m1" not in redis.kv, "its claim let go of"
         assert "m1" in redis.kv[mc.INBOX] and len(chat.requests) == 1
+        redis_client.set_client_for_tests(redis)  # a cooldown its failure began, over
         out = await mc.run_messenger_recover()  # Redis answers again: its turn runs, once
     assert out["answered"] == 1 and gw.sent == ["About: Hi, two seats to Istanbul in December?"]
     assert len(chat.requests) == 2 and not redis.kv[mc.INBOX]

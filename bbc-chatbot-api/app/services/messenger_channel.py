@@ -1311,7 +1311,7 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     does (_keep_event): a delivery made again is never given a second turn of an event answered, or being answered,
     while Redis answers. Only Redis failing this claim answers an event without its mark (counted); with `client`
     given (a person's earlier event, answered for a later one that is kept, or the recovery's event), Redis failing
-    raises: never answered without its mark."""
+    raises: never answered without its mark, a claim the lost answer may have written let go of first (its token)."""
     r = client if client is not None else get_redis(even_cooling_down=True)
     if key in _UNKEPT:
         state, held = await _held_answer(r, key, raising=client is not None)
@@ -1337,6 +1337,10 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
         redis_failed("messenger dedupe", e)
         if client is not None:
             logger.warning(f"[messenger] a kept event's mark not read: {type(e).__name__}: {e}")
+            # A SET NX whose answer was lost may have written this turn's claim: let go of now, only while it is still
+            # this token (another's is never touched), never left to hold the event for PENDING_S. Not let go of
+            # either (Redis failing, logged): it runs out.
+            await _forget(key, token)
             raise
         MESSENGER_HEALTH["no_dedupe"] += 1
         logger.warning(f"[messenger] an event answered without its dedupe: {type(e).__name__}: {e}")
