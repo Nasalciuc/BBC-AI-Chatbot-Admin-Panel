@@ -187,9 +187,11 @@ RECOVER_STOP_S = 5.0
 async def _stop_messenger_recover() -> None:
     """The scheduler's Messenger recovery (scheduler_messenger_recover) stopped and waited for, RECOVER_STOP_S at most:
     a turn of it still on its way could hold an answer Redis refused after the held ones are written (write_held), and
-    that one would go with the process. Not stopped in time, it is in a wait that outlasts a cancel (a row's insert
-    on its way, whose answer is waited for), and stops after it: a turn cancelled never reaches its answer's keeping,
-    so it holds none after the flush (its event's claim runs out, and the next process answers it). Logged."""
+    that one would go with the process. A turn stops at once, its rows' inserts on their way included (each row's save
+    goes on by itself, messenger_channel.save_in_order, and a row stored after the turn stopped joins no answer). Not
+    stopped in time, it is in some wait that outlasts a cancel, and stops after it: a turn cancelled never reaches its
+    answer's keeping, so it holds none after the flush (its event's claim runs out, and the next process answers it).
+    Logged."""
     import asyncio
 
     task = next((t for t in getattr(app.state, "scheduler_tasks", []) if t.get_name() == "scheduler_messenger_recover"),
@@ -200,7 +202,7 @@ async def _stop_messenger_recover() -> None:
     _, pending = await asyncio.wait({task}, timeout=RECOVER_STOP_S)
     if pending:
         logger.warning(f"[messenger] shutdown: the recovery not stopped within {RECOVER_STOP_S:.0f} s (a wait that "
-                       f"outlasts a cancel, a row's insert on its way): it stops after it, holding no answer")
+                       f"outlasts a cancel): it stops after it, holding no answer")
 
 
 @app.on_event("shutdown")

@@ -511,11 +511,12 @@ def _stored(on_stored: Optional[Callable[[dict], None]], row: dict, conversation
 
 
 async def _place_if_stored(landing: "asyncio.Future", on_stored: Callable[[dict], None], conversation_id: str) -> None:
-    """add_message's caller cancelled while its insert was on its way (a Messenger turn's row, the turn stopped: a
-    chat's row saved outside a turn is never cancelled with its request, conversation_service.add_message): the
-    database may store the row all the same. Its answer is waited for once, and a row stored is given its place
-    (on_stored, in the turn's answer) before the cancel goes on. No row for an answer, or a second cancel while it
-    waits: nothing placed (the turn's event is answered again)."""
+    """add_message's caller cancelled while its insert was on its way: the database may store the row all the same.
+    A chat's row with a place to take is saved by a piece of work no request's or turn's cancel reaches
+    (conversation_service.add_message, messenger_channel.save_in_order), so this is that work itself stopped (its
+    loop closing). Its answer is waited for once, and a row stored is given its place (on_stored) before the cancel
+    goes on. No row for an answer, or a second cancel while it waits: nothing placed (an agent's message stays written
+    down for the next process's minute; a turn's event is answered again)."""
     try:
         res = await asyncio.shield(landing)
     except Exception as e:
@@ -570,9 +571,10 @@ async def add_message(
             if on_stored is None:
                 res = await insert
             else:
-                # A row with a place to take (a chat's Messenger order): a caller cancelled while its insert is on its
-                # way waits for the answer first, so a row the database stored is placed before the caller's hold on
-                # that order goes (never inserted again: idempotent=False).
+                # A row with a place to take (a chat's Messenger order), saved by work no request's cancel reaches: one
+                # that stops anyway (its loop closing) while its insert is on its way waits for the answer first, so a
+                # row the database stored is placed before that work's hold on the order goes (never inserted again:
+                # idempotent=False).
                 landing = asyncio.ensure_future(insert)
                 try:
                     res = await asyncio.shield(landing)

@@ -1343,6 +1343,108 @@ async def test_a_cancelled_agents_message_is_saved_as_if_its_request_had_not_bee
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("then", ["the_turn_stopped", "its_part_timed_out", "in_time"])
+async def test_a_turn_cancelled_while_its_rows_insert_is_on_its_way_goes_on_at_once_the_chats_order_kept(redis,
+                                                                                                         then):
+    """CodeRabbit #288, the real db.add_message: a Messenger turn is cancelled while its reply's insert is on its way,
+    and the insert answers late (the row stored all the same). The turn only stops waiting for the row's save, at
+    once: the save goes on by itself, holding the chat's order, as a request's does. The whole turn stopped (its
+    delivery cancelled): the agent's message stored next waits for that save, the row joins no answer and is never
+    sent on its own (turn_rows_left), and the event is left to be answered again. The turn's own part stopped by its
+    timeout: the turn goes on, and its fallback, stored next, waits for that save, so the answer says the reply, then
+    the fallback, in the order stored. Rule 5: an insert that answers in time, its row in the turn's answer."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    c = Chat().start()
+    real_add = c._ps.pop(0)  # the real db.add_message from here
+    real_add.stop()
+    stored: list[dict] = []
+
+    def insert_row(payload):
+        def execute():
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert_row
+    landed, answer = asyncio.Event(), asyncio.Event()
+    if then == "in_time":
+        answer.set()
+
+    async def run_sync(fn, **kw):
+        out = fn()  # the database has it
+        if out.data[0]["content"] == "Here now." and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back, late
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    async def turn(req, add_message):
+        await add_message(req.conversation_id, "user", req.message)
+        if then != "its_part_timed_out":
+            await add_message(req.conversation_id, "ai", "Here now.")
+            return ChatResponse(conversation_id=req.conversation_id, message="Here now.", type="ai", model_used="x")
+        try:
+            await asyncio.wait_for(add_message(req.conversation_id, "ai", "Here now."), 0.05)  # its own timeout
+        except asyncio.TimeoutError:
+            await add_message(req.conversation_id, "ai", "One moment, please.")  # its fallback, stored after
+        return ChatResponse(conversation_id=req.conversation_id, message="One moment, please.",
+                            type="template_fallback", model_used="template")
+
+    c.answer = turn
+    gw = Gateway([])
+    watched, asked = _order_watched()
+    try:
+        with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+                patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+                patch.object(mc, "in_order", new=watched):
+            from app.services.conversation_service import add_message
+
+            delivery = asyncio.create_task(mc.handle(event()))
+            if then == "in_time":
+                out = await asyncio.wait_for(delivery, 1)
+                assert [r["text"] for r in out["replies"]] == ["Here now."]
+                return
+            await asyncio.wait_for(landed.wait(), 1)
+            if then == "the_turn_stopped":
+                delivery.cancel()  # the gateway's call goes, the reply's insert on its way
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(delivery, 0.5)  # at once: it only stops waiting for the save
+                agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+                await asyncio.wait_for(asked.wait(), 1)  # the next row asks for the chat's order
+                for _ in range(5):
+                    await asyncio.sleep(0)  # every chance to go on
+                assert [r["role"] for r in stored] == ["user", "ai"] and not agent.done(), \
+                    "the next row waits for the cancelled turn's save, not inserted"
+                answer.set()
+                await asyncio.wait_for(agent, 1)
+                await asyncio.wait_for(mc.saved(), 1)
+                await mc.drain(CONV)
+                assert gw.sent == ["Hi, I'm Ana."], "the turn's row never sent on its own"
+                assert mc.MESSENGER_HEALTH["turn_rows_left"] == 1
+                assert str(redis.kv["msgr:event:m1"]).startswith("pending:"), "left to be answered again"
+                return
+            await asyncio.wait_for(asked.wait(), 1)  # the turn went on: its fallback asks for the chat's order
+            assert not delivery.done() and [r["role"] for r in stored] == ["user", "ai"]
+            answer.set()
+            out = await asyncio.wait_for(delivery, 1)
+    finally:
+        c.stop()
+    assert [r["text"] for r in out["replies"]] == ["Here now.", "One moment, please."], "in the order stored"
+    assert [r["content"] for r in stored][1:] == ["Here now.", "One moment, please."]
+    assert mc.MESSENGER_HEALTH["turn_rows_left"] == 0 and gw.sent == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("between", ["unread", "nowhere", "found"])
 async def test_a_row_with_nothing_to_send_keeps_the_next_one_behind_the_one_before(redis, monkeypatch, between):
     """CodeRabbit #288: the agent's first message is with the gateway when their second one's chat cannot be read
@@ -2320,12 +2422,14 @@ async def test_a_shutdown_stops_the_recovery_before_it_writes_the_held_answers(m
 
 
 @pytest.mark.asyncio
-async def test_a_recovery_that_outlasts_the_shutdowns_wait_never_holds_an_answer_after_the_flush(redis, monkeypatch):
+async def test_a_recovery_whose_turns_row_is_on_its_way_stops_before_the_flush_and_holds_nothing(redis, monkeypatch):
     """CodeRabbit #288: the recovery is in a turn as the process stops, its row's insert on its way (the real
-    db.add_message, whose answer a cancel waits for), past RECOVER_STOP_S, with Redis refusing every answer: the held
-    answers are written while it still runs, and once its insert answers it stops, the turn never reaching its answer's
-    keeping. Nothing held after the flush (nothing to go with the process): its claim is left to run out, and the next
-    process answers the event. Rule 5: stopped in time, the same order
+    db.add_message, its answer back only once the shutdown is over), with Redis refusing every answer. The turn only
+    stops waiting for its row's save (save_in_order), so the recovery stops at the first cancel, within the shutdown's
+    wait and before the held answers are written; the save goes on by itself, and its row, stored after the turn
+    stopped with no answer, joins nothing and is never sent on its own (turn_rows_left). Nothing held after the flush
+    (nothing to go with the process): its claim is left to run out, and the next process answers the event. Rule 5:
+    a recovery with no row on its way stops the same
     (test_a_shutdown_stops_the_recovery_before_it_writes_the_held_answers)."""
     import asyncio
     from types import SimpleNamespace
@@ -2380,23 +2484,26 @@ async def test_a_recovery_that_outlasts_the_shutdowns_wait_never_holds_an_answer
         async def touch(*a, **kw):
             return None
 
+        gw = Gateway([])
         with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
-                patch.object(db, "_touch_conversation_activity", new=touch):
+                patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw):
             monkeypatch.setattr(redis, "eval", refusing)
             recover = asyncio.create_task(mc.run_messenger_recover(), name="scheduler_messenger_recover")
             await asyncio.wait_for(landed.wait(), 1)
-            monkeypatch.setattr(main, "RECOVER_STOP_S", 0.05)
             monkeypatch.setattr(mc, "drain_all", AsyncMock(return_value={"left": 0}))
             monkeypatch.setattr(mc, "write_held", write_held)
             for name, value in (("ledger_task", None), ("flags_task", None), ("scheduler_tasks", [recover])):
                 monkeypatch.setattr(main.app.state, name, value, raising=False)
             await main.shutdown()
-            assert flushed == [({"written": 0, "dropped": 0}, False)], "flushed while the recovery still runs"
-            answer.set()
+            assert flushed == [({"written": 0, "dropped": 0}, True)], "stopped by its first cancel, before the flush"
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(recover, 1)
+                await recover
+            assert mc._SAVES, "its row's save goes on by itself"
+            answer.set()  # the insert answers, the process all but gone
+            await asyncio.wait_for(mc.saved(), 1)
     finally:
         c.stop()
+    assert mc.MESSENGER_HEALTH["turn_rows_left"] == 1 and gw.sent == [], "stored, in no answer, never sent alone"
     assert not mc._UNKEPT and not mc._UNGIVEN and not mc._HELD_BESIDE, "nothing held after the flush"
     assert mc.MESSENGER_HEALTH["answer_unkept"] == 0 and mc.MESSENGER_HEALTH["answer_dropped"] == 0
     assert str(redis.kv["msgr:event:m1"]).startswith("pending:"), "its claim left to run out"

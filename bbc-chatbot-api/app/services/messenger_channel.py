@@ -171,6 +171,8 @@ MESSENGER_HEALTH: dict[str, int] = {
                              # replies may be out already (never sent after them)
     "answer_dropped": 0,     # answers still not taken by Redis when their process stopped: their event may be answered
                              # again once its claim runs out
+    "turn_rows_left": 0,     # rows a turn stored after it stopped with no answer (cancelled while their insert was on
+                             # its way): said in no answer and never on their own, their event answered again
     "bad_signature": 0,      # calls refused: not the gateway's
     "sent": 0,               # messages sent out of a turn (an agent's, mostly)
     "send_failed": 0,        # of those, refused or lost; by why below
@@ -270,10 +272,12 @@ class InboundEvent(BaseModel):
 @dataclass
 class _Turn:
     """The rows a turn stores for the person, given back to the gateway in its answer instead of sent one by one.
-    Shut once the answer is made: a row stored later (a task the turn started) goes out on its own."""
+    Shut once the answer is made: a row stored later (a task the turn started) goes out on its own. Shut without one
+    (`answered` False: the turn failed, or was cancelled), its event is answered again."""
     conversation_id: str
     rows: list[dict] = field(default_factory=list)
     open: bool = True
+    answered: bool = False
 
 
 _TURN: contextvars.ContextVar[Optional[_Turn]] = contextvars.ContextVar("messenger_turn", default=None)
@@ -285,6 +289,7 @@ def _collecting(conversation_id: str):
     token = _TURN.set(turn)
     try:
         yield turn
+        turn.answered = True
     finally:
         turn.open = False
         _TURN.reset(token)
@@ -314,32 +319,43 @@ async def in_order(conversation_id: str):
             del _ORDER[conversation_id]
 
 
-# A chat's rows saved outside a Messenger turn, each as one piece of work that holds the chat's order to its end
+# A chat's rows with a place to take, each saved as one piece of work that holds the chat's order to its end
 # (save_in_order): kept here while it runs, never left unawaited.
 _SAVES: set[asyncio.Task] = set()
 
 
-def in_turn(conversation_id: str) -> bool:
-    """Whether a Messenger turn of this chat is gathering its rows here (place() joins them to the turn's answer)."""
-    turn = _TURN.get()
-    return turn is not None and turn.open and turn.conversation_id == conversation_id
+@dataclass
+class _Save:
+    """One such save as its caller left it: `left` once the caller stopped waiting for it (cancelled)."""
+    left: bool = False
+
+
+_SAVE: contextvars.ContextVar[Optional[_Save]] = contextvars.ContextVar("messenger_save", default=None)
 
 
 async def save_in_order(conversation_id: str, work: Coroutine[Any, Any, Any]) -> Any:
     """A chat's row stored and given its place, and what its place left to do (conversation_service.add_message), as
-    one piece of work that holds the chat's order (in_order) to its end; its result. A request cancelled meanwhile
-    only stops waiting for it, at once, never the work: its insert may land all the same (the database may store the
-    row whatever became of the request), and its row is then placed, or left unsure, before the chat's next row may
-    go. The request's wait is bounded by nothing it cannot stop; the chat's next row waits for the row before it, as
-    the chat's order wants."""
+    one piece of work that holds the chat's order (in_order) to its end; its result. In a Messenger turn or outside
+    one: a caller cancelled meanwhile (a request, a turn, a turn's own part stopped by its timeout) only stops waiting
+    for it, at once, never the work: its insert may land all the same (the database may store the row whatever became
+    of the caller), and its row is then placed, or left unsure, before the chat's next row may go. A turn's row placed
+    after its turn shut with no answer joins nothing (place()). The caller's wait is bounded by nothing it cannot
+    stop; the chat's next row waits for the row before it, as the chat's order wants."""
+    save = _Save()
+
     async def ordered_work() -> Any:
+        _SAVE.set(save)  # this work's own context: place() reads it there
         async with in_order(conversation_id):
             return await work
 
     task = asyncio.ensure_future(ordered_work())
     _SAVES.add(task)
     task.add_done_callback(_saved)
-    return await asyncio.shield(task)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        save.left = True  # the work goes on, its caller gone
+        raise
 
 
 def _saved(task: asyncio.Task) -> None:
@@ -366,16 +382,25 @@ def place(conversation_id: str, role: str, row: dict,
     """A row stored for the person in some chat, given its place without awaiting anything (db.add_message calls it
     back the moment the row is stored, conversation_service.add_message): a chat's rows go out in the order they were
     stored. In a Messenger turn it joins the turn's answer; outside one, a Messenger chat's row goes out through the
-    gateway, after the chat's previous one. An agent's comes written down already (write_down, before it was stored:
-    `entry`, None when Redis could not take it), whatever the chat (where it goes is looked up after), until it went
-    out or they were told: a stop at any point leaves it for the next process's minute. What is left to do and must
-    be awaited (an entry crossed out, an agent told during a shutdown) comes back, to await (never raising); None when
-    there is nothing. Never raises: the row is saved whatever happens here."""
+    gateway, after the chat's previous one. A turn's own row stored once the turn shut with no answer, the turn gone
+    while its save was on its way (save_in_order: the turn cancelled), joins nothing: its event is answered again,
+    never with this row sent beside it (counted). An agent's comes written down already (write_down, before it was
+    stored: `entry`, None when Redis could not take it), whatever the chat (where it goes is looked up after), until
+    it went out or they were told: a stop at any point leaves it for the next process's minute. What is left to do and
+    must be awaited (an entry crossed out, an agent told during a shutdown) comes back, to await (never raising); None
+    when there is nothing. Never raises: the row is saved whatever happens here."""
     try:
         turn = _TURN.get()
         if turn is not None and turn.open and turn.conversation_id == conversation_id:
             turn.rows.append(row)
             return _quietly(_cross_out(entry), conversation_id) if entry else None  # the turn's answer carries it
+        save = _SAVE.get()
+        if (turn is not None and not turn.answered and turn.conversation_id == conversation_id
+                and save is not None and save.left):
+            MESSENGER_HEALTH["turn_rows_left"] += 1
+            logger.warning(f"[messenger] conv {conversation_id}: a turn's row stored after the turn stopped with no "
+                           f"answer: in no answer, and never sent on its own (its event is answered again)")
+            return _quietly(_cross_out(entry), conversation_id) if entry else None
         if not enabled():
             return _quietly(_cross_out(entry), conversation_id) if entry else None
         if _CLOSING:
