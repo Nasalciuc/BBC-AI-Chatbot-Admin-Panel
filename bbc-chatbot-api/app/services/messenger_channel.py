@@ -297,8 +297,6 @@ async def in_order(conversation_id: str):
             del _ORDER[conversation_id]
 # Set by a shutdown (drain_all): no delivery starts after it.
 _CLOSING = False
-# Set by a shutdown (drain_all): no delivery starts after it.
-_CLOSING = False
 
 
 def place(conversation_id: str, role: str, row: dict,
@@ -987,8 +985,14 @@ def _sending_key(k: str) -> str:
 # be cleared then (Redis failing), each with the mark this process wrote: cleared by it at its next recovery minute,
 # or when it next looks at the event, however long Redis took to answer, so their replies go again. Another process
 # meeting such a mark waits while this one is alive (_send_state); one that finds this process gone takes the mark
-# for a send begun: maybe out, never sent twice (counted).
+# for a send begun: maybe out, never sent twice (counted). A mark written whose answer was lost is one of these too
+# (nothing was sent: _begin_send).
 _UNSENT: dict[str, str] = {}
+# Kept events whose send ended (out, refused, or maybe out) and whose end could not be written then (Redis failing),
+# each with its mark and its person: this process lets go of them at its next recovery minute (out of the inbox,
+# never sent again). With _UNSENT, every old mark of a live process is one it knows of and settles itself: another
+# process waits on it while that process is alive (_send_state).
+_ENDED: dict[str, tuple[str, Optional[str]]] = {}
 
 
 async def _send_state(r, k: str) -> str:
@@ -1001,6 +1005,10 @@ async def _send_state(r, k: str) -> str:
     if raw is None or raw == "done":
         _UNSENT.pop(k, None)
         return "none" if raw is None else "done"
+    ended = _ENDED.get(k)
+    if ended is not None and ended[0] == raw:
+        _ENDED.pop(k, None)
+        return "done"  # this process's own send, over: only its end was not written
     if _UNSENT.get(k) == raw:
         # This process's own send of them, which sent nothing: the mark was left only because clearing it failed.
         await r.eval(RELEASE_LUA, 1, _sending_key(k), raw)
@@ -1012,12 +1020,11 @@ async def _send_state(r, k: str) -> str:
         since = float(head)
     except ValueError as e:
         logger.warning(f"[messenger] a send's mark not readable, taken for one begun long ago: {e}")
-    age = time.time() - since
-    if age < SENDING_S:
+    if time.time() - since < SENDING_S:
         return "on_its_way"
-    if owner and owner != BOOT and age < SENDING_S + ALIVE_S and await r.exists(f"msgr:alive:{owner}"):
-        # Its process lives, and may know that nothing went out: its next minute clears the mark (_clear_unsent).
-        # Alive past that, it reached Redis meanwhile (its alive mark says so) and left the mark: not one it knows.
+    if owner and owner != BOOT and await r.exists(f"msgr:alive:{owner}"):
+        # Its process lives: an old mark of its own is one it knows of (_UNSENT, _ENDED), and its minutes settle it
+        # (_settle_own), however long Redis fails them. Never taken for a send begun while it is alive.
         return "on_its_way"
     return "begun"
 
@@ -1027,7 +1034,16 @@ async def _begin_send(r, k: str) -> Optional[str]:
     <this process>"), from which on they are never sent again; None when another send of them was begun (that one's
     to finish: this one sends nothing)."""
     mark = f"{time.time()}:{BOOT}"
-    return mark if await r.set(_sending_key(k), mark, nx=True, ex=INBOX_KEEP_S) else None
+    try:
+        taken = await r.set(_sending_key(k), mark, nx=True, ex=INBOX_KEEP_S)
+    except Exception as e:
+        # Its answer lost: the mark may be there, and nothing was sent. This process clears it later if it is.
+        redis_failed("messenger inbox", e)
+        _UNSENT[k] = mark
+        logger.warning(f"[messenger] a send's mark maybe written, nothing sent (cleared later if it was): "
+                       f"{type(e).__name__}: {e}")
+        raise
+    return mark if taken else None
 
 
 async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: str) -> bool:
@@ -1047,7 +1063,14 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
             logger.warning(f"[messenger] a kept event's send that sent nothing, its mark not cleared (cleared later): "
                            f"{type(e).__name__}: {e}")
         return False
-    await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
+    try:
+        await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
+    except Exception as e:
+        # Over, and its end not written: this process lets go of the event at its next minute (_settle_own).
+        redis_failed("messenger inbox", e)
+        _ENDED[k] = (mark, _who(event))
+        logger.warning(f"[messenger] a kept event's send over, its end not written (let go of at the next minute): "
+                       f"{type(e).__name__}: {e}")
     if failed:
         MESSENGER_HEALTH["send_failed"] += 1
         if kind == "unknown":
@@ -1056,9 +1079,11 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
     return True
 
 
-async def _clear_unsent(r) -> None:
-    """The marks of this process's sends that sent nothing and could not be cleared then (_UNSENT): cleared now, each
-    only while it is still the one this process wrote. Redis failing still: left for the next minute (logged)."""
+async def _settle_own(r) -> None:
+    """This process's own marks it could not settle then (Redis failing). A send that sent nothing (_UNSENT) has its
+    mark cleared, each only while it is still the one this process wrote, and its replies go again; a send that
+    ended (_ENDED) has its event let go of, out of the inbox: never sent again. Redis failing still: left for the
+    next minute (logged)."""
     for k, mark in list(_UNSENT.items()):
         try:
             await r.eval(RELEASE_LUA, 1, _sending_key(k), mark)
@@ -1067,6 +1092,19 @@ async def _clear_unsent(r) -> None:
             logger.warning(f"[messenger] a send's mark that sent nothing still not cleared: {type(e).__name__}: {e}")
             return
         _UNSENT.pop(k, None)
+    for k, (_mark, who) in list(_ENDED.items()):
+        try:
+            pipe = r.pipeline(transaction=False)
+            pipe.zrem(INBOX, k)
+            if who:
+                pipe.zrem(who, k)
+            pipe.delete(f"{INBOX}:{k}", f"{INBOX}:tries:{k}")
+            await pipe.execute()
+        except Exception as e:
+            redis_failed("messenger inbox", e)
+            logger.warning(f"[messenger] an event whose send ended still not let go of: {type(e).__name__}: {e}")
+            return
+        _ENDED.pop(k, None)
 
 
 @contextlib.asynccontextmanager
@@ -1419,8 +1457,8 @@ async def run_messenger_recover() -> dict:
     """The scheduler's minute (app.services.scheduler). Each event kept in the inbox longer than RECOVER_AFTER_S
     (its turn failed, and the gateway's tries are over) is answered now, and its replies go out through the gateway;
     each agent whose message a stopped process left written down, or whose note was not saved, is told (OUTBOX).
-    Every process says first that it is alive, and clears the marks of its sends that sent nothing and could not be
-    cleared then (_UNSENT); then one at a time (a lock in Redis, under the pass's own token,
+    Every process says first that it is alive, and settles the marks of its own sends it could not settle then
+    (_settle_own); then one at a time (a lock in Redis, under the pass's own token,
     renewed while the pass runs and let go only while it is still its own) does the work, starting nothing new past
     RECOVER_BUDGET_S or once the lock is lost, the agents' notes first within TELL_BUDGET_S so the events always get
     their part. An event still failing after RECOVER_TRIES runs, or unreadable, is given up: counted, and logged
@@ -1434,8 +1472,8 @@ async def run_messenger_recover() -> dict:
     token = uuid.uuid4().hex
     try:
         await r.set(f"msgr:alive:{BOOT}", "1", ex=ALIVE_S)
-        # Every process's own, lock or not: its sends that sent nothing go again, wherever the next one is made.
-        await _clear_unsent(r)
+        # Every process's own, lock or not: another process waits on these marks while this one is alive.
+        await _settle_own(r)
         if not await r.set(RECOVER_LOCK, token, nx=True, ex=RECOVER_LOCK_S):
             return {**out, "state": "busy"}
     except Exception as e:

@@ -49,6 +49,7 @@ def fresh(monkeypatch):
         mc.MESSENGER_HEALTH[k] = 0
     mc._LAST.clear()
     mc._UNSENT.clear()
+    mc._ENDED.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -1674,15 +1675,16 @@ def _blink_send_marks(redis, monkeypatch) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("owner", ["alive", "gone", "stale"])
+@pytest.mark.parametrize("owner", ["alive", "long", "gone"])
 async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the_same_redis(chat, redis, monkeypatch,
                                                                                             owner):
     """CodeRabbit #288: two API processes on one Redis. Process A's send never reached the gateway and its mark could
-    not be cleared (Redis failing): process B, meeting the mark past SENDING_S while A is alive, waits; A's next minute
-    clears it, the lock held by B or not, and the same replies go, once, with no second turn. Rule 5: A gone before it
-    could, what it knew went with it: B takes the mark for a send begun, maybe out, never sent again (counted), as an
-    outcome the gateway may have had is (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again); and
-    so does B for a mark of A's older than A's minutes could have left it (SENDING_S + ALIVE_S), A alive or not."""
+    not be cleared (Redis failing): process B, meeting the mark past SENDING_S while A is alive, waits, however long
+    A's clears keep failing (long: past SENDING_S + ALIVE_S, A's alive mark renewed all the while); A's next minute
+    once Redis answers clears it, the lock held by B or not, and the same replies go, once, with no second turn. Rule
+    5: A gone before it could, what it knew went with it: B takes the mark for a send begun, maybe out, never sent
+    again (counted), as an outcome the gateway may have had is
+    (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again)."""
     await _fail_once(chat, redis)
     _turns(chat)
     reply = "About: Hi, two seats to Istanbul in December?"
@@ -1698,15 +1700,20 @@ async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the
         become("process-a", type(mc._UNSENT)())
         assert (await mc.run_messenger_recover())["waiting"] == 1
         assert f"{mc.INBOX}:sending:m1" in redis.kv, "its mark left by the failed clear"
-        blinks["on"] = False
         monkeypatch.setattr(mc, "SENDING_S", -1.0)  # however long it waited: past SENDING_S
+        if owner == "long":
+            # Past SENDING_S + ALIVE_S, A's minutes go on: its alive mark renewed each time, its clear failing each time.
+            monkeypatch.setattr(mc, "SENDING_S", -1.0 - mc.ALIVE_S)
+            redis.kv[mc.RECOVER_LOCK] = "a-pass-of-process-b"
+            for _ in range(2):
+                assert (await mc.run_messenger_recover())["state"] == "busy"
+            redis.kv.pop(mc.RECOVER_LOCK)
+            assert f"{mc.INBOX}:sending:m1" in redis.kv and mc._UNSENT, "still not cleared, still known"
+        blinks["on"] = False  # Redis answers again: B looks at the event before A's next minute
         a_knows = mc._UNSENT.copy()
         become("process-b", type(mc._UNSENT)())
-        if owner in ("gone", "stale"):
-            if owner == "gone":
-                redis.kv.pop("msgr:alive:process-a")
-            else:
-                monkeypatch.setattr(mc, "SENDING_S", -1.0 - mc.ALIVE_S)
+        if owner == "gone":
+            redis.kv.pop("msgr:alive:process-a")
             out = await mc.run_messenger_recover()
             assert out["answered"] == 1 and mc.MESSENGER_HEALTH["recover_unsure"] == 1
             assert gw.sent == [reply] and not redis.kv[mc.INBOX] and len(chat.requests) == 2
@@ -1722,6 +1729,84 @@ async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the
         become("process-b", type(mc._UNSENT)())
         out = await mc.run_messenger_recover()
     assert out["answered"] == 1 and gw.sent == [reply] * 2 and len(chat.requests) == 2
+    assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_send_whose_end_could_not_be_written_is_let_go_of_by_its_process(chat, redis, monkeypatch):
+    """CodeRabbit #288: a recovered send went out and neither its end ("done") nor the event's leaving the inbox
+    could be written (Redis failing). Another process meeting its mark waits while this one is alive (it is a mark
+    this one knows of), and this one's next minute lets go of the event, the lock its or not: the replies are never
+    sent again."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    real_set, real_zrem = redis.set, redis.zrem
+    failing = {"on": True}
+
+    async def set_(key, value, *a, **kw):
+        if failing["on"] and str(key).startswith(f"{mc.INBOX}:sending:") and value == "done":
+            raise ConnectionError("the connection dropped")
+        return await real_set(key, value, *a, **kw)
+
+    async def zrem(key, *members):
+        if failing["on"] and key == mc.INBOX:
+            raise ConnectionError("the connection dropped")
+        return await real_zrem(key, *members)
+
+    def become(boot, ended):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._ENDED.clear()
+        mc._ENDED.update(ended)
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(redis, "set", set_)
+        monkeypatch.setattr(redis, "zrem", zrem)
+        become("process-a", {})
+        await mc.run_messenger_recover()
+        assert gw.sent == [reply] and "m1" in redis.kv[mc.INBOX], "sent, and still in the inbox"
+        a_ended = dict(mc._ENDED)
+        assert a_ended, "this process knows its send is over"
+        failing["on"] = False
+        redis_client.set_client_for_tests(redis)  # the cooldown over
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        become("process-b", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1, "its process alive: a mark it knows of"
+        redis.kv[mc.RECOVER_LOCK] = "a-pass-of-process-b"
+        become("process-a", a_ended)
+        assert (await mc.run_messenger_recover())["state"] == "busy"
+        redis.kv.pop(mc.RECOVER_LOCK)
+    assert not redis.kv[mc.INBOX] and gw.sent == [reply] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_send_mark_whose_answer_was_lost_is_cleared_by_its_process_and_the_replies_go(chat, redis, monkeypatch):
+    """CodeRabbit #288: a send's mark written (SET NX) and its answer lost: nothing was sent. This process takes it
+    for a mark of a send that sent nothing: its next minute clears it, and the same replies go, once, with no second
+    turn (never taken for a send begun, however long it waited)."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    real_set = redis.set
+    lose = {"on": True}
+
+    async def set_(key, value, *a, **kw):
+        out = await real_set(key, value, *a, **kw)
+        if lose["on"] and str(key).startswith(f"{mc.INBOX}:sending:") and kw.get("nx"):
+            lose["on"] = False
+            raise ConnectionError("the connection dropped before the answer")
+        return out
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(redis, "set", set_)
+        assert (await mc.run_messenger_recover())["state"] == "failed"
+        assert f"{mc.INBOX}:sending:m1" in redis.kv and gw.sent == []
+        redis_client.set_client_for_tests(redis)  # the cooldown over
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == [reply] and len(chat.requests) == 2
     assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
 
 
