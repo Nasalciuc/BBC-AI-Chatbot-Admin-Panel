@@ -806,6 +806,35 @@ async def test_a_referral_before_the_first_message_reaches_the_chat(chat, redis)
 
 
 @pytest.mark.asyncio
+async def test_a_referral_before_the_first_chat_redis_refuses_to_keep_is_delivered_again(chat, redis, monkeypatch):
+    """CodeRabbit #288: a referral before the person has a chat lives only in Redis until their first message starts
+    one: Redis refusing to keep it fails the event, delivered again, never finished with the campaign and the ad
+    lost. Rule 5: kept the second time, the first message's chat carries them; a referral to a chat that goes on is
+    saved to that chat (test_a_referral_not_saved_to_the_chat_that_goes_on_is_delivered_again)."""
+    from redis.exceptions import OutOfMemoryError
+
+    ref = {"ref": "promo", "source": "ADS", "ad_id": "ad7"}
+    real_set = redis.set
+    once = {"on": True}
+
+    async def refused(key, *a, **kw):
+        if once["on"] and str(key).startswith("msgr:ref:"):
+            once["on"] = False
+            raise OutOfMemoryError("command not allowed when used memory > 'maxmemory'.")
+        return await real_set(key, *a, **kw)
+
+    monkeypatch.setattr(redis, "set", refused)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(kind="referral", mid="", text="", referral=ref))
+    assert mc.MESSENGER_HEALTH["referrals"] == 0 and not once["on"]
+    assert (await mc.handle(event(kind="referral", mid="", text="", referral=ref)))["replies"] == []
+    await mc.handle(event())
+    meta = chat.created.await_args.kwargs["metadata"]
+    assert meta["utm_campaign"] == "promo" and meta["utm_medium"] == "messenger_ads"
+    assert meta["messenger_referral"]["ad_id"] == "ad7" and mc.MESSENGER_HEALTH["referrals"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_referral_not_saved_to_the_chat_that_goes_on_is_delivered_again(chat, redis):
     """Review on #288: the next message goes on in the chat the person has and never reads the referral kept for a
     chat made later, so a referral to that chat is saved to it, or the event fails and is delivered again, as the

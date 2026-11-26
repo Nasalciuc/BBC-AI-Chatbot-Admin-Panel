@@ -2309,10 +2309,14 @@ async def _answer(event: InboundEvent) -> list[dict]:
             # Opened the thread from a link or an ad without writing yet: kept for a chat made later. A chat that
             # goes on never reads that (the next message finds the chat first), so the referral is saved to it, or
             # the event fails and is delivered again, as the inbox's quiet time is: the merge is the same each time.
-            await _keep_referral(vid, event.referral)
+            # With no chat yet, Redis is the only place it lives until the first message starts one: not kept there,
+            # the event fails and is delivered again too.
+            kept = await _keep_referral(vid, event.referral)
             conv = await _thread(vid, create=False)
             if conv and not await db.patch_conversation_presence(conv["id"], _referral_meta(event.referral)):
                 raise RuntimeError("the referral was not saved to the person's chat")
+            if not conv and not kept:
+                raise RuntimeError("the referral was not kept for the person's first chat")
             MESSENGER_HEALTH["referrals"] += 1
             return []
         conv = await _thread(vid, create=True, event=event)
@@ -2420,15 +2424,22 @@ def _inbox_spoke(meta: dict) -> bool:
     return datetime.now(timezone.utc) - when < INBOX_QUIET
 
 
-async def _keep_referral(vid: str, ref: Optional[Referral]) -> None:
-    r = get_redis()
-    if r is None or ref is None:
-        return
+async def _keep_referral(vid: str, ref: Optional[Referral]) -> bool:
+    """A referral kept for the person's chat made later (THREAD_DAYS), in Redis even while this process cools down
+    (another call's failure): True once kept, or with nothing to keep (no referral) or nowhere to keep it (no Redis
+    at all: best effort); False when Redis failed to keep it (logged, counted)."""
+    if ref is None:
+        return True
+    r = get_redis(even_cooling_down=True)
+    if r is None:
+        return True
     try:
         await r.set(f"msgr:ref:{vid}", ref.model_dump_json(), ex=THREAD_DAYS * 86400)
+        return True
     except Exception as e:
         redis_failed("messenger referral", e)
         logger.warning(f"[messenger] a referral not kept: {type(e).__name__}: {e}")
+        return False
 
 
 async def _kept_referral(vid: str) -> Optional[Referral]:
