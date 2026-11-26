@@ -99,20 +99,26 @@ def last_taken(fake: FakeRedis, keys: list, args: list) -> int:
 
 
 def earlier(fake: FakeRedis, keys: list, args: list) -> list:
-    """What messenger_channel.EARLIER_LUA does."""
-    inbox, who, last_key = keys
-    k, ex, besides = args[0], int(args[1]), set(args[2:])
+    """What messenger_channel.EARLIER_LUA does: one read before as gone or as no event passed over only while that
+    is still what is there."""
+    inbox, who, last_key = keys[:3]
+    k, ex = args[0], int(args[1])
+    besides = set()
+    for i, key in enumerate(keys[3:]):
+        m, read = args[2 + 2 * i], args[3 + 2 * i]
+        if ((fake.kv.get(key) if fake._alive(key) else None) or "") == read:
+            besides.add(m)
     mine = fake._zset(inbox).get(k)
     out = []
     for m, s in sorted(fake._zset(who).items(), key=lambda t: (t[1], t[0])):
         if mine is not None and s >= mine:
             break
-        if m == k or m in besides:
+        if m == k:
             continue
-        if m in fake._zset(inbox):
-            out.append(m)
-        else:
+        if m not in fake._zset(inbox):
             fake._zset(who).pop(m, None)  # gone: only its place was left
+        elif m not in besides:
+            out.append(m)
     if not out:
         now = fake.wall()
         if now > float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0):
@@ -3168,6 +3174,99 @@ async def test_a_later_event_that_passed_an_earlier_one_is_never_overtaken_by_it
         try:
             with pytest.raises(mc.StillAnswering):
                 await asyncio.wait_for(b, 1)  # behind the first's late send
+        finally:
+            go_on.set()
+        await asyncio.wait_for(late, 2)
+        out = await mc.handle(second)
+    assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert mc.MESSENGER_HEALTH["sent_late"] == 1 and "m1" not in redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["put_back_before_the_next_look", "still_gone_at_it"])
+async def test_an_earlier_event_read_as_gone_and_put_back_before_the_next_look_is_waited_for(chat, redis,
+                                                                                            monkeypatch, first):
+    """CodeRabbit #288: the person's second message is taken before process A's send of their first begins. Its look
+    finds the first in the inbox, then B lets the first go before the second reads it (gone). A, back, puts the first
+    back for a late send of its replies before the second looks again: the second is never answered past it while
+    that send is on its way (409), then goes after it. One read as gone, or as no event, is passed over only while
+    that is still what is there (EARLIER_LUA), never once it is put back. Rule 5: the first still gone at the second's
+    next look, the second goes on, and A's late send finds it passed (late_dropped): never sent after the second's."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    second = event(mid="m2", text="Second", timestamp=200)
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    answers = [{"sent": 0, "failed": {"kind": "gateway"}}]
+    sent: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if len(sent) == 2 and first == "put_back_before_the_next_look":  # A's late send, on its way
+            sending.set()
+            await go_on.wait()
+        return answers.pop(0) if answers else {"sent": 1}
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    real_get = redis.get
+    stall = {"on": False}
+    at_read, read_go, read_done, look_go = (asyncio.Event() for _ in range(4))
+
+    async def get(key):
+        if stall["on"] and key == f"{mc.INBOX}:m1":
+            stall["on"] = False
+            at_read.set()
+            await read_go.wait()  # the second found the first, and stalls before reading it
+            got = await real_get(key)
+            read_done.set()
+            await look_go.wait()  # and between that read and its next look
+            return got
+        return await real_get(key)
+
+    monkeypatch.setattr(redis, "get", get)
+    sending_s = mc.SENDING_S
+    with patch.object(mc, "send", new=gw):
+        become("process-b", {})
+        stall["on"] = True
+        b = asyncio.create_task(mc.handle(second))  # taken now, before A's send of the first begins
+        await asyncio.wait_for(at_read.wait(), 1)
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1, "A's send of the first sent nothing"
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        become("process-b", {})
+        await mc.run_messenger_recover()
+        assert "m1" not in redis.kv[mc.INBOX] and "m2" in redis.kv[mc.INBOX], "B let the first go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        read_go.set()
+        await asyncio.wait_for(read_done.wait(), 1)  # the second read the first: gone
+        if first == "still_gone_at_it":
+            look_go.set()
+            out = await asyncio.wait_for(b, 1)
+            assert [r["text"] for r in out["replies"]] == ["About: Second"]
+            become("process-a", a_knows)  # A reaches Redis again
+            await mc.run_messenger_recover()
+            assert sent == [reply], "never sent after the second's"
+            assert mc.MESSENGER_HEALTH["late_dropped"] == 1 and mc.MESSENGER_HEALTH["sent_late"] == 0
+            assert "m1" not in redis.kv[mc.INBOX]
+            return
+        become("process-a", a_knows)  # A reaches Redis again: the first put back, its late send on its way
+        late = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        become("process-b", {})
+        look_go.set()
+        try:
+            with pytest.raises(mc.StillAnswering):
+                await asyncio.wait_for(b, 1)  # behind the first's late send, never past it
         finally:
             go_on.set()
         await asyncio.wait_for(late, 2)
