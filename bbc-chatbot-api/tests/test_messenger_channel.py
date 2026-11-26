@@ -89,11 +89,11 @@ def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
 
 
 def last_taken(fake: FakeRedis, keys: list, args: list) -> int:
-    """What messenger_channel.LAST_TAKEN_LUA does."""
+    """What messenger_channel.LAST_TAKEN_LUA does: the later of the take's reading and Redis's clock as it runs."""
     (key,) = keys
-    at, ex = float(args[0]), int(args[1])
+    at, ex = max(float(args[0]), fake.wall()), int(args[1])
     if at > float(fake.kv.get(key) or 0 if fake._alive(key) else 0):
-        fake.kv[key] = str(args[0])
+        fake.kv[key] = repr(at)
     fake._set_expiry(key, ex=ex)
     return 1
 
@@ -3036,6 +3036,34 @@ async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, 
     assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
     assert mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 3
     assert "m1" not in redis.kv[mc.INBOX] and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read", ["before_the_send_began", "after_it"])
+async def test_a_take_read_before_a_send_began_and_written_after_it_still_stops_its_late_send(redis, monkeypatch, read):
+    """CodeRabbit #288: the person's latest take is when it is written, on Redis's clock (LAST_TAKEN_LUA), never only
+    when its process read the clock: a take of their second message that read the clock before the send of their
+    first's replies began, and was written after it, still stops a late send of those replies (REKEEP_LUA: -1). Rule
+    5: the clock read after the send began, the same."""
+    at = {"t": 1_800_000_000.5}
+    redis.wall = lambda: at["t"]
+    first = event(mid="m1")
+    began = at["t"]
+    mark = f"{began}:process-a"
+    redis.kv[mc._sending_key("m1")] = mark
+    at["t"] += 1.0  # the take is written a second after the send began
+    real_now = mc._redis_now
+
+    async def read_then(r):
+        return began - 1.0 if read == "before_the_send_began" else await real_now(r)
+
+    monkeypatch.setattr(mc, "_redis_now", read_then)
+    assert await mc._keep_event(event(mid="m2", text="Second", timestamp=200)) is True
+    back = await redis.eval(mc.REKEEP_LUA, 5, mc._sending_key("m1"), mc._last_key(first), mc.INBOX, mc._who(first),
+                            f"{mc.INBOX}:m1", mark, repr(began), "m1", repr(began), first.model_dump_json(),
+                            mc.INBOX_KEEP_S, f"{at['t']}:process-a")
+    assert back == -1, "never sent after a take written after its send began"
+    assert "m1" not in redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio

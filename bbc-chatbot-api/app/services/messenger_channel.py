@@ -1403,14 +1403,20 @@ async def _redis_now(r) -> float:
     return int(seconds) + int(micros) / 1_000_000
 
 
-# The person's latest take of an event: its time kept only when later than the one there (ARGV[1]), for INBOX_KEEP_S.
-# A time of the take, never Meta's time of the event: two events of the person's with the same Meta time are still
-# told apart (a late send's replies are never sent after those of one taken after its send began, _send_late). Read
-# from Redis's clock, as the send's mark it is compared with is (_redis_now).
+# The person's latest take of an event: its time kept only when later than the one there, for INBOX_KEEP_S. A time of
+# the take, never Meta's time of the event: two events of the person's with the same Meta time are still told apart (a
+# late send's replies are never sent after those of one taken after its send began, _send_late). It is when this runs,
+# on Redis's clock (TIME here, never earlier than the take's own reading, ARGV[1]): a send's mark written between the
+# take's reading of the clock and this write is still before it, so a late send of those replies finds it (-1).
 LAST_TAKEN_LUA = """
+local t = redis.call('TIME')
+local at = tonumber(t[1]) + tonumber(t[2]) / 1000000
+if tonumber(ARGV[1]) > at then
+  at = tonumber(ARGV[1])
+end
 local v = tonumber(redis.call('get', KEYS[1]) or '0')
-if tonumber(ARGV[1]) > v then
-  redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+if at > v then
+  redis.call('set', KEYS[1], at, 'EX', ARGV[2])
 else
   redis.call('expire', KEYS[1], ARGV[2])
 end
