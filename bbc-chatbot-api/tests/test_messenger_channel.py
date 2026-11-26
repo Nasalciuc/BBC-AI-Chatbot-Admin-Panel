@@ -50,6 +50,7 @@ def fresh(monkeypatch):
     mc._LAST.clear()
     mc._UNSENT.clear()
     mc._ENDED.clear()
+    mc._UNKEPT.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -1687,6 +1688,93 @@ async def test_a_recovery_with_the_gateway_down_sends_next_minute_without_a_seco
         assert (await mc.run_messenger_recover())["waiting"] == 1
         assert (await mc.run_messenger_recover())["answered"] == 1
     assert gw.sent == ["Here now.", "Here now."] and len(chat.requests) == 2, "one turn for the failure, one after"
+
+
+def _refuse_answers(redis, monkeypatch, key: str = "") -> dict:
+    """Redis refusing an event's answer (all, or `key`'s) once while "on", a command refused (never a cooldown)."""
+    real_eval = redis.eval
+    refuse = {"on": True}
+
+    async def eval_(script, numkeys, *keys_and_args):
+        if refuse["on"] and script == mc.KEEP_ANSWER_LUA and (not key or keys_and_args[0] == key):
+            refuse["on"] = False
+            raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", eval_)
+    return refuse
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_answer_redis_did_not_take_is_written_before_it_is_sent_never_answered_twice(chat, redis,
+                                                                                                     monkeypatch):
+    """CodeRabbit #288: the recovery's turn answers, and Redis refuses its answer. Nothing is sent while it is not
+    written (a send that then never reached the gateway would clear its mark, and once the claim ran out the event
+    would be answered a second time): this process holds it and writes it at its next minute, its claim gone by then
+    or not, and the send that then never reaches the gateway goes again the minute after, from the answer written.
+    One turn for the failure, one after it. Rule 5: an answer written goes out at once
+    (test_an_event_whose_turn_failed_is_answered_later_and_its_replies_sent)."""
+    from tests.fake_redis import FakeClock
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    clock = FakeClock()
+    redis.clock = clock
+    _refuse_answers(redis, monkeypatch)
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    reply = "About: Hi, two seats to Istanbul in December?"
+    with patch.object(mc, "send", new=gw):
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        assert gw.sent == [] and mc.MESSENGER_HEALTH["answer_unkept"] == 1, "nothing sent before it is written"
+        clock.advance(mc.PENDING_S * 2)  # the turn's claim runs out meanwhile
+        assert (await mc.run_messenger_recover())["waiting"] == 1  # written; its send never reached the gateway
+        assert (await mc.run_messenger_recover())["answered"] == 1
+    assert gw.sent == [reply, reply] and len(chat.requests) == 2, "one turn for the failure, one after it"
+    assert not redis.kv[mc.INBOX] and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_made_again_gets_the_answer_redis_did_not_take_from_its_process(chat, redis, monkeypatch):
+    """CodeRabbit #288, from the gateway: Redis refuses the event's answer as its turn ends (its replies go back all
+    the same: the gateway sends them). A delivery made again, Redis down by then, gets the same replies from the
+    process that holds the answer, with no second turn; its next minute, Redis back, writes it, and the next
+    delivery gets it from Redis. Rule 5: an answer written is given from Redis
+    (test_a_delivery_made_again_gets_the_same_replies_and_no_second_turn)."""
+    _turns(chat)
+    _refuse_answers(redis, monkeypatch)
+    reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
+    assert (await mc.handle(event()))["replies"] == reply and "msgr:event:m1" in mc._UNKEPT
+    redis.down = True
+    again = await mc.handle(event())
+    redis.down = False
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    assert again["replies"] == reply and len(chat.requests) == 1, "the same replies, no second turn"
+    await mc.run_messenger_recover()
+    assert not mc._UNKEPT and json.loads(redis.kv["msgr:event:m1"]) == {"replies": reply, "by": "gateway"}
+    assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_events_answer_redis_did_not_take_is_never_sent_before_it_is_written(chat, redis,
+                                                                                            monkeypatch):
+    """CodeRabbit #288, a person's earlier event answered before their later one: Redis refuses its answer, so none
+    of it is sent and the later one waits (409). The next minute its process writes it and the recovery sends it,
+    with no second turn; then the later one is answered. Rule 5: an earlier answer written goes out before the later
+    turn at once (test_a_later_message_never_comes_before_an_earlier_one_whose_turn_failed)."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    _refuse_answers(redis, monkeypatch, key="msgr:event:m1")
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert gw.sent == [] and mc.MESSENGER_HEALTH["answer_unkept"] == 1
+        redis.kv[mc.INBOX]["m1"] -= mc.RECOVER_AFTER_S + 1
+        assert (await mc.run_messenger_recover())["answered"] == 1  # written, then sent
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"]
+    assert len(chat.requests) == 3, "the failure, the first's answer, the second's: never the first's again"
 
 
 @pytest.mark.asyncio

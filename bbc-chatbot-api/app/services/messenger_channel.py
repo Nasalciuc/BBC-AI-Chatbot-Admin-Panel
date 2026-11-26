@@ -156,6 +156,8 @@ MESSENGER_HEALTH: dict[str, int] = {
     "recover_unsure": 0,     # events whose replies a process was sending when it stopped: maybe out, never sent again
     "claim_lost": 0,         # turns that ended after another delivery or pass took their event (their claim ran out):
                              # their answer never written over the other's, and a recovery's never sent beside it
+    "answer_unkept": 0,      # answers Redis did not take as their turn ended: held by their process and written at
+                             # its next minute, never a second turn; the API sends none until it is written
     "bad_signature": 0,      # calls refused: not the gateway's
     "sent": 0,               # messages sent out of a turn (an agent's, mostly)
     "send_failed": 0,        # of those, refused or lost; by why below
@@ -779,8 +781,9 @@ class EventFailed(Exception):
 
 
 class AnswerNotKept(StillAnswering):
-    """A recovery turn whose answer could not be kept as the API's to send (`why`, _remember): another delivery or
-    pass took the event while it ran, so its replies are theirs. Never sent from here: the event waits."""
+    """A recovery turn whose answer could not be kept as the API's to send (`why`, _remember): not written (held by
+    this process, written at its next minute, then sent), or another delivery or pass took the event while it ran
+    (theirs). Never sent from here now: the event waits."""
 
     def __init__(self, why: str):
         super().__init__(why)
@@ -830,10 +833,13 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         await _remember(key, [], by, token, client)
         return {"replies": []}
     kept_now = await _remember(key, replies, by, token, client)
-    if by == "api" and kept_now == "lost":
-        # Another delivery or pass took the event while this turn ran (its claim ran out): theirs to give or send,
-        # never sent from here beside theirs. A delivery from the gateway still gives its own: it took the right to
-        # send them (_gateway_takes_send), and a pass of the recovery never sends beside it.
+    if by == "api" and kept_now != "kept":
+        # The recovery sends only an answer kept as the API's to send: a send known not to have gone out is made
+        # again from it, never from a second turn. Not written (Redis failing): this process holds it, writes it at
+        # its next minute, and the event waits for it. Another delivery or pass took the event while this turn ran
+        # (its claim ran out): theirs to give or send, never sent from here beside theirs. A delivery from the
+        # gateway still gives its own: it took the right to send them (_gateway_takes_send), so a pass of the
+        # recovery never sends beside it, and its answer not written is held the same.
         raise AnswerNotKept(kept_now)
     if by == "gateway":
         await _release_event(event.key(), _who(event))
@@ -905,8 +911,10 @@ async def _answer_earlier(event: InboundEvent) -> None:
             raise
         MESSENGER_HEALTH["answered_first"] += 1
         # Its answer kept as the API's to send first, then its send written down (one sender only: SET NX, so the
-        # recovery, finding it kept, never sends it beside this). Another pass holding the event now: theirs to send.
-        if await _remember(key, replies, "api", token, r) == "lost":
+        # recovery, finding it kept, never sends it beside this). Not written (Redis failing): held by this process
+        # and written at its next minute, the recovery sends it then, without a second turn, and this one waits.
+        # Another pass holding the event now: theirs to send.
+        if await _remember(key, replies, "api", token, r) != "kept":
             raise StillAnswering()
         mark = await _begin_send(r, k) if replies else None
         if replies and mark is None:
@@ -920,10 +928,15 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     """("new", {"token"}) for an event not seen: its claim, written under a token of this turn's own ("pending:<id>"),
     is renewed, cleared and answered only while it still holds that token, so a turn whose claim ran out never
     clears or answers over the delivery or pass that took the event since ("" with no Redis: nothing written).
-    ("pending", {}) while it is being answered, ("done", {"replies", "by"}) after. With Redis down an event is
-    answered without its mark (counted); with `client` given (a person's earlier event, answered for a later one
-    that is kept, or the recovery's event), Redis failing raises: never answered without its mark."""
+    ("pending", {}) while it is being answered, ("done", {"replies", "by"}) after: also for an answer this process
+    holds (Redis did not take it as its turn ended, _UNKEPT), written now, never a second turn. With Redis down an
+    event is answered without its mark (counted); with `client` given (a person's earlier event, answered for a later
+    one that is kept, or the recovery's event), Redis failing raises: never answered without its mark."""
     r = client if client is not None else get_redis()
+    if key in _UNKEPT:
+        held = await _held_answer(r, key, raising=client is not None)
+        if held is not None:
+            return "done", held
     if r is None:
         MESSENGER_HEALTH["no_dedupe"] += 1
         return "new", {"token": ""}
@@ -974,26 +987,69 @@ return 0
 """
 
 
+# Events whose answer Redis did not take when their turn ended, each with its turn's claim and the answer: this process
+# writes it at its next minute (_settle_own), or when the event is asked for again (_claim), and never runs a second
+# turn of it meanwhile: a delivery made again gets the same replies from here, and the API sends none until it is
+# written (a send known not to have gone out is made again from the answer written, never from a new turn).
+_UNKEPT: dict[str, tuple[str, str]] = {}
+
+
 async def _remember(key: str, replies: list, by: str, token: str, client: Any = None) -> str:
     """An event's answer kept in place of its turn's claim (`token`, from _claim), and why not (rule 7): "kept";
     "lost" when another delivery or pass holds the event now (this turn's claim ran out, and that one took it, or
-    answered it): theirs stands, never written over (counted); "failed" when Redis did not take it (logged); "no_redis"
-    when there is none to keep it in."""
+    answered it): theirs stands, never written over (counted); "unkept" when Redis did not take it: held by this
+    process and written later (_UNKEPT, counted); "no_redis" when there is none to keep it in."""
     r = client if client is not None else get_redis(even_cooling_down=True)
     if r is None:
         return "no_redis"
+    answer = json.dumps({"replies": replies, "by": by})
     try:
-        kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, json.dumps({"replies": replies, "by": by}), ANSWERED_S)
+        kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, answer, ANSWERED_S)
     except Exception as e:
         redis_failed("messenger dedupe", e)
-        logger.warning(f"[messenger] an event's replies not kept: {type(e).__name__}: {e}")
-        return "failed"
+        _UNKEPT[key] = (token, answer)
+        MESSENGER_HEALTH["answer_unkept"] += 1
+        logger.warning(f"[messenger] an event's answer not written, held to write later (never a second turn): "
+                       f"{type(e).__name__}: {e}")
+        return "unkept"
     if not kept:
         MESSENGER_HEALTH["claim_lost"] += 1
         logger.warning("[messenger] an event's turn ended after another delivery or pass took the event: its answer "
                        "is not written over theirs")
         return "lost"
     return "kept"
+
+
+async def _write_held(r, key: str) -> bool:
+    """An answer this process holds (_UNKEPT) written now, in place of its turn's claim or of nothing: True; False when
+    another delivery or pass holds the event since (theirs stands: the held one is dropped, counted). Redis failing
+    raises, and it stays held."""
+    token, answer = _UNKEPT[key]
+    kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, answer, ANSWERED_S)
+    _UNKEPT.pop(key, None)
+    if not kept:
+        MESSENGER_HEALTH["claim_lost"] += 1
+        logger.warning("[messenger] an answer held by this process not written: another delivery or pass took the "
+                       "event meanwhile")
+    return bool(kept)
+
+
+async def _held_answer(r, key: str, raising: bool) -> Optional[dict]:
+    """An event whose answer this process holds (_UNKEPT), asked for again (a delivery made again, the recovery, a
+    later event of the person's): the answer, written now, never a second turn; still given from here while Redis
+    fails, unless `raising` (the recovery's and an earlier event's own client: Redis failing raises, as for their
+    mark). None once another delivery or pass is found holding the event: claimed as any event then."""
+    answer = _UNKEPT[key][1]
+    if r is not None:
+        try:
+            if not await _write_held(r, key):
+                return None
+        except Exception as e:
+            redis_failed("messenger dedupe", e)
+            logger.warning(f"[messenger] an answer held by this process still not written: {type(e).__name__}: {e}")
+            if raising:
+                raise
+    return json.loads(answer)
 
 
 async def _forget(key: str, token: str) -> None:
@@ -1167,10 +1223,18 @@ async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict], mark: 
 
 
 async def _settle_own(r) -> None:
-    """This process's own marks it could not settle then (Redis failing). A send that sent nothing (_UNSENT) has its
-    mark cleared, each only while it is still the one this process wrote, and its replies go again; a send that
-    ended (_ENDED) has its event let go of, out of the inbox: never sent again. Redis failing still: left for the
-    next minute (logged)."""
+    """This process's own marks it could not settle then (Redis failing). An answer Redis did not take (_UNKEPT) is
+    written, in place of its turn's claim or of nothing, so the recovery sends it without a second turn; a send that
+    sent nothing (_UNSENT) has its mark cleared, each only while it is still the one this process wrote, and its
+    replies go again; a send that ended (_ENDED) has its event let go of, out of the inbox: never sent again. Redis
+    failing still: left for the next minute (logged)."""
+    for key in list(_UNKEPT):
+        try:
+            await _write_held(r, key)
+        except Exception as e:
+            redis_failed("messenger dedupe", e)
+            logger.warning(f"[messenger] an answer held by this process still not written: {type(e).__name__}: {e}")
+            return
     for k, mark in list(_UNSENT.items()):
         try:
             await r.eval(RELEASE_LUA, 1, _sending_key(k), mark)
@@ -1757,8 +1821,8 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
     except StillAnswering as e:
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
-        logger.info(f"[messenger] a kept event waits: it, or an earlier one of its person's, is being answered "
-                    f"({type(e).__name__}, try {tries})")
+        logger.info(f"[messenger] a kept event waits: it, or an earlier one of its person's, is being answered, or "
+                    f"its answer is still to be written ({type(e).__name__}, try {tries})")
         return "waiting"
     except EventFailed as e:
         MESSENGER_HEALTH["recover_waiting"] += 1
