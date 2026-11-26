@@ -576,6 +576,13 @@ async def _deliver(conversation_id: str, role: str, row: dict, state: dict) -> N
         state["note"] = NOT_SENT_OTHER
         await _tell(entry, conversation_id, NOT_SENT_OTHER)
         return
+    if not enabled():
+        # Turned off while its going to the gateway was written down: no call is made, as for a row that waited for
+        # the chat's previous one, and it is crossed out, never read later as a send that may have reached the person.
+        MESSENGER_HEALTH["off_skipped"] += 1
+        state["note"] = ""  # its end known: a stop now tells nothing
+        await _cross_out(entry)
+        return
     state["sending"] = True
     result = await send(target["page_id"], target["psid"], [{"text": text}])
     state["sending"] = False

@@ -1921,6 +1921,44 @@ async def test_a_row_waiting_behind_another_is_not_sent_once_the_channel_is_off(
 
 
 @pytest.mark.asyncio
+async def test_an_agents_message_whose_going_to_the_gateway_is_written_as_the_channel_goes_off_is_not_sent(
+        redis, monkeypatch):
+    """CodeRabbit #288: the switch read on, then the channel turned off while the agent's message's going to the
+    gateway is being written down (its outbox entry marked "sending"): no call is made, as for a row that waited for
+    the chat's previous one, and the entry is crossed out, so no recovery minute reads it as a send that may have
+    reached the person (no note). Rule 5: the channel on, the next message goes out."""
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    real_hset = redis.hset
+    once = {"on": True}
+
+    async def off_while_marked(key, field=None, value=None, mapping=None):
+        if once["on"] and key == mc.OUTBOX and '"sending"' in str(value):
+            once["on"] = False
+            monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+        return await real_hset(key, field, value, mapping=mapping)
+
+    monkeypatch.setattr(redis, "hset", off_while_marked)
+    c = Chat().start()
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            await add_message(CONV, "agent", "Written as the channel went off")
+            await mc.drain(CONV)
+            assert gw.sent == [] and not await redis.hgetall(mc.OUTBOX) and mc.MESSENGER_HEALTH["off_skipped"] == 1
+            assert (await mc.run_messenger_recover())["state"] == "off"
+            monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+            assert (await mc.run_messenger_recover())["told"] == 0
+            await add_message(CONV, "agent", "The next one, the channel on")
+            await mc.drain(CONV)
+    finally:
+        c.stop()
+    assert gw.sent == ["The next one, the channel on"]
+    assert not [r for r in c.rows if r["role"] == "system"], "no note: nothing went out, and it is not unknown"
+
+
+@pytest.mark.asyncio
 async def test_a_shutdown_waits_a_little_then_tells_each_agent_what_did_not_go_out(redis):
     import asyncio
 
