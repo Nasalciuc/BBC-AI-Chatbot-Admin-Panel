@@ -14,7 +14,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  ALEX_GAVE_UP_S, FORM_HOLD, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine,
+  ALEX_GAVE_UP_S, BOT_CARD_SHOWN, FORM_HOLD, GROUP_LABEL, HELLO_MAX, HELLO_RESTRICTED, ROW_LABEL, activityText, alexCardLine, alexLine,
   alexWaiting, claimProblem, clockS, fillingForm, groupHello, groupOf, heldBy, helloDraft, helloProblem, listed, onSite,
   onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepClock, testLine, tripLine, type HelloGroup, type StepClock,
 } from './view'
@@ -143,7 +143,7 @@ export function LiveVisitors() {
         subtitle={`Visitors Skye’s card didn’t start a chat with: no answer ${ALEX_GAVE_UP_S} s after it showed, or “Not now”. Say hello: on a computer their chat opens with your words, on a phone they show beside the chat button. Their answer opens the chat, already yours.`}
         actions={<HeaderActions className='ms-0' />}
       />
-      {pass?.can_say_hello && <BotKeyCard />}
+      {BOT_CARD_SHOWN && pass?.can_say_hello && <BotKeyCard />}
       {!pass ? (
         <p className='text-sm text-k-6b6b6b'>On the site now isn’t switched on for you. It appears here once it is.</p>
       ) : list.isLoading ? (

@@ -8,7 +8,7 @@ import {
   ALEX_GAVE_UP_S, HELLO_RESTRICTED, activityText, alexCardLine, alexCouldnt, alexLine, alexWaiting, claimProblem, heldBy,
   helloProblem, listed, onSite, onSiteSeconds, ordered, pageLine, rowState, sourceLabel, stepText, suggestedHello, testLine,
   tripLine, clockS, GROUP_LABEL, anzZone, daysToFlight, groupHello, groupOf, helloDraft, stuckInForm,
-  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock, ROW_LABEL, keyDay,
+  FORM_HOLD, FORM_QUIET_S, fillingForm, stepClock, ROW_LABEL, keyDay, BOT_CARD_SHOWN,
 } from '../src/features/live/view.ts'
 
 const ME = 'agent-me'
@@ -439,11 +439,21 @@ test('the bot card: the key shown once, a new one or Revoke, and what the bot ca
   assert.match(card, /disabled=\{busy\} onClick=\{\(\) => revoke\.mutate\(\)\}/)
   for (const call of ['/visitors', '/hello', '/chats', '/chats/&lt;id&gt;/messages']) assert.ok(card.includes(call), call)
   const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
-  assert.match(page, /\{pass\?\.can_say_hello && <BotKeyCard \/>\}/)
+  assert.match(page, /\{BOT_CARD_SHOWN && pass\?\.can_say_hello && <BotKeyCard \/>\}/)
   const api = readFileSync(new URL('../src/lib/api.ts', import.meta.url), 'utf8')
   assert.match(api, /'\/api\/live\/bot-key', \{ method: 'POST' \}/)
   assert.match(api, /'\/api\/live\/bot-key', \{ method: 'DELETE' \}/)
   assert.equal(keyDay('2027-02-23T18:00:00+00:00'), 'Feb 23, 2027')
   assert.equal(keyDay(null), '')
   assert.equal(keyDay('not a day'), '')
+})
+
+test('the bot card is hidden for now, even from an agent who may say hello (the owner, 26 Nov)', () => {
+  // Hidden: the switch is off, and the page shows the card only behind it.
+  assert.equal(BOT_CARD_SHOWN, false)
+  const page = readFileSync(new URL('../src/features/live/index.tsx', import.meta.url), 'utf8')
+  assert.equal(page.split('<BotKeyCard').length - 1, 1, 'the card appears in one place only')
+  assert.match(page, /\{BOT_CARD_SHOWN && pass\?\.can_say_hello && <BotKeyCard \/>\}/)
+  // Rule 5: switched on again, a reader who may not say hello still doesn't get it (the second condition stays).
+  assert.doesNotMatch(page, /\{BOT_CARD_SHOWN && <BotKeyCard \/>\}/)
 })
