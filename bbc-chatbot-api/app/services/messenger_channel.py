@@ -98,7 +98,9 @@ SENDING_S = GATEWAY_TIMEOUT_S + 10
 # The gateway's right to send a kept event's replies (handle: "gateway:<when>:<id>") reads as on its way this long: the
 # gateway gets a delivery's answer within its own call to the API (bbc-messenger APITimeout, 75 s, begun before the
 # right was taken) and sends the replies within SendBudget after it (60 s), so a send of them is over by then. Given
-# them again (a delivery made again: the first answer never reached it), from then on (_give_again).
+# them again (a delivery made again: the first answer never reached it), from then on (_give_again). Its age, as a
+# send's mark's for SENDING_S, is told on Redis's clock, the one the right was stamped from (_redis_now): no skew
+# between the API's processes' own clocks to leave room for.
 GATEWAY_SENDING_S = 75.0 + 60.0 + 15.0
 # The ids of the rows an event stores are made from the event's key and the row's part (uuid5 in this namespace):
 # a delivery made again, or the recovery, stores each once, whatever became of an earlier insert.
