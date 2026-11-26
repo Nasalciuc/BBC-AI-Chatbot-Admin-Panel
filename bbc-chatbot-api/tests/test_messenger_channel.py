@@ -835,6 +835,43 @@ async def test_a_referral_before_the_first_chat_redis_refuses_to_keep_is_deliver
 
 
 @pytest.mark.asyncio
+async def test_a_referral_kept_in_a_cooldown_reaches_the_first_chat_made_in_it(chat, redis, monkeypatch):
+    """CodeRabbit #288: the connection lost as the referral is kept (a cooldown begins in this process, while Redis
+    answers): the event fails and is delivered again, kept then; the first message comes in the same cooldown, and its
+    new chat reads the referral through it, as the take and the claim do. Rule 5: a read Redis itself fails is
+    counted (referral_unread) and the chat is still made, the person's answer first."""
+    ref = {"ref": "promo", "source": "ADS", "ad_id": "ad7"}
+    real_set = redis.set
+    once = {"on": True}
+
+    async def lost(key, *a, **kw):
+        if once["on"] and str(key).startswith("msgr:ref:"):
+            once["on"] = False
+            raise ConnectionError("Connection reset by peer")
+        return await real_set(key, *a, **kw)
+
+    monkeypatch.setattr(redis, "set", lost)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(kind="referral", mid="", text="", referral=ref))
+    assert redis_client.get_redis() is None, "this process cools down"
+    assert (await mc.handle(event(kind="referral", mid="", text="", referral=ref)))["replies"] == []
+    await mc.handle(event())
+    meta = chat.created.await_args.kwargs["metadata"]
+    assert meta["utm_campaign"] == "promo" and meta["messenger_referral"]["ad_id"] == "ad7"
+    # Rule 5: the read itself failing, the chat is made all the same, and the miss counted.
+    real_get = redis.get
+
+    async def unread(key, *a, **kw):
+        if str(key).startswith("msgr:ref:"):
+            raise ConnectionError("Connection reset by peer")
+        return await real_get(key, *a, **kw)
+
+    monkeypatch.setattr(redis, "get", unread)
+    await mc.handle(event(mid="m2", psid="PSID-8"))
+    assert chat.created.await_count == 2 and mc.MESSENGER_HEALTH["referral_unread"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_referral_not_saved_to_the_chat_that_goes_on_is_delivered_again(chat, redis):
     """Review on #288: the next message goes on in the chat the person has and never reads the referral kept for a
     chat made later, so a referral to that chat is saved to it, or the event fails and is delivered again, as the

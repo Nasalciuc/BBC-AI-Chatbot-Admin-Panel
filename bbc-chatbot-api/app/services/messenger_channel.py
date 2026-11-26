@@ -158,6 +158,7 @@ MESSENGER_HEALTH: dict[str, int] = {
     "inbox_replies": 0,      # messages written from the Page's inbox, kept in the chat
     "attachments": 0,        # messages with no text, answered with ATTACHMENT_REPLY
     "referrals": 0,          # where a person came from (an m.me link, an ad), kept
+    "referral_unread": 0,    # a first chat made without its kept referral: Redis failed the read (its attribution lost)
     "no_dedupe": 0,          # events answered with Redis down: a delivery made again could be answered twice
     "saved_once": 0,         # rows a delivery made again found saved already: not saved twice
     "not_kept": 0,           # events not put in the inbox (Redis down): one that fails is not answered later
@@ -2445,7 +2446,10 @@ async def _keep_referral(vid: str, ref: Optional[Referral]) -> bool:
 
 
 async def _kept_referral(vid: str) -> Optional[Referral]:
-    r = get_redis()
+    """The referral kept for the person's first chat, read through a cooldown of this process's own (another call's
+    failure) as it was kept. Redis failing the read: None, counted (referral_unread) and logged: the chat is made all
+    the same, the person's answer coming first."""
+    r = get_redis(even_cooling_down=True)
     if r is None:
         return None
     try:
@@ -2453,6 +2457,7 @@ async def _kept_referral(vid: str) -> Optional[Referral]:
         return Referral.model_validate_json(raw) if raw else None
     except Exception as e:
         redis_failed("messenger referral", e)
+        MESSENGER_HEALTH["referral_unread"] += 1
         logger.warning(f"[messenger] a kept referral not read: {type(e).__name__}: {e}")
         return None
 
