@@ -2402,15 +2402,20 @@ async def test_a_giving_redis_made_but_whose_answer_was_lost_goes_back_with_the_
         return out
 
     monkeypatch.setattr(redis, "eval", answer_lost)
+    clock = _Clock()
+    monkeypatch.setattr(mc, "time", clock)  # Redis's clock with it (the fixture's)
     with pytest.raises(mc.StillAnswering):
         await mc.handle(event())
     right = redis.kv[f"{mc.INBOX}:sending:m1"]
     redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    clock.offset = 30.0  # the delivery made again, half a minute later
+    retried_at = clock.time()
     reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
     assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
     again = redis.kv[f"{mc.INBOX}:sending:m1"]
     assert again.split(":")[2] == right.split(":")[2], "the same delivery's right"
-    assert float(again.split(":")[1]) >= float(right.split(":")[1]), "taken again from now"
+    stamped = float(again.split(":")[1])
+    assert stamped - float(right.split(":")[1]) >= 29 and abs(stamped - retried_at) < 1, "taken again from the retry"
     assert not mc._UNGIVEN and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 0
 
 
@@ -3521,17 +3526,24 @@ async def _given_with_a_later_one_waiting(chat, redis) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("given", ["100_s_ago", "past_the_window"])
-async def test_the_gateways_right_covers_its_call_to_the_api_and_its_send_after(chat, redis, given):
+@pytest.mark.parametrize("given", ["100_s_ago", "just_now_the_readers_clock_ahead", "past_the_window"])
+async def test_the_gateways_right_covers_its_call_to_the_api_and_its_send_after(chat, redis, monkeypatch, given):
     """CodeRabbit #288: the gateway gets a delivery's answer within its own call to the API (75 s), begun before the
     right to send its replies was taken, and sends them within 60 s after: a later event of the person's waits for
     the right that long (GATEWAY_SENDING_S), past the API's own SENDING_S (an answer that reached the gateway 40 s
-    late is still being sent 90 s after the right). Rule 5: past it, the first is let go of, never sent by the API,
-    and the second goes."""
+    late is still being sent 90 s after the right). Told on Redis's clock (_redis_now): a right taken just now still
+    holds the second back when the process reading it has a clock running 200 s ahead. Rule 5: past it, the first is
+    let go of, never sent by the API, and the second goes."""
     await _given_with_a_later_one_waiting(chat, redis)
-    at = time.time() - (100 if given == "100_s_ago" else getattr(mc, "GATEWAY_SENDING_S", mc.SENDING_S) + 1)
+    at = time.time() - {"100_s_ago": 100, "just_now_the_readers_clock_ahead": 0}.get(
+        given, getattr(mc, "GATEWAY_SENDING_S", mc.SENDING_S) + 1)
     redis.kv[mc._sending_key("m1")] = f"gateway:{at}"
-    if given == "100_s_ago":
+    if given == "just_now_the_readers_clock_ahead":
+        redis.wall = time.time  # Redis's own clock
+        clock = _Clock()
+        clock.offset = 200.0  # the reading process's, 200 s ahead of the one that took the right
+        monkeypatch.setattr(mc, "time", clock)
+    if given != "past_the_window":
         with pytest.raises(mc.StillAnswering):
             await mc.handle(event(mid="m2", text="Second", timestamp=200))  # the gateway may still be sending them
         assert set(redis.kv[mc.INBOX]) == {"m1", "m2"} and len(chat.requests) == 3
