@@ -376,6 +376,17 @@ def compare_and_delete(fake: FakeRedis, keys: list[str], args: list[str]) -> int
     return 0
 
 
+def compare_or_absent_and_set(fake: FakeRedis, keys: list[str], args: list[str]) -> int:
+    """What messenger_channel.KEEP_ANSWER_LUA does: the value set, with its expiry in seconds, while the key holds the
+    token or holds nothing."""
+    key, token, value, ex = keys[0], args[0], args[1], int(args[2])
+    if fake._alive(key) and fake.kv.get(key) != token:
+        return 0
+    fake.kv[key] = value
+    fake._set_expiry(key, ex=ex)
+    return 1
+
+
 def compare_and_pexpire(fake: FakeRedis, keys: list[str], args: list[str]) -> int:
     """What conversation_lock.RENEW_LUA does: a new expiry, only while the key still holds the token."""
     key, token, ms = keys[0], args[0], int(args[1])

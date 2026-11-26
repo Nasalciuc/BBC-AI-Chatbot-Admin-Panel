@@ -60,12 +60,14 @@ def fresh(monkeypatch):
 
 @pytest.fixture
 def redis():
-    from tests.fake_redis import compare_and_delete, compare_and_pexpire
+    from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
 
     r = FakeRedis()
-    # The recovery's lock is renewed and let go only while it is still the pass's own (conversation_lock's scripts).
+    # The recovery's lock, and an event's claim, renewed and let go only while still the pass's or the turn's own
+    # (conversation_lock's scripts); an event's answer written only over its turn's own claim, or nothing.
     r.register(mc.RELEASE_LUA, compare_and_delete)
     r.register(mc.RENEW_LUA, compare_and_pexpire)
+    r.register(mc.KEEP_ANSWER_LUA, compare_or_absent_and_set)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -2544,6 +2546,8 @@ async def test_a_delivery_from_the_gateway_and_a_recovery_that_lost_its_claim_ne
     assert [r["text"] for r in delivered["replies"]] == [reply], "the gateway sends them"
     assert gw.sent == [] and out["waiting"] == 1, "the recovery, ending after, sends nothing"
     assert redis.kv[f"{mc.INBOX}:sending:m1"] == mc.SENT_BY_GATEWAY
+    # The recovery's turn, ending after the delivery that took its event, never writes its answer over that one's.
+    assert json.loads(redis.kv["msgr:event:m1"])["by"] == "gateway" and mc.MESSENGER_HEALTH["claim_lost"] == 1
 
 
 @pytest.mark.asyncio
@@ -2573,6 +2577,101 @@ async def test_a_delivery_from_the_gateway_leaves_the_replies_to_a_recovery_that
     assert delivered["replies"] == [] and mc.MESSENGER_HEALTH["duplicates"] == 1
     assert sent == ["About: Hi, two seats to Istanbul in December?"] and out["answered"] == 1
     assert not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ends", ["first_fails", "first_answers_before", "first_answers_after"])
+async def test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_delivery_that_took_the_event(
+        chat, redis, monkeypatch, ends):
+    """CodeRabbit #288: a delivery's turn (the first) runs past its claim, its renewal failing, and a delivery made
+    again (the second) takes the event, its own claim under its own token, and is in its turn when the first ends.
+    The first failing never clears the second's claim: a third delivery still waits (409). The first answering, before
+    the second or after it, never writes its answer over the second's claim or answer (claim_lost). Rule 5: the
+    second's answer is the one kept, and a delivery made again gets its replies, with no third turn."""
+    import asyncio
+
+    from tests.fake_redis import FakeClock
+
+    calls = {"n": 0}
+    first_in, first_go, second_in, second_go = (asyncio.Event() for _ in range(4))
+
+    async def two_turns(req, add_message):
+        calls["n"] += 1
+        n = calls["n"]
+        (first_in if n == 1 else second_in).set()
+        await (first_go if n == 1 else second_go).wait()
+        if n == 1 and ends == "first_fails":
+            raise RuntimeError("database away")
+        row = await add_message(req.conversation_id, "ai", f"Answer {n}")
+        return ChatResponse(conversation_id=req.conversation_id, message=row["content"], type="ai", model_used="x")
+
+    chat.answer = two_turns
+    clock = FakeClock()
+    redis.clock = clock
+    real_eval = redis.eval
+
+    async def claim_renewal_fails(script, numkeys, *keys_and_args):
+        if script == mc.RENEW_LUA and str(keys_and_args[0]).startswith("msgr:event:"):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", claim_renewal_fails)
+    first = asyncio.create_task(mc.handle(event()))
+    await asyncio.wait_for(first_in.wait(), 1)
+    clock.advance(mc.PENDING_S * 2)  # the first's claim runs out
+    second = asyncio.create_task(mc.handle(event()))
+    await asyncio.wait_for(second_in.wait(), 1)
+    if ends == "first_fails":
+        first_go.set()
+        with pytest.raises(mc.EventFailed):
+            await asyncio.wait_for(first, 1)
+        with pytest.raises(mc.StillAnswering):
+            await asyncio.wait_for(mc.handle(event()), 1)  # the second's claim is still there
+    elif ends == "first_answers_before":
+        first_go.set()
+        await asyncio.wait_for(first, 1)
+        with pytest.raises(mc.StillAnswering):
+            await asyncio.wait_for(mc.handle(event()), 1)  # the second's claim, never the first's answer
+    second_go.set()
+    assert [r["text"] for r in (await asyncio.wait_for(second, 1))["replies"]] == ["Answer 2"]
+    if ends == "first_answers_after":
+        first_go.set()
+        await asyncio.wait_for(first, 1)
+    assert json.loads(redis.kv["msgr:event:m1"])["replies"] == [{"text": "Answer 2"}], "the second's answer is kept"
+    assert mc.MESSENGER_HEALTH["claim_lost"] == (0 if ends == "first_fails" else 1)
+    again = await mc.handle(event())
+    assert [r["text"] for r in again["replies"]] == ["Answer 2"] and calls["n"] == 2, "no third turn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_by", ["mine", "theirs"])
+async def test_a_turns_claim_is_renewed_only_while_it_holds_the_turns_own_token(redis, monkeypatch, held_by):
+    """CodeRabbit #288: a turn's renewal finds another delivery's claim on the event (its own ran out, and the event
+    was taken since): it stops, never giving the other's claim a new life as its own. Rule 5: its own claim is
+    renewed while it runs."""
+    import asyncio
+
+    from tests.fake_redis import FakeClock
+
+    clock = FakeClock()
+    redis.clock = clock
+    monkeypatch.setattr(mc, "PENDING_S", 0.3)
+    key = "msgr:event:m1"
+    await redis.set(key, f"pending:{held_by}", px=300)
+    before = redis.expires[key]
+    clock.advance(0.2)
+    keeper = asyncio.create_task(mc._keep_pending(redis, key, "pending:mine"))
+    if held_by == "theirs":
+        await asyncio.wait_for(keeper, 1)  # it stops by itself: not its own
+        assert redis.expires[key] == before and redis.kv[key] == "pending:theirs"
+        return
+    for _ in range(100):
+        if redis.expires[key] != before:
+            break
+        await asyncio.sleep(0.01)
+    keeper.cancel()
+    await asyncio.gather(keeper, return_exceptions=True)
+    assert redis.expires[key] == pytest.approx(clock() + 0.3), "renewed from now, for PENDING_S"
 
 
 @pytest.mark.asyncio
