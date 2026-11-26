@@ -314,6 +314,14 @@ func (in *intake) holdLocked(rest []meta.Inbound, now time.Time) (unheld, expire
 		if h != nil && h.has(key) {
 			continue
 		}
+		if h == nil && len(in.held) >= in.mostHeld {
+			// No room for a new person: the waits that outlived HoldFor make it first (the ticker's forget may not
+			// have come yet), counted as it counts them; only live waits fill it.
+			for q := range in.held {
+				_, m := in.liveLocked(q, now, "")
+				expired += m
+			}
+		}
 		if (h == nil && len(in.held) >= in.mostHeld) || (h != nil && len(h.q) >= mostWaiting) {
 			unheld++
 			continue

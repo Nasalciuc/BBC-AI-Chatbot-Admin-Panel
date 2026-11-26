@@ -737,6 +737,33 @@ func TestAWaitPastHoldForIsDroppedBeforeItsPersonsRoomIsCounted(t *testing.T) {
 	}
 }
 
+func TestAFullInventoryMakesRoomFromWaitsPastHoldForBeforeRefusingANewPerson(t *testing.T) {
+	refuse := func(meta.Inbound) bool { return false }
+	in := newIntake(time.Hour, 1000, time.Minute)
+	in.mostHeld = 2
+	t0 := time.Unix(1_800_000_000, 0)
+	if _, unheld, _ := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1")}, t0, refuse); unheld != 0 {
+		t.Fatalf("%d not held", unheld)
+	}
+	// Past HoldFor, before the ticker's forget: A's and B's waits fill the room, and they are over. C's refused
+	// event takes the room they leave (both counted as no longer waited for), so C's next one waits behind it.
+	later := t0.Add(2 * time.Minute)
+	out, unheld, expired := in.admit([]meta.Inbound{inbound("PSID-C", "c1")}, later, refuse)
+	if out[0].v != refused || unheld != 0 || expired != 2 {
+		t.Fatalf("c1: %+v, %d not held, %d no longer waited for", out, unheld, expired)
+	}
+	if v, _ := admitOne(in, inbound("PSID-C", "c2"), later, true); v != waiting {
+		t.Errorf("c2 before c1: %v", v)
+	}
+	// Rule 5: the room filled by live waits, a new person is not held (hold_full), and no live wait is dropped.
+	full := newIntake(time.Hour, 1000, time.Minute)
+	full.mostHeld = 2
+	_, _, _ = full.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1")}, t0, refuse)
+	if _, unheld, expired := full.admit([]meta.Inbound{inbound("PSID-D", "d1")}, t0.Add(10*time.Second), refuse); unheld != 1 || expired != 0 || len(full.held) != 2 {
+		t.Errorf("live room: %d not held, %d expired, %d waiting", unheld, expired, len(full.held))
+	}
+}
+
 func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 	in := newIntake(time.Hour, 3, time.Minute)
 	t0 := time.Unix(1_800_000_000, 0)
