@@ -1173,12 +1173,12 @@ async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_agents_message_stored_as_the_channel_went_off_is_crossed_out_before_the_cancel_goes_on(
+async def test_a_cancelled_agents_message_stored_as_the_channel_went_off_is_crossed_out_by_its_save(
         redis, monkeypatch):
-    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, the
-    channel is turned off meanwhile, and the insert stores the row. Its place has nothing to send and crosses its
-    written-down delivery out: that is done before the cancel goes on, never left unawaited (no note for a message
-    that was never to go). Rule 5: not cancelled, the same is done once the insert answers
+    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way (it
+    stops waiting at once), the channel is turned off meanwhile, and the insert stores the row. Its save goes on, in
+    the chat's order: its place has nothing to send and crosses its written-down delivery out, never left unawaited
+    (no note for a message that was never to go). Rule 5: not cancelled, the same is done once the insert answers
     (test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next, its user row)."""
     import asyncio
     from types import SimpleNamespace
@@ -1221,28 +1221,31 @@ async def test_a_cancelled_agents_message_stored_as_the_channel_went_off_is_cros
         await asyncio.wait_for(landed.wait(), 1)
         assert len(await redis.hgetall(mc.OUTBOX)) == 1, "written down before it was stored"
         first.cancel()  # the request goes, its insert on its way
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(first, 1)  # at once: it only stops waiting for its save
         monkeypatch.setattr(settings, "messenger_gateway_url", "")  # the channel off meanwhile
         answer.set()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        assert not await redis.hgetall(mc.OUTBOX), "crossed out before the cancel went on"
+        await asyncio.wait_for(mc.saved(), 1)
+        assert not await redis.hgetall(mc.OUTBOX), "crossed out by its save"
     assert [r["content"] for r in stored] == ["Hi, I'm Ana."] and gw.sent == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("insert", ["stored_answer_lost", "refused"])
-async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_the_recovery_minute(redis, insert):
-    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, and
-    the insert's answer comes back an error (stored, its answer lost; or refused), late or not: the cancel waits for
-    it, as a request not cancelled would. Nothing is placed, and the message is marked unsure before the chat's next
-    row may go, so the recovery minute looks its row up while this process lives: stored, the agent is told it was
-    not sent, once; refused, it is crossed out without a word. Never sent, and never inserted again. Rule 5: an insert
-    that answers with its row is placed before the cancel goes on
+@pytest.mark.parametrize("insert", ["stored_answer_lost", "refused", "retry_answer_lost"])
+async def test_a_cancelled_agents_message_is_saved_as_if_its_request_had_not_been_cancelled(redis, insert):
+    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while an insert of its message is on
+    its way, and that insert's answer comes back an error, late or not. The request only stops waiting, at once: its
+    save goes on, holding the chat's order, as a request not cancelled would. Asked again under its id, a row stored
+    with its answer lost comes back (stored before) and goes out, first; one refused twice, or a retry stored with its
+    answer lost (the request cancelled during the retry), is marked unsure before the chat's next row may go, so the
+    recovery minute looks its row up while this process lives: stored, its agent is told it was not sent, once; not
+    stored, crossed out without a word. Rule 5: an insert that answers with its row is placed at once
     (test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next)."""
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from postgrest.exceptions import APIError
     from redis.exceptions import ConnectionError as RedisConnectionError
 
     from app.db import supabase as db
@@ -1250,13 +1253,20 @@ async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_t
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     stored: list[dict] = []
     inserts = {"n": 0}
+    agent = {"n": 0}
 
     def insert_row(payload):
         def execute():
             inserts["n"] += 1
             row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
-            if not (insert == "refused" and row["role"] == "agent"):
+            if row["role"] != "agent":
                 stored.append(row)
+                return SimpleNamespace(data=[row])
+            agent["n"] += 1
+            if any(r["id"] == row["id"] for r in stored):
+                raise APIError({"code": "23505", "message": "duplicate key"})
+            if (insert, agent["n"]) in (("stored_answer_lost", 1), ("retry_answer_lost", 2)):
+                stored.append(row)  # stored, its answer lost below
             return SimpleNamespace(data=[row])
 
         return SimpleNamespace(execute=execute)
@@ -1267,11 +1277,12 @@ async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_t
 
     async def run_sync(fn, **kw):
         out = fn()
-        if out.data[0]["role"] == "agent" and not answer.is_set():
+        if out.data[0]["role"] != "agent":
+            return out
+        if agent["n"] == (2 if insert == "retry_answer_lost" else 1) and not answer.is_set():
             landed.set()
             await answer.wait()  # its answer on its way back, later than any bound
-            raise RedisConnectionError("the connection dropped")  # an error, whatever the database did
-        return out
+        raise RedisConnectionError("the connection dropped")  # an error, whatever the database did
 
     async def touch(*a, **kw):
         return None
@@ -1294,27 +1305,32 @@ async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_t
 
         first = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
         await asyncio.wait_for(landed.wait(), 1)
-        first.cancel()  # the request goes, its insert on its way
+        first.cancel()  # the request goes, an insert of its message on its way
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(first, 1)  # at once: it only stops waiting for its save
         line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
         await asyncio.wait_for(asked.wait(), 1)  # the next row asks for the chat's order
         for _ in range(5):
             await asyncio.sleep(0)  # every chance to go on
-        assert [r["role"] for r in stored] == (["agent"] if insert == "stored_answer_lost" else []), \
-            "the next row waits for the cancelled one's answer, not inserted"
-        assert not line.done()
+        assert not [r for r in stored if r["role"] == "system"] and not line.done(), \
+            "the next row waits for the cancelled one's save, not inserted"
         answer.set()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        left = [json.loads(v)["state"] for v in (await redis.hgetall(mc.OUTBOX)).values()]
-        assert left == ["unsure"], "left to the recovery minute while its save is not known"
         await asyncio.wait_for(line, 1)
+        left = [json.loads(v)["state"] for v in (await redis.hgetall(mc.OUTBOX)).values()]
+        await mc.drain(CONV)
+        await asyncio.sleep(0)
         await mc.drain(CONV)
         out = await mc.run_messenger_recover()  # this process alive: unsure is looked up all the same
     notes = [r["content"] for r in stored if r["role"] == "system" and r["content"] == mc.NOT_SENT_OTHER]
-    assert order == ["Ana shared the itinerary"], "the agent's message never sent"
-    assert notes == ([mc.NOT_SENT_OTHER] if insert == "stored_answer_lost" else [])
-    assert out["told"] == len(notes) and not await redis.hgetall(mc.OUTBOX)
-    assert inserts["n"] == 2 + len(notes), "never inserted again"
+    if insert == "stored_answer_lost":
+        assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "found stored, it goes out first"
+        assert notes == [] and out["told"] == 0
+    else:
+        assert left == ["unsure"], "left to the recovery minute before the next row went"
+        assert order == ["Ana shared the itinerary"], "the agent's message never sent"
+        assert notes == ([mc.NOT_SENT_OTHER] if insert == "retry_answer_lost" else []) and out["told"] == len(notes)
+    assert not await redis.hgetall(mc.OUTBOX)
+    assert agent["n"] == 2 and inserts["n"] == 3 + len(notes), "asked again once, under its id"
 
 
 @pytest.mark.asyncio

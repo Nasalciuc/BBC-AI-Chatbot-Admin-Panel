@@ -312,6 +312,51 @@ async def in_order(conversation_id: str):
         slot[1] -= 1
         if not slot[1] and _ORDER.get(conversation_id) is slot:
             del _ORDER[conversation_id]
+
+
+# A chat's rows saved outside a Messenger turn, each as one piece of work that holds the chat's order to its end
+# (save_in_order): kept here while it runs, never left unawaited.
+_SAVES: set[asyncio.Task] = set()
+
+
+def in_turn(conversation_id: str) -> bool:
+    """Whether a Messenger turn of this chat is gathering its rows here (place() joins them to the turn's answer)."""
+    turn = _TURN.get()
+    return turn is not None and turn.open and turn.conversation_id == conversation_id
+
+
+async def save_in_order(conversation_id: str, work: Coroutine[Any, Any, Any]) -> Any:
+    """A chat's row stored and given its place, and what its place left to do (conversation_service.add_message), as
+    one piece of work that holds the chat's order (in_order) to its end; its result. A request cancelled meanwhile
+    only stops waiting for it, at once, never the work: its insert may land all the same (the database may store the
+    row whatever became of the request), and its row is then placed, or left unsure, before the chat's next row may
+    go. The request's wait is bounded by nothing it cannot stop; the chat's next row waits for the row before it, as
+    the chat's order wants."""
+    async def ordered_work() -> Any:
+        async with in_order(conversation_id):
+            return await work
+
+    task = asyncio.ensure_future(ordered_work())
+    _SAVES.add(task)
+    task.add_done_callback(_saved)
+    return await asyncio.shield(task)
+
+
+def _saved(task: asyncio.Task) -> None:
+    _SAVES.discard(task)
+    if task.cancelled() or task.exception() is None:
+        return
+    e = task.exception()
+    MESSENGER_HEALTH["send_failed"] += 1
+    logger.error(f"[messenger] a chat's row not saved in its order: {type(e).__name__}: {e}")
+
+
+async def saved() -> None:
+    """Wait for the chats' rows being saved in their order (save_in_order: tests)."""
+    while _SAVES:
+        await asyncio.gather(*list(_SAVES), return_exceptions=True)
+
+
 # Set by a shutdown (drain_all): no delivery starts after it.
 _CLOSING = False
 

@@ -1,5 +1,4 @@
 """Conversation service — business logic for conversations."""
-import asyncio
 import contextlib
 import logging
 import uuid
@@ -57,39 +56,46 @@ async def add_message(conversation_id: str, role: str, content: str,
         if not follows:  # once, whichever insert stored it
             follows.append(messenger_channel.place(conversation_id, role, stored, entry))
 
-    unknown: list = []
     kw: dict = {"message_id": message_id} if message_id else {}
-    if outbound and role in ("ai", "agent", "system") and channel_on:
+    placed = outbound and role in ("ai", "agent", "system") and channel_on
+    if placed:
         kw["on_stored"] = hand_on
-        if entry is not None:
-            kw["on_unknown"] = lambda: unknown.append(True)
-    ordered = messenger_channel.in_order(conversation_id) if "on_stored" in kw else contextlib.nullcontext()
-    async with ordered:
-        try:
-            row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
-        except asyncio.CancelledError:
-            if unknown and not follows:
-                # Cancelled, its insert's answer an error (stored with its answer lost, or refused): never placed.
-                # Marked unsure before the chat's next row may go, so the recovery minute looks its row up while
-                # this process lives: stored, the agent is told it was not sent; not stored, crossed out. Cancelled
-                # before its insert's end was known: left written down, for the next process's minute.
-                await messenger_channel.unsure(entry, conversation_id, message_id)
-            # Stored and placed while the cancel waited: what its place left to do (its entry crossed out, its agent
-            # told) is done before the cancel goes on, in the chat's order still, never left unawaited.
-            for follow in follows:
-                if follow is not None:
-                    await follow
-            raise
-        if not row and entry is not None:
+
+    async def store() -> Optional[dict]:
+        stored = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+        if not stored and entry is not None:
             # Its insert may have landed with its answer lost: asked again under the same id, the row stored before
             # comes back (StoredBefore), or it is stored now. Still none: stored or not is not known, and the recovery
             # minute looks the row up (this process alive or not): stored, the agent is told it was not sent.
-            row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
-            if not row:
+            stored = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+            if not stored:
                 await messenger_channel.unsure(entry, conversation_id, message_id)
-    for follow in follows:
-        if follow is not None:
-            await follow
+        return stored
+
+    async def follow_on() -> None:
+        for follow in follows:
+            if follow is not None:
+                await follow
+
+    row: Optional[dict] = None
+    if placed and not messenger_channel.in_turn(conversation_id):
+        # Outside a Messenger turn (an agent's message, a "joined" line): stored, placed (or left unsure) and what its
+        # place left to do done, as one piece of work that holds the chat's order to its end. A request cancelled
+        # meanwhile only stops waiting for it: its insert may land all the same, and then takes its place before the
+        # chat's next row may go, the retry under its id and the unsure mark included (never left "waiting").
+        async def saved_in_order() -> Optional[dict]:
+            stored = await store()
+            await follow_on()
+            return stored
+
+        row = await messenger_channel.save_in_order(conversation_id, saved_in_order())
+    else:
+        # A Messenger turn's row joins the turn's answer (db.add_message places it before a cancel goes on); a row
+        # with no place to take is only stored.
+        ordered = messenger_channel.in_order(conversation_id) if placed else contextlib.nullcontext()
+        async with ordered:
+            row = await store()
+        await follow_on()
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live
