@@ -2868,6 +2868,24 @@ async def _give_up(r, k: str, who: Optional[str]) -> bool:
                              f"{INBOX}:tries:{k}", f"msgr:event:{k}", k))
 
 
+# A try counted for a kept event given back (KEYS[1], its tries) only while that count is still there and above
+# nothing: the event let go of meanwhile (answered by the turn that held it, its tries gone with it), nothing is
+# written: a DECR would write a count of -1 with no expiry, left for good.
+GIVE_BACK_LUA = """
+local n = tonumber(redis.call('get', KEYS[1]) or '0')
+if n and n > 0 then
+  return redis.call('decr', KEYS[1])
+end
+return 0
+"""
+
+
+async def _give_back(r, k: str) -> None:
+    """The try counted for a kept event given back: no turn of its ran in this pass after all (GIVE_BACK_LUA, its
+    expiry kept). Redis failing raises: the pass stops, that one try left spent."""
+    await r.eval(GIVE_BACK_LUA, 1, f"{INBOX}:tries:{k}")
+
+
 async def _recover_one(r, k: str, waiting: set[str]) -> str:
     """One kept event: "answered" (its replies sent, or none to send, or a send of them had before: never made
     again), "waiting" (the next minute tries again; its person's later events wait behind it, `waiting`), "behind"
@@ -2925,7 +2943,7 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
             if not await _give_up(r, k, who):
                 # Claimed or answered since it was looked at: that turn's to finish, its try given back, and its
                 # person's later events wait behind it.
-                await r.incr(f"{INBOX}:tries:{k}", -1)
+                await _give_back(r, k)
                 MESSENGER_HEALTH["recover_waiting"] += 1
                 if who is not None:
                     waiting.add(who)
@@ -2942,7 +2960,7 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         if tries:
             # No turn of its ran in this pass (another holds it, one of its person's earlier ones is being answered,
             # or its answer is still to be written): the try counted for it is given back.
-            await r.incr(f"{INBOX}:tries:{k}", -1)
+            await _give_back(r, k)
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
         logger.info(f"[messenger] a kept event waits: it, or an earlier one of its person's, is being answered, or "

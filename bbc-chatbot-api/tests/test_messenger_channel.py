@@ -210,6 +210,16 @@ def release_unsent(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def give_back(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.GIVE_BACK_LUA does."""
+    (tries,) = keys
+    n = int(fake.kv[tries]) if fake._alive(tries) else 0
+    if n <= 0:
+        return 0
+    fake.kv[tries] = str(n - 1)
+    return n - 1
+
+
 def give_again(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.GIVE_AGAIN_LUA does."""
     sending_key, inbox, last_key = keys
@@ -255,6 +265,7 @@ def redis():
     r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
     r.register(mc.RELEASE_UNSENT_LUA, release_unsent)
     r.register(mc.GIVE_AGAIN_LUA, give_again)
+    r.register(mc.GIVE_BACK_LUA, give_back)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -4233,6 +4244,52 @@ async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(cha
         out = await mc.run_messenger_recover()
     assert (out["answered"], out["given_up"]) == (1, 0) and gw.sent == ["Their answer"] and not redis.kv[mc.INBOX]
     assert len(chat.requests) == 1, "the turn that failed: none of this pass's own"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given_back", ["as_its_turn_waits", "as_its_give_up_is_refused"])
+async def test_a_try_given_back_for_an_event_let_go_of_meanwhile_writes_no_count(chat, redis, given_back):
+    """A kept event another turn claims between the pass's look and its count (its turn waits on that claim, or its
+    give-up at its last try is refused under it), and that turn ends before the pass gives the try back: the event
+    answered and let go of, its tries gone with it. The try is given back only while its count is still there
+    (GIVE_BACK_LUA): never a count of -1 written back with no expiry, left for good. Rule 5: a count still there is
+    given back (test_an_event_another_turn_holds_at_its_last_try_is_never_given_up)."""
+    await _fail_once(chat, redis)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    start = mc.RECOVER_TRIES if given_back == "as_its_give_up_is_refused" else mc.RECOVER_TRIES - 1
+    redis.kv[tries_key] = str(start)
+    redis.kv["msgr:event:m1"] = "pending:another-process-turn"
+
+    async def its_turn_ends():
+        # That process's turn ends: answered (the gateway's), the event let go of, its tries with it.
+        redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "Their answer"}], "by": "gateway"})
+        await mc._release_event("m1", mc._who(event()))
+
+    async def not_seen(r, k):
+        return "none"  # claimed only after the pass looked
+
+    real_handle, real_give_up = mc.handle, mc._give_up
+
+    async def waits_then_it_ends(ev, **kw):
+        try:
+            return await real_handle(ev, **kw)  # that turn's claim: StillAnswering
+        finally:
+            await its_turn_ends()
+
+    async def refused_then_it_ends(r, k, who):
+        refused = await real_give_up(r, k, who)  # guarded by that turn's claim: refused
+        await its_turn_ends()
+        return refused
+
+    spot = ("handle", waits_then_it_ends) if given_back == "as_its_turn_waits" else ("_give_up", refused_then_it_ends)
+    gw = Gateway([])
+    with patch.object(mc, "_claim_of", new=not_seen), patch.object(mc, spot[0], new=spot[1]), \
+            patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+    assert (out["waiting"], out["given_up"]) == (1, 0) and mc.MESSENGER_HEALTH["recover_given_up"] == 0
+    assert "m1" not in redis.kv[mc.INBOX] and f"{mc.INBOX}:m1" not in redis.kv
+    assert tries_key not in redis.kv, "no count written back for an event let go of"
+    assert gw.sent == [] and len(chat.requests) == 1, "no turn nor send of this pass's own"
 
 
 @pytest.mark.asyncio
