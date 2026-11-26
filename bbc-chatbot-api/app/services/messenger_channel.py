@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.flags import flag
 from app.infra.redis_client import get_redis, redis_failed
-from app.services.conversation_lock import RELEASE_LUA
+from app.services.conversation_lock import RELEASE_LUA, RENEW_LUA
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +72,15 @@ RECOVER_AFTER_S = 600
 # One try a minute: an event still failing after an hour of them is given up (counted, logged without its words).
 RECOVER_TRIES = 60
 RECOVER_BATCH = 20
-# Held by one pass at a time under its own token, and let go only while it is still that pass's (compare and delete):
-# a pass that outlived it never frees the next one's.
+# Held by one pass at a time under its own token, renewed every RECOVER_LOCK_S / 3 while the pass runs and only while
+# it is still that pass's (compare and expire), and let go the same way (compare and delete): a turn or a send that
+# takes long never lets another pass in beside it, and a pass never frees another's.
 RECOVER_LOCK = "msgr:recover:lock"
 RECOVER_LOCK_S = 300
-# A pass starts nothing new past RECOVER_BUDGET_S, so what it started (a turn and a send at most) ends well within
-# RECOVER_LOCK_S; the agents' notes get TELL_BUDGET_S of it and TELL_BATCH writes at most, the outbox gone through in
-# parts (its cursor kept between passes), so the events always get their part.
+# A pass starts nothing new past RECOVER_BUDGET_S, nor once its lock is found lost; the agents' notes get
+# TELL_BUDGET_S of it (each one cut there: its note's id makes saving it again harmless) and TELL_BATCH of them at
+# most, the outbox gone through in parts (OUTBOX_CURSOR: the part, and the last delivery looked at in it, kept between
+# passes), so the events always get their part and every delivery its turn.
 RECOVER_BUDGET_S = 120.0
 TELL_BUDGET_S = 30.0
 TELL_BATCH = 20
@@ -1241,10 +1243,11 @@ async def run_messenger_recover() -> dict:
     """The scheduler's minute (app.services.scheduler). Each event kept in the inbox longer than RECOVER_AFTER_S
     (its turn failed, and the gateway's tries are over) is answered now, and its replies go out through the gateway;
     each agent whose message a stopped process left written down, or whose note was not saved, is told (OUTBOX).
-    Every process says first that it is alive; then one at a time (a lock in Redis, under the pass's own token, let
-    go only while it is still its own) does the work, starting nothing new past RECOVER_BUDGET_S, the agents' notes
-    first within TELL_BUDGET_S so the events always get their part. An event still failing after RECOVER_TRIES runs,
-    or unreadable, is given up: counted, and logged without its words."""
+    Every process says first that it is alive; then one at a time (a lock in Redis, under the pass's own token,
+    renewed while the pass runs and let go only while it is still its own) does the work, starting nothing new past
+    RECOVER_BUDGET_S or once the lock is lost, the agents' notes first within TELL_BUDGET_S so the events always get
+    their part. An event still failing after RECOVER_TRIES runs, or unreadable, is given up: counted, and logged
+    without its words."""
     out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0, "told": 0}
     if not enabled():
         return {**out, "state": "off"}
@@ -1261,6 +1264,8 @@ async def run_messenger_recover() -> dict:
         logger.warning(f"[messenger] the recovery's lock not taken: {type(e).__name__}: {e}")
         return {**out, "state": "redis_failed"}
     started = time.monotonic()
+    held = {"lost": False}
+    keeper = asyncio.create_task(_keep_lock(r, token, held))
     try:
         out["told"] = await _tell_left(r, started + TELL_BUDGET_S)
         keys = await r.zrangebyscore(INBOX, "-inf", time.time() - RECOVER_AFTER_S)
@@ -1269,14 +1274,16 @@ async def run_messenger_recover() -> dict:
         # Oldest first; a person whose event still waits has their later ones wait too, in order.
         waiting: set[str] = set()
         for k in keys[:RECOVER_BATCH]:
-            if time.monotonic() - started >= RECOVER_BUDGET_S:
-                break  # the rest next minute: what this pass began ends within the lock
+            if time.monotonic() - started >= RECOVER_BUDGET_S or held["lost"]:
+                break  # the rest next minute (or the pass that holds the lock now)
             out[await _recover_one(r, k, waiting)] += 1
     except Exception as e:
         redis_failed("messenger recover", e)
         logger.error(f"[messenger] the recovery stopped: {type(e).__name__}: {e}")
         out["state"] = "failed"
     finally:
+        keeper.cancel()
+        await asyncio.gather(keeper, return_exceptions=True)
         try:
             await r.eval(RELEASE_LUA, 1, RECOVER_LOCK, token)
         except Exception as e:
@@ -1285,25 +1292,52 @@ async def run_messenger_recover() -> dict:
     return out
 
 
+async def _keep_lock(r, token: str, held: dict) -> None:
+    """The recovery's lock kept the pass's own while it runs: renewed every RECOVER_LOCK_S / 3, only while it still
+    holds the pass's token. Found gone (it expired while Redis failed, and maybe another pass holds it now), the pass
+    starts nothing new: what it is on goes on (a send's mark keeps any reply from going twice). Stopped by the pass."""
+    while True:
+        await asyncio.sleep(RECOVER_LOCK_S / 3)
+        try:
+            if not await r.eval(RENEW_LUA, 1, RECOVER_LOCK, token, int(RECOVER_LOCK_S * 1000)):
+                held["lost"] = True
+                logger.warning("[messenger] the recovery's lock was lost: the pass starts nothing new")
+                return
+        except Exception as e:
+            redis_failed("messenger recover", e)
+            logger.warning(f"[messenger] the recovery's lock not renewed (tried again): {type(e).__name__}: {e}")
+
+
 async def _tell_left(r, until: float) -> int:
     """The agents' messages written down that no live process is on (theirs stopped: its alive mark is gone), and
     the notes not saved (untold): each agent told now, once (the note's id is the delivery's), when the chat is on
     Messenger (one left before that was looked up is looked up now). How many were told. One whose note still is not
     saved after OUTBOX_KEEP_S, or whose chat could not be read by then, or unreadable, is given up (counted).
 
-    A part at a time: the outbox is gone through by a cursor kept between passes (OUTBOX_CURSOR), TELL_BATCH of its
-    deliveries looked up or told at most and none started past `until` (time.monotonic); a part cut short is gone
-    through again next pass (what was done in it is gone from it)."""
+    A part at a time: the outbox is gone through by a cursor (OUTBOX_CURSOR), TELL_BATCH of its deliveries looked up
+    or told at most and none started past `until` (time.monotonic), each one's work cut there (its note may be saved
+    after all: its id makes saving it again harmless). Redis gives a part of any size (HSCAN's COUNT is a hint: a small
+    hash comes whole), so a part cut short is gone on with next pass from the first delivery not looked at in it (one
+    cut in its work counts as looked at), kept beside the cursor: the ones that keep failing, or hang, never keep the
+    others from their turn."""
     told = 0
     try:
         raw_cursor = await r.get(OUTBOX_CURSOR)
-        cursor = int(raw_cursor) if raw_cursor and str(raw_cursor).isdigit() else 0
+        head, _, resume = str(raw_cursor or "").partition(":")
+        cursor = int(head) if head.isdigit() else 0
         after, entries = await r.hscan(OUTBOX, cursor=cursor, count=TELL_BATCH)
+        items = list(entries.items())
+        if resume:
+            # The first one the last pass did not look at; gone since (crossed out), the part from its start.
+            at_resume = next((i for i, (e, _) in enumerate(items) if e == resume), None)
+            if at_resume is not None:
+                items = items[at_resume:]
         alive: dict[str, bool] = {}
-        worked, whole = 0, True
-        for entry, raw in entries.items():
+        worked = 0
+        nxt = ""  # where the next pass goes on in this part: the first delivery not looked at ("": the next part)
+        for i, (entry, raw) in enumerate(items):
             if worked >= TELL_BATCH or time.monotonic() >= until:
-                whole = False
+                nxt = entry
                 break
             try:
                 d = json.loads(raw)
@@ -1319,39 +1353,52 @@ async def _tell_left(r, until: float) -> int:
                 if alive[boot]:
                     continue  # on its way in a live process
             worked += 1
-            if state == "waiting":
-                # Written down before where it goes was looked up, and before its row was stored: a site chat's says
-                # nothing, nor one whose row never was (the stop came before the insert, or the insert failed); a chat
-                # or a row not read now is looked at again next minute (given up after OUTBOX_KEEP_S).
-                on = await _on_messenger(cid)
-                if on is True and d.get("row"):
-                    on = await _row_stored(str(d["row"]))
-                if on is False:
-                    await r.hdel(OUTBOX, entry)
-                    continue
-                if on is None:
-                    if time.time() - at > OUTBOX_KEEP_S:
-                        await r.hdel(OUTBOX, entry)
-                        MESSENGER_HEALTH["outbox_given_up"] += 1
-                        logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat or row could not be "
-                                     f"read for {OUTBOX_KEEP_S // 3600} h: given up")
-                    continue
-            note = d.get("note") or (NOT_SENT["unknown"] if state == "sending" else NOT_SENT_RESTART)
-            if await _tell_agent(cid, str(note), _note_id(entry)):
-                await r.hdel(OUTBOX, entry)
-                MESSENGER_HEALTH["told_later"] += 1
-                told += 1
-            elif time.time() - at > OUTBOX_KEEP_S:
-                await r.hdel(OUTBOX, entry)
-                MESSENGER_HEALTH["outbox_given_up"] += 1
-                logger.error(f"[messenger] conv {cid}: an agent's note still not saved after "
-                             f"{OUTBOX_KEEP_S // 3600} h: given up")
-        if whole:
-            await r.set(OUTBOX_CURSOR, str(after), ex=OUTBOX_KEEP_S)
+            try:
+                told += await asyncio.wait_for(_tell_one(r, entry, d, cid, state, at),
+                                               max(0.0, until - time.monotonic()))
+            except asyncio.TimeoutError as e:
+                logger.warning(f"[messenger] conv {cid}: a written-down delivery cut at the notes' time, looked at "
+                               f"again when the outbox comes round ({type(e).__name__})")
+                nxt = items[i + 1][0] if i + 1 < len(items) else ""
+                break
+        await r.set(OUTBOX_CURSOR, f"{cursor}:{nxt}" if nxt else str(after), ex=OUTBOX_KEEP_S)
     except Exception as e:
         redis_failed("messenger outbox", e)
         logger.error(f"[messenger] the written-down deliveries not gone through: {type(e).__name__}: {e}")
     return told
+
+
+async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> int:
+    """One written-down delivery no live process is on: its agent told (1), or not now (0: looked at again next
+    pass, given up after OUTBOX_KEEP_S)."""
+    if state == "waiting":
+        # Written down before where it goes was looked up, and before its row was stored: a site chat's says
+        # nothing, nor one whose row never was (the stop came before the insert, or the insert failed); a chat or a
+        # row not read now is looked at again next pass (given up after OUTBOX_KEEP_S).
+        on = await _on_messenger(cid)
+        if on is True and d.get("row"):
+            on = await _row_stored(str(d["row"]))
+        if on is False:
+            await r.hdel(OUTBOX, entry)
+            return 0
+        if on is None:
+            if time.time() - at > OUTBOX_KEEP_S:
+                await r.hdel(OUTBOX, entry)
+                MESSENGER_HEALTH["outbox_given_up"] += 1
+                logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat or row could not be read "
+                             f"for {OUTBOX_KEEP_S // 3600} h: given up")
+            return 0
+    note = d.get("note") or (NOT_SENT["unknown"] if state == "sending" else NOT_SENT_RESTART)
+    if await _tell_agent(cid, str(note), _note_id(entry)):
+        await r.hdel(OUTBOX, entry)
+        MESSENGER_HEALTH["told_later"] += 1
+        return 1
+    if time.time() - at > OUTBOX_KEEP_S:
+        await r.hdel(OUTBOX, entry)
+        MESSENGER_HEALTH["outbox_given_up"] += 1
+        logger.error(f"[messenger] conv {cid}: an agent's note still not saved after {OUTBOX_KEEP_S // 3600} h: "
+                     f"given up")
+    return 0
 
 
 async def _recover_one(r, k: str, waiting: set[str]) -> str:

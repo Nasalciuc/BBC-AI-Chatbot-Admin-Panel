@@ -57,11 +57,12 @@ def fresh(monkeypatch):
 
 @pytest.fixture
 def redis():
-    from tests.fake_redis import compare_and_delete
+    from tests.fake_redis import compare_and_delete, compare_and_pexpire
 
     r = FakeRedis()
-    # The recovery's lock is let go only while it is still the pass's own (conversation_lock's script).
+    # The recovery's lock is renewed and let go only while it is still the pass's own (conversation_lock's scripts).
     r.register(mc.RELEASE_LUA, compare_and_delete)
+    r.register(mc.RENEW_LUA, compare_and_pexpire)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -1657,6 +1658,96 @@ async def test_the_agents_notes_are_told_a_part_at_a_time_and_the_events_still_g
         passes = [(await mc.run_messenger_recover())["told"] for _ in range(4)]
     assert all(n <= 2 for n in passes) and sum(passes) == 5 and not await redis.hgetall(mc.OUTBOX)
     assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == [f"Note {i}" for i in range(5)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost", [False, True])
+async def test_a_pass_keeps_its_lock_while_a_slow_event_runs_and_starts_nothing_once_it_is_lost(chat, redis,
+                                                                                               monkeypatch, lost):
+    """CodeRabbit #288: an event that takes longer than the lock's own time: the pass renews its lock while it runs,
+    so a pass that starts meanwhile finds it busy, and both events are answered by the one pass. Rule 5: the lock
+    found lost (another pass holds it now), the pass starts no other event and leaves that pass's lock alone."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    redis.kv[mc.INBOX]["m1"] -= 1  # the oldest
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="q1", psid="PSID-8", text="Hello"))
+    redis.kv[mc.INBOX]["q1"] -= mc.RECOVER_AFTER_S + 1
+
+    async def slow(ev, *, by="gateway"):
+        if lost and ev.mid == "m1":
+            await redis.set(mc.RECOVER_LOCK, "another-pass", ex=60)
+        await asyncio.sleep(0.5)
+        return {"replies": []}
+
+    monkeypatch.setattr(mc, "RECOVER_LOCK_S", 0.3)
+    monkeypatch.setattr(mc, "handle", slow)
+    first = asyncio.create_task(mc.run_messenger_recover())
+    await asyncio.sleep(0.4)  # past the lock's own time, m1 still on its way
+    second = await mc.run_messenger_recover()
+    out = await first
+    assert second["state"] == "busy"
+    if lost:
+        assert out["answered"] == 1 and set(redis.kv[mc.INBOX]) == {"q1"}
+        assert redis.kv[mc.RECOVER_LOCK] == "another-pass"
+    else:
+        assert out["answered"] == 2 and not redis.kv[mc.INBOX] and mc.RECOVER_LOCK not in redis.kv
+
+
+@pytest.mark.asyncio
+async def test_notes_that_keep_failing_never_keep_the_others_from_their_turn(chat, redis, monkeypatch):
+    """CodeRabbit #288: Redis gives the outbox whole in one part (HSCAN's COUNT is only a hint), and the first notes
+    in it keep failing to be saved: each pass goes on after the last delivery it looked at, so the others are told
+    in the next passes. Rule 5: once the database takes them, the failing ones are told too, once."""
+    redis.scan_whole = True
+    redis.kv[mc.OUTBOX] = {f"e{i}": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold",
+                                                 "note": f"Note {i}", "at": time.time()}) for i in range(6)}
+    monkeypatch.setattr(mc, "TELL_BATCH", 2)
+    real = mc._tell_agent
+    failing = {"Note 0", "Note 1"}
+
+    async def refuses_some(cid, note, note_id=None):
+        return False if note in failing else await real(cid, note, note_id)
+
+    monkeypatch.setattr(mc, "_tell_agent", refuses_some)
+    passes = [(await mc.run_messenger_recover())["told"] for _ in range(3)]
+    assert passes == [0, 2, 2] and set(await redis.hgetall(mc.OUTBOX)) == {"e0", "e1"}
+    failing.clear()
+    passes = [(await mc.run_messenger_recover())["told"] for _ in range(2)]
+    assert sum(passes) == 2 and not await redis.hgetall(mc.OUTBOX)
+    assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == [f"Note {i}" for i in range(6)]
+
+
+@pytest.mark.asyncio
+async def test_a_note_whose_save_hangs_is_cut_at_the_notes_time_and_the_events_still_get_theirs(chat, redis,
+                                                                                               monkeypatch):
+    """CodeRabbit #288: one note's save hangs (the database slow): it is cut at TELL_BUDGET_S, and the inbox's event
+    is answered in the same pass. Rule 5: the database back, that note is told, once."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    redis.kv[mc.OUTBOX] = {"e-slow": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold", "note": "Slow",
+                                                  "at": time.time()})}
+    hang = {"on": True}
+    real = mc._tell_agent
+
+    async def slow(cid, note, note_id=None):
+        if hang["on"]:
+            await asyncio.sleep(30)
+        return await real(cid, note, note_id)
+
+    monkeypatch.setattr(mc, "_tell_agent", slow)
+    monkeypatch.setattr(mc, "TELL_BUDGET_S", 0.1)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await asyncio.wait_for(mc.run_messenger_recover(), 2)
+        assert out["told"] == 0 and out["answered"] == 1 and len(await redis.hgetall(mc.OUTBOX)) == 1
+        hang["on"] = False
+        later = [(await mc.run_messenger_recover())["told"] for _ in range(2)]
+    assert sum(later) == 1 and [r["content"] for r in chat.rows if r["role"] == "system"] == ["Slow"]
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and not await redis.hgetall(mc.OUTBOX)
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,8 @@ class FakeRedis:
         self.kv: dict[str, Any] = {}
         self.expires: dict[str, float] = {}
         self.down = False
+        # HSCAN's COUNT is a hint: Redis gives a small hash whole in one part, whatever the COUNT. True does that.
+        self.scan_whole = False
         self.calls: list[str] = []
         self.scripts: dict[str, Any] = {}  # script text -> python function(keys, args)
 
@@ -248,13 +250,13 @@ class FakeRedis:
 
     async def hscan(self, key: str, cursor: int = 0, match: Optional[str] = None,
                     count: Optional[int] = None) -> tuple[int, dict[str, str]]:
-        """A part of the hash from `cursor` (here its place in the fields), about `count` fields, and where the next
-        part starts (0: none left)."""
+        """A part of the hash from `cursor` (here its place in the fields), about `count` fields (all of them with
+        scan_whole), and where the next part starts (0: none left)."""
         self._check("hscan")
         if not self._alive(key):
             return 0, {}
         items = list(self.kv[key].items())
-        n = count or 10
+        n = len(items) if self.scan_whole else (count or 10)
         after = cursor + n
         return (after if after < len(items) else 0), dict(items[cursor:after])
 
