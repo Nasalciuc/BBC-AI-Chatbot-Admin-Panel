@@ -110,19 +110,24 @@ What the API does with an event:
   Skye's ask for words, an echo) is saved before anything answers it, and never twice: the row's id is made from
   the event's key and the row's part (UUID v5), so an insert made again (a delivery made again, the recovery, after
   an insert whose answer was lost) is refused by the database and the row stored before is read back and used
-  (`saved_once`), with no mark in Redis to lose. Not saved, or stored before and not readable: the event fails.
+  (`saved_once`), with no mark in Redis to lose; the chat's activity clocks, which the lost insert never moved,
+  catch up to that row's own time, never back from a newer message's (one guarded UPDATE a clock). Not saved, or
+  stored before and not readable: the event fails.
 - **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: `pending` for 2 minutes, then the replies
   given and who sent them, a day): a delivery made again gets the same replies and no second turn (none when the
   API sent them itself); one made while the first is still answered gets 409. An event that fails clears its mark,
   so the next delivery is answered. Redis down: answered without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
-  JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once
-  10 minutes have passed (longer than the gateway's own tries of a kept event), its replies sent through
-  `/v1/send`; the gateway down then, the same replies go the next minute, without a second turn. One process at a
-  time (a lock in Redis); after 60 tries, or unreadable, the event is given up (`recover_given_up`, logged
-  without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The recovery sends again only
-  what never reached the gateway (`gateway`); replies the gateway had and never answered for (`unknown`) are never
-  sent a second time.
+  JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once 10
+  minutes have passed (longer than the gateway's own tries of a kept event), its replies sent through `/v1/send`; the
+  gateway down then, the same replies go the next minute, without a second turn. One process at a time (a lock in
+  Redis, held under the pass's own token and let go only while it is still that pass's, so a pass that outlived it
+  never frees the next one's); a pass starts nothing new after 2 minutes, so what it began ends within the lock's 5,
+  and the agents' notes go first within 30 seconds and 20 of them at most (the outbox gone through in parts, a cursor
+  kept between passes), so the events always get their part. After 60 tries, or unreadable, the event is given up
+  (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
+  recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
+  (`unknown`) are never sent a second time.
 - **Sent once.** Each send of an event's replies the API makes (the recovery's, or an earlier event's below) is
   written down before it starts (`msgr:inbox:sending:<key>`: when) and once it is over (`done`), then the event
   leaves the inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox
@@ -136,7 +141,9 @@ What the API does with an event:
   (`answered_first`), so they are never lost if this one then fails; this one's replies go back to the gateway as
   usual. One still being answered elsewhere, or answered with its replies not sent yet (the gateway could not be
   reached: the recovery sends them, without a second turn), or being sent now, makes this one wait (409: the
-  gateway tries again); one failing again makes this one fail too, kept behind it. The recovery goes oldest first,
+  gateway tries again); one failing again makes this one fail too, kept behind it, and so does one Redis could
+  not read (never taken for one gone: this one is never answered past it). One there and unreadable is left to the
+  recovery to give up. Redis down (this one not kept): there is no inbox to look in. The recovery goes oldest first,
   and a person whose event still waits has their later ones wait that minute, untried.
 
 ## The API → the gateway
@@ -174,17 +181,19 @@ sending the rest), or "try again". The API's own call to `/v1/send` with no answ
 sends anything), nothing went out (`gateway`, "try again"); anything else (a lost connection, the 80 seconds over,
 any 5xx: the gateway never answers one, and a proxy may once the gateway had the call), `unknown`.
 
-A shutdown gives the sends on their way 8 seconds, then 2 for the notes; each agent whose message did not go out
-then is told (not sent, or maybe not when it was with the gateway already), and a message saved after it began is
-told at once (`cut_at_shutdown`). An agent's message is written down in Redis (`msgr:outbox`) before it is handed on
-(whatever the chat: a site chat's is crossed out once where it goes is looked up) until it went out or its agent was
-told, so nothing a shutdown can cut comes before it, and a note the shutdown could not save is not lost: once the
-stopped process's alive mark is gone (`msgr:alive:<process>`, 5 minutes, renewed each minute and by each message
-written down), the next process's recovery minute tells the agent (`told_later`), once (the note's id is the
-delivery's), when the chat is on Messenger (one left before that was looked up is looked up then: a site chat's
-says nothing, a chat not read is looked at again the next minute). A note that could not be saved in a live process
-stays written down too (`untold`), and the minute saves it; after 2 days, or unreadable, given up
-(`outbox_given_up`). Redis down: not written down (`outbox_unsaved`).
+A shutdown gives the sends on their way 8 seconds, then 2 for the notes; each agent whose message did not go out then
+is told (not sent, or maybe not when it was with the gateway already), and a message saved after it began is told at
+once (`cut_at_shutdown`). An agent's message is written down in Redis (`msgr:outbox`) before it is handed on (whatever
+the chat: a site chat's is crossed out once where it goes is looked up) until it went out or its agent was told, so
+nothing a shutdown can cut comes before it, and a note the shutdown could not save is not lost. It goes to the gateway
+only once its being sent is written down too (Redis refusing that: not sent, "try again"), so a stop never says "not
+sent" of one that may be with the client; a send whose end was known before a stop says that end (sent: nothing to
+tell; refused: its own note). Once the stopped process's alive mark is gone (`msgr:alive:<process>`, 5 minutes,
+renewed each minute and by each message written down), the next process's recovery minute tells the agent
+(`told_later`), once (the note's id is the delivery's), when the chat is on Messenger (one left before that was looked
+up is looked up then: a site chat's says nothing, a chat not read is looked at again the next minute). A note that
+could not be saved in a live process stays written down too (`untold`), and the minute saves it; after 2 days, or
+unreadable, given up (`outbox_given_up`). Redis down: not written down (`outbox_unsaved`).
 
 ## Sending (the gateway)
 
@@ -201,7 +210,9 @@ again (the Send API takes no key that would make a second send the same message)
 not told failed (the transport writes apart from the call's own wait, and a deadline can end the wait before the
 write's end is told; the 10 seconds over included), and any other 5xx (500 with code 1 or none, 502, 503 or 504
 that do not say: a server or a proxy failed once it may have had the call, RFC 9110; a proxy answers 503 too when
-the server it passed the call to went away): `unknown` (`unconfirmed`). A 200 is a message sent, whatever its body.
+the server it passed the call to went away): `unknown` (`unconfirmed`). A refusal's body is believed only whole: a
+code read from a body cut short or not Meta's shape whole (a field of the wrong type) says nothing, and only the
+status decides. A 200 is a message sent, whatever its body.
 A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. The rest is counted
 by kind.
 
@@ -215,8 +226,9 @@ by kind.
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
 | `msgr:inbox:sending:<key>` | string | the API's send of its replies: when it began, then `done` | until it leaves the inbox |
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
-| `msgr:recover:lock` | string | one process recovers at a time | 5 min |
+| `msgr:recover:lock` | string | the pass's own token: one process recovers at a time | 5 min |
 | `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "note"?}` a delivery | until sent or told |
+| `msgr:outbox:cursor` | string | where the recovery's next part of the outbox starts | 2 days |
 | `msgr:alive:<process>` | string | a process that writes deliveries down is alive | 5 min, renewed |
 | `msgr:conv:<conversation id>` | string | `{"page_id", "psid"}` | 30 days, renewed by each event |
 | `msgr:ref:<visitor id>` | string | a referral before the first message | 7 days |
