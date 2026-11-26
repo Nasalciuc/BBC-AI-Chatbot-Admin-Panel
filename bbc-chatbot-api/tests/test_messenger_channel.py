@@ -3175,17 +3175,22 @@ async def test_a_late_sends_putting_back_whose_answer_was_lost_never_goes_after_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("then", ["taken_as_it_was_put_back", "kept_from_before", "with_its_meta_time"])
+@pytest.mark.parametrize("then", ["taken_as_it_was_put_back", "kept_from_before", "with_its_meta_time",
+                                  "taken_once_back_its_meta_time_ahead"])
 async def test_a_late_send_puts_its_event_back_before_the_persons_later_ones(chat, redis, monkeypatch, then):
     """CodeRabbit #288: as above, A's late send puts the person's first message back in the inbox, an event with no
     Meta time (0): its place is never later than its send began, and before any of the person's still kept, never
     "now". Their second, taken by B as the first is put back (B's take reads Redis's clock, the putting back runs,
     then B's take is written), or taken before A's send began and kept since, is behind it: it waits (409) while A's
-    send of the first is on its way, then goes after it, nothing sent twice. Rule 5: the first with its Meta time,
-    the same."""
+    send of the first is on its way, then goes after it, nothing sent twice. The first with its Meta time an hour
+    ahead of Redis's clock (the sender's clock), and the second taken only once the first is back, while its send is
+    on its way: behind it too, Meta's time never its place. Rule 5: the first with its Meta time, the same."""
     import asyncio
 
-    first = event(mid="m1", timestamp=100 if then == "with_its_meta_time" else 0)
+    racing = then in ("taken_as_it_was_put_back", "with_its_meta_time")
+    meta_time = {"with_its_meta_time": 100,
+                 "taken_once_back_its_meta_time_ahead": int((time.time() + 3600) * 1000)}.get(then, 0)
+    first = event(mid="m1", timestamp=meta_time)
     second = event(mid="m2", text="Second", timestamp=200)
     _turns(chat, fail_first=2 if then == "kept_from_before" else 1)
     with pytest.raises(mc.EventFailed):
@@ -3226,7 +3231,7 @@ async def test_a_late_send_puts_its_event_back_before_the_persons_later_ones(cha
         monkeypatch.setattr(mc, "SENDING_S", sending_s)
         real_eval = redis.eval
         rekept, b_read = asyncio.Event(), asyncio.Event()
-        hold_b = {"on": then != "kept_from_before"}
+        hold_b = {"on": racing}
 
         async def eval_(script, numkeys, *keys_and_args):
             if script == mc.LAST_TAKEN_LUA and hold_b["on"]:
@@ -3240,7 +3245,7 @@ async def test_a_late_send_puts_its_event_back_before_the_persons_later_ones(cha
 
         monkeypatch.setattr(redis, "eval", eval_)
         b = None
-        if then != "kept_from_before":
+        if racing:
             b = asyncio.create_task(mc.handle(second))  # B takes the second
             await asyncio.wait_for(b_read.wait(), 1)
         become("process-a", a_knows)  # A reaches Redis again
