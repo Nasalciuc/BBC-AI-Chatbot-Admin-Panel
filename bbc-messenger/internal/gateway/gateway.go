@@ -188,6 +188,8 @@ type intake struct {
 	holdFor  time.Duration
 	held     map[string]*hold // person → their wait
 	mostHeld int
+	// sweeps counts the times holdLocked went through the whole inventory for room (the tests read it).
+	sweeps int
 }
 
 type stamp struct {
@@ -304,6 +306,9 @@ func (in *intake) liveLocked(p string, now time.Time, key string) (*hold, int) {
 // after those already there), unless it was taken before or is there already; a person with none starts a wait.
 // It answers how many it could not hold, and how many refused events of a wait that outlived HoldFor it dropped.
 func (in *intake) holdLocked(rest []meta.Inbound, now time.Time) (unheld, expired int) {
+	// The inventory is gone through for room once a call at most: now does not move within it, and a wait started
+	// in it is not over before it ends, so a second time would free nothing (under the intake's lock).
+	swept := false
 	for _, ev := range rest {
 		key, p := ev.Key(), person(ev)
 		if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
@@ -314,9 +319,11 @@ func (in *intake) holdLocked(rest []meta.Inbound, now time.Time) (unheld, expire
 		if h != nil && h.has(key) {
 			continue
 		}
-		if h == nil && len(in.held) >= in.mostHeld {
+		if h == nil && len(in.held) >= in.mostHeld && !swept {
 			// No room for a new person: the waits that outlived HoldFor make it first (the ticker's forget may not
 			// have come yet), counted as it counts them; only live waits fill it.
+			swept = true
+			in.sweeps++
 			for q := range in.held {
 				_, m := in.liveLocked(q, now, "")
 				expired += m

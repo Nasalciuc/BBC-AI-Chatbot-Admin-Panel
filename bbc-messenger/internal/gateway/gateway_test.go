@@ -764,6 +764,25 @@ func TestAFullInventoryMakesRoomFromWaitsPastHoldForBeforeRefusingANewPerson(t *
 	}
 }
 
+func TestAFullInventoryIsGoneThroughForRoomOnceABatch(t *testing.T) {
+	// CodeRabbit #288: new people in one delivery, the room filled by live waits: the inventory is gone through once
+	// for waits past HoldFor, not once a new person (each time under the intake's lock). Rule 5: with room, never.
+	refuse := func(meta.Inbound) bool { return false }
+	in := newIntake(time.Hour, 1000, time.Minute)
+	in.mostHeld = 2
+	t0 := time.Unix(1_800_000_000, 0)
+	if _, unheld, _ := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1")}, t0, refuse); unheld != 0 || in.sweeps != 0 {
+		t.Fatalf("with room: %d not held, the inventory gone through %d times", unheld, in.sweeps)
+	}
+	batch := []meta.Inbound{inbound("PSID-C", "c1"), inbound("PSID-D", "d1"), inbound("PSID-E", "e1")}
+	if _, unheld, expired := in.admit(batch, t0.Add(10*time.Second), refuse); unheld != 3 || expired != 0 {
+		t.Fatalf("%d not held, %d no longer waited for", unheld, expired)
+	}
+	if in.sweeps != 1 {
+		t.Errorf("the inventory gone through %d times for one delivery", in.sweeps)
+	}
+}
+
 func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
 	in := newIntake(time.Hour, 3, time.Minute)
 	t0 := time.Unix(1_800_000_000, 0)
