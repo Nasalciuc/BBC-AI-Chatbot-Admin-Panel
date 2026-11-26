@@ -194,6 +194,9 @@ MESSENGER_HEALTH: dict[str, int] = {
     "target_unread": 0,      # an agent's message whose chat could not be read: kept for the minute, never dropped
     "off_skipped": 0,        # rows that waited for the chat's previous one while the channel was turned off: not sent;
     #                          a kept event's replies met with the channel off since: kept, sent once it is on again
+    "off_unsettled": 0,      # an agent's message the channel went off for whose entry Redis would neither write as off
+    #                          nor cross out: it reads "sending", so once its process stopped, the next one's minute
+    #                          tells its agent it may have gone out (a note too many, never a message lost silently)
     "cut_at_shutdown": 0,    # rows a shutdown did not wait for: their agents are told
     "outbox_unsaved": 0,     # agents' messages not written down (Redis down): one a shutdown cuts may go untold
     "told_later": 0,         # agents told by the recovery minute: a stopped process's message, or a note not saved
@@ -586,8 +589,15 @@ async def _deliver(conversation_id: str, role: str, row: dict, state: dict) -> N
         state["note"] = ""  # its end known: a stop now tells nothing
         # Written down as off first: a cross-out Redis refuses leaves it reading as off, never as a send that may have
         # reached the person, and a recovery minute crosses it out without a note, this process alive or not.
-        await _mark_entry(entry, conversation_id, "off")
-        await _cross_out(entry)
+        marked = await _mark_entry(entry, conversation_id, "off")
+        if not await _cross_out(entry) and not marked:
+            # Redis took neither: it still reads "sending". No minute takes it up while this process lives (its alive
+            # mark); stopped before Redis takes a write, the next process's minute tells its agent it may have gone
+            # out, as for any send a stopped process began: a note too many, never a message lost without one.
+            MESSENGER_HEALTH["off_unsettled"] += 1
+            logger.error(f"[messenger] conv {conversation_id}: an agent's message the channel went off for, not sent, "
+                         f"left reading as sending (Redis took neither its off nor its cross-out): its agent may be "
+                         f"told it may have gone out")
         return
     state["sending"] = True
     result = await send(target["page_id"], target["psid"], [{"text": text}])
@@ -720,17 +730,22 @@ async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, no
         return False
 
 
-async def _cross_out(entry: Optional[str]) -> None:
-    """A written-down delivery done with: it went out, or its agent was told."""
-    r = get_redis(even_cooling_down=True) if entry is not None else None
+async def _cross_out(entry: Optional[str]) -> bool:
+    """A written-down delivery done with: it went out, or its agent was told. True once nothing is left written down
+    (crossed out, or there was no entry); False when it is still there (Redis gone or failing: logged)."""
+    if entry is None:
+        return True
+    r = get_redis(even_cooling_down=True)
     if r is None:
-        return
+        return False
     try:
         await r.hdel(OUTBOX, entry)
+        return True
     except Exception as e:
         redis_failed("messenger outbox", e)
         logger.warning(f"[messenger] a delivery done with not crossed out (a stopped process's note may follow): "
                        f"{type(e).__name__}: {e}")
+        return False
 
 
 async def _target(conversation_id: str, role: str) -> Optional[dict]:
