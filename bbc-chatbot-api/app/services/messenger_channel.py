@@ -1103,7 +1103,8 @@ async def _write_held(r, key: str) -> bool:
     raises, and it stays held."""
     token, answer = _UNKEPT[key]
     kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, answer, ANSWERED_S)
-    _UNKEPT.pop(key, None)
+    if _UNKEPT.get(key) == (token, answer):
+        del _UNKEPT[key]  # only the one written: a newer turn's, held meanwhile, stays
     if not kept:
         MESSENGER_HEALTH["claim_lost"] += 1
         logger.warning("[messenger] an answer held by this process not written: another delivery or pass took the "

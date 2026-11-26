@@ -3051,6 +3051,28 @@ async def test_a_claim_let_go_of_between_its_set_and_get_is_taken_again_before_t
 
 
 @pytest.mark.asyncio
+async def test_a_newer_held_answer_is_never_dropped_by_the_write_of_an_older_one(redis, monkeypatch):
+    """CodeRabbit #288: this process writes an answer it holds, and while Redis answers, a newer turn of the same event
+    has its own held (its write refused): the older one's write never drops the newer one, which stays to be
+    written. Rule 5: the one written, still the one held, is dropped
+    (test_a_recovered_answer_redis_did_not_take_is_written_before_it_is_sent_never_answered_twice)."""
+    key = "msgr:event:m1"
+    mc._UNKEPT[key] = ("pending:older", json.dumps({"replies": [], "by": "api"}))
+    newer = ("pending:newer", json.dumps({"replies": [{"text": "Newer"}], "by": "api"}))
+    real_eval = redis.eval
+
+    async def eval_(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.KEEP_ANSWER_LUA:
+            mc._UNKEPT[key] = newer  # held meanwhile by a newer turn
+        return out
+
+    monkeypatch.setattr(redis, "eval", eval_)
+    assert await mc._write_held(redis, key)
+    assert mc._UNKEPT.get(key) == newer
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("held_by", ["mine", "theirs"])
 async def test_a_turns_claim_is_renewed_only_while_it_holds_the_turns_own_token(redis, monkeypatch, held_by):
     """CodeRabbit #288: a turn's renewal finds another delivery's claim on the event (its own ran out, and the event
