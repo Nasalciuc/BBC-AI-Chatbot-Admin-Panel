@@ -38,8 +38,9 @@ the API's `MESSENGER_GATEWAY_URL` and `MESSENGER_GATEWAY_SECRET` set. No migrati
   again, or one more of theirs refused, never starts it again; what the wait still had is `hold_expired`, counted at
   the next delivery of its person or by the minute's cleanup; waited for near Meta's hour, the person's own
   deliveries failing would put the whole app at risk), at most 10,000 people wait at once and each for 100 events
-  (memory: what does not fit is not waited for, `hold_full`). Past them, a later event may reach the API before a
-  refused one, which the API still answers once.
+  (memory: what does not fit is not waited for, `hold_full`; a new person who finds no room first has the waits past
+  their 15 minutes dropped, counted in `hold_expired`, so only live waits fill it). Past them, a later event may reach
+  the API before a refused one, which the API still answers once.
 
 Webhook fields to subscribe on each Page: `messages`, `messaging_postbacks`, `messaging_referrals`,
 `message_echoes`, `messaging_handovers`.
@@ -138,7 +139,8 @@ What the API does with an event:
   not cleared after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never
   over (a process stopped in the middle of it: maybe with the person) leaves it too, counted (`recover_unsure`);
   one begun lately is on its way, and the event waits. Only a send that never reached the gateway clears its mark
-  and goes again.
+  and goes again; its mark not cleared then (Redis failing), the process clears it the next time it looks at the
+  event, however long Redis took (one that stopped first leaves it to read as begun: never sent twice).
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -176,8 +178,9 @@ seconds, and a send cut then has no answer, its outcome unknown to the API even 
 `unknown`). `parts` is counted before the wait for the person's other sends, so a send that never got its turn still
 says how many there were. 401 a call not signed by the API, 404 a Page the gateway has no token for.
 
-The API sends a chat's rows one after another (an agent's "joined" line and their message never cross); a row
-waiting for the chat's previous one is not sent if the channel was turned off meanwhile (`off_skipped`). Where a
+The API sends a chat's rows one after another, in the order they were stored (a row's place is taken as it is
+stored, before the live push: an agent's "joined" line and their message never cross); a row waiting for the chat's
+previous one is not sent if the channel was turned off meanwhile (`off_skipped`). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata. When an agent's message did not go out, the agent sees a line
 in the chat, stored and never sent: past the 24 hours "reach them by SMS or email" (the owner's default until they
@@ -225,8 +228,8 @@ not told failed (the transport writes apart from the call's own wait, and a dead
 write's end is told; the 10 seconds over included), and any other 5xx (500 with code 1 or none, 502, 503 or 504
 that do not say: a server or a proxy failed once it may have had the call, RFC 9110; a proxy answers 503 too when
 the server it passed the call to went away): `unknown` (`unconfirmed`). A refusal's body is believed only whole: a
-code read from a body cut short or not Meta's shape whole (a field of the wrong type) says nothing, and only the
-status decides. A 200 is a message sent, whatever its body.
+code read from a body cut short, longer than the 64 KiB read, or not Meta's shape whole (a field of the wrong type)
+says nothing, and only the status decides. A 200 is a message sent, whatever its body.
 A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. The rest is counted
 by kind.
 
