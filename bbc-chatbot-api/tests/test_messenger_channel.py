@@ -4186,7 +4186,10 @@ async def test_an_answer_held_to_send_at_the_last_try_is_sent_never_given_up(cha
         monkeypatch.setenv("MESSENGER_CHANNEL", "true")
         out = await mc.run_messenger_recover()
     assert (out["answered"], out["given_up"]) == (1, 0) and mc.MESSENGER_HEALTH["recover_given_up"] == 0
-    assert gw.sent[-1] == f"About: {text}" and not redis.kv[mc.INBOX]
+    # Every call the gateway got: the channel off, the one send once it is on; the gateway not reached, that call
+    # (nothing went out) and one send after it. Never a further send of the saved answer.
+    calls = 1 if held_by == "the_channel_turned_off" else 2
+    assert gw.sent == [f"About: {text}"] * calls and not redis.kv[mc.INBOX]
     assert len(chat.requests) == 2, "the turn that failed, then one turn: never a second"
 
 
