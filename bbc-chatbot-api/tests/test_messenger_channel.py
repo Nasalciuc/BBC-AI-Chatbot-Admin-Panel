@@ -4633,6 +4633,60 @@ async def test_a_take_redis_refuses_before_writing_anything_is_answered_as_not_k
 
 
 @pytest.mark.asyncio
+async def test_a_kept_event_waits_while_redis_refuses_the_write_of_its_passing(chat, redis, monkeypatch):
+    """CodeRabbit #288: Redis out of memory (noeviction) refuses every write that may take memory: the claim's, the
+    take's first, and the passing's (EARLIER_LUA reads the person's events, finds none earlier, and its SET of the
+    person's latest take is refused, nothing of it written). An event kept before then never runs its turn without
+    that mark (one passed unmarked could have an earlier one's late send go after its replies): it fails, kept (503
+    with X-Messenger-Kept, the gateway tries again, then the recovery), as with Redis away. Rule 5: Redis taking
+    writes again, the delivery made again is answered, its passing marked."""
+    from redis.exceptions import OutOfMemoryError
+
+    _turns(chat, fail_first=1)
+    second = event(mid="m2", text="Second", timestamp=200)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(second)  # kept: its turn failed
+    last = mc._last_key(second)
+    passing_before = redis.kv.get(last)
+    real_eval, real_set = redis.eval, redis.set
+    oom = OutOfMemoryError("command not allowed when used memory > 'maxmemory'.")
+
+    async def refused_eval(script, numkeys, *keys_and_args):
+        if script in (mc.LAST_TAKEN_LUA, mc.TAKE_LUA, mc.KEEP_ANSWER_LUA, mc.GIVE_TO_GATEWAY_LUA):
+            raise oom
+        if script == mc.EARLIER_LUA:
+            mark = redis.kv.get(last)
+            out = await real_eval(script, numkeys, *keys_and_args)
+            if not out:  # it would mark the passing: that SET refused, nothing of it written
+                if mark is None:
+                    redis.kv.pop(last, None)
+                else:
+                    redis.kv[last] = mark
+                raise oom
+            return out
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    async def refused_set(*a, **kw):
+        raise oom
+
+    turns = len(chat.requests)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(redis, "eval", refused_eval)
+        monkeypatch.setattr(redis, "set", refused_set)
+        with pytest.raises(mc.EventFailed) as failed:
+            await mc.handle(second)
+        assert failed.value.kept and len(chat.requests) == turns, "its turn never ran without its passing marked"
+        assert "m2" in redis.kv[mc.INBOX] and redis.kv.get(last) == passing_before and gw.sent == []
+        monkeypatch.setattr(redis, "eval", real_eval)
+        monkeypatch.setattr(redis, "set", real_set)
+        redis_client.set_client_for_tests(redis)  # Redis taking writes again, its cooldown over
+        out = await mc.handle(second)
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and "m2" not in redis.kv[mc.INBOX]
+    assert float(redis.kv[last]) > float(passing_before or 0), "its passing marked"
+
+
+@pytest.mark.asyncio
 async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_recovery(chat, redis):
     """A cooldown begun during the turn (another call's failure, process wide, while Redis answers): the event's mark
     and its place in the inbox are written all the same, so the recovery finds nothing left and never sends the person
