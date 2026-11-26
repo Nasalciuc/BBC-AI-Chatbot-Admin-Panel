@@ -1488,23 +1488,86 @@ async def test_a_send_that_sent_nothing_goes_again_after_its_mark_could_not_be_c
     is never sent again (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again)."""
     await _fail_once(chat, redis)
     _turns(chat)
-    real_delete = redis.delete
-    blinks = {"on": True}
-
-    async def delete(*keys):
-        if blinks["on"] and any(str(k).startswith(f"{mc.INBOX}:sending:") for k in keys):
-            raise ResponseError("LOADING Redis is loading the dataset in memory")
-        return await real_delete(*keys)
-
     gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
     with patch.object(mc, "send", new=gw):
-        monkeypatch.setattr(redis, "delete", delete)
+        blinks = _blink_send_marks(redis, monkeypatch)
         assert (await mc.run_messenger_recover())["waiting"] == 1
         assert f"{mc.INBOX}:sending:m1" in redis.kv, "its mark left by the failed clear"
         blinks["on"] = False
-        redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time() - mc.SENDING_S - 1)
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)  # however long it waited: past SENDING_S
         assert (await mc.run_messenger_recover())["answered"] == 1
     assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] * 2 and len(chat.requests) == 2
+    assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
+
+
+def _blink_send_marks(redis, monkeypatch) -> dict:
+    """Redis failing for the clear of a send's mark (its delete, or its compare and delete) while "on"."""
+    real_eval, real_delete = redis.eval, redis.delete
+    blinks = {"on": True}
+
+    def sending(key) -> bool:
+        return str(key).startswith(f"{mc.INBOX}:sending:")
+
+    async def eval_(script, numkeys, *keys_and_args):
+        if blinks["on"] and script == mc.RELEASE_LUA and sending(keys_and_args[0]):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    async def delete(*keys):
+        if blinks["on"] and any(sending(k) for k in keys):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_delete(*keys)
+
+    monkeypatch.setattr(redis, "eval", eval_)
+    monkeypatch.setattr(redis, "delete", delete)
+    return blinks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["alive", "gone"])
+async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the_same_redis(chat, redis, monkeypatch,
+                                                                                            owner):
+    """CodeRabbit #288: two API processes on one Redis. Process A's send never reached the gateway and its mark could
+    not be cleared (Redis failing): process B, meeting the mark past SENDING_S while A is alive, waits; A's next minute
+    clears it, the lock held by B or not, and the same replies go, once, with no second turn. Rule 5: A gone before it
+    could, what it knew went with it: B takes the mark for a send begun, maybe out, never sent again (counted), as an
+    outcome the gateway may have had is (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again)."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", type(mc._UNSENT)())
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        assert f"{mc.INBOX}:sending:m1" in redis.kv, "its mark left by the failed clear"
+        blinks["on"] = False
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)  # however long it waited: past SENDING_S
+        a_knows = mc._UNSENT.copy()
+        become("process-b", type(mc._UNSENT)())
+        if owner == "gone":
+            redis.kv.pop("msgr:alive:process-a")
+            out = await mc.run_messenger_recover()
+            assert out["answered"] == 1 and mc.MESSENGER_HEALTH["recover_unsure"] == 1
+            assert gw.sent == [reply] and not redis.kv[mc.INBOX] and len(chat.requests) == 2
+            return
+        b = await mc.run_messenger_recover()
+        assert b["waiting"] == 1 and "m1" in redis.kv[mc.INBOX] and gw.sent == [reply]
+        # A's minute while a pass of B's holds the lock: A clears its own mark all the same.
+        redis.kv[mc.RECOVER_LOCK] = "a-pass-of-process-b"
+        become("process-a", a_knows)
+        assert (await mc.run_messenger_recover())["state"] == "busy"
+        assert f"{mc.INBOX}:sending:m1" not in redis.kv
+        redis.kv.pop(mc.RECOVER_LOCK)
+        become("process-b", type(mc._UNSENT)())
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == [reply] * 2 and len(chat.requests) == 2
     assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
 
 
@@ -1823,7 +1886,8 @@ async def test_recovered_replies_sent_and_left_in_the_inbox_are_never_sent_again
         assert "m1" in redis.kv[mc.INBOX] and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
         assert (await mc.run_messenger_recover())["answered"] == 1
     assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and not redis.kv[mc.INBOX]
-    assert mc.MESSENGER_HEALTH["recover_unsure"] == 0 and f"{mc.INBOX}:sending:m1" not in redis.kv
+    # Its send's mark stays until it expires: nothing takes a send of them again.
+    assert mc.MESSENGER_HEALTH["recover_unsure"] == 0 and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
 
 
 @pytest.mark.asyncio
@@ -1933,6 +1997,56 @@ async def test_a_pass_keeps_its_lock_while_a_slow_event_runs_and_starts_nothing_
         assert redis.kv[mc.RECOVER_LOCK] == "another-pass"
     else:
         assert out["answered"] == 2 and not redis.kv[mc.INBOX] and mc.RECOVER_LOCK not in redis.kv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claim", ["kept", "lost"])
+async def test_an_event_whose_pass_lost_its_lock_mid_turn_is_sent_at_most_once(chat, redis, monkeypatch, claim):
+    """CodeRabbit #288, the real handle: the first pass's lock cannot be renewed (Redis failing for it) and expires
+    while the event's turn runs, before its send is written down, and a second pass takes the lock and the same event.
+    The turn's claim is renewed while it runs: the second pass finds the event still being answered and leaves it.
+    Rule 5: the claim lost too (its renewal failing as well), the second pass answers and sends it; the first, ending
+    after, sends nothing (the right to send is taken by one sender, and a send's mark stays past the release)."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    turn = chat.answer
+    inside, release = asyncio.Event(), asyncio.Event()
+    started = {"n": 0}
+
+    async def first_hangs(req, add_message):
+        started["n"] += 1
+        if started["n"] == 1:
+            inside.set()
+            await release.wait()
+        return await turn(req, add_message)
+
+    chat.answer = first_hangs
+    real_eval = redis.eval
+
+    async def renewal_fails(script, numkeys, *keys_and_args):
+        if script == mc.RENEW_LUA and (keys_and_args[0] == mc.RECOVER_LOCK or claim == "lost"):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", renewal_fails)
+    monkeypatch.setattr(mc, "RECOVER_LOCK_S", 0.3)
+    monkeypatch.setattr(mc, "PENDING_S", 0.3)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        first = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(inside.wait(), 1)  # the first pass's turn begun, its send not written down
+        await asyncio.sleep(0.45)  # past the lock's own time (and the claim's, when its renewal fails too)
+        second = await mc.run_messenger_recover()
+        release.set()
+        out = await asyncio.wait_for(first, 2)
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"], "one send, whichever pass made it"
+    assert not redis.kv[mc.INBOX]
+    if claim == "kept":
+        assert second["waiting"] == 1 and out["answered"] == 1 and started["n"] == 1
+    else:
+        assert second["answered"] == 1 and out["waiting"] == 1 and started["n"] == 2
 
 
 @pytest.mark.asyncio
