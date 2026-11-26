@@ -326,8 +326,10 @@ note: nothing went out; written down as `off` first, so one whose cross-out Redi
 the next minute, never told as maybe sent). When Redis refuses its write as `off` too, it still reads `sending`
 (`off_unsettled`, logged): its process, which knows nothing went out, crosses it out at its next minutes, the
 channel on or off, and keeps saying it is alive meanwhile, so no other process's minute takes it up. The limit: once
-that process stopped before Redis took a write, the next one's minute cannot tell it from a send a stopped process
-began, and tells its agent it may have gone out: a note too many, never a message lost without one. Where a
+that process stopped before Redis took a write, or was cut off from Redis past its alive mark's 5 minutes while
+another process's minute ran with the channel on, that minute cannot tell it from a send a stopped process began, and
+tells its agent it may have gone out, once (the process cut off, Redis back, finds it gone and tells nothing more): a
+note too many, never a message lost without one. Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
 chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
