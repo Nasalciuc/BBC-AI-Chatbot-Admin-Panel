@@ -546,6 +546,9 @@ async def add_message(
                 logger.error(f"add_message: message {message_id} refused as stored before, then not found "
                              f"conv={conversation_id}")
                 return None
+            # The insert whose answer was lost never moved the chat's clocks: they catch up to the row's time now,
+            # never back from a newer message's.
+            await _touch_conversation_activity(conversation_id, role, before.get("created_at"), catch_up=True)
             return StoredBefore(before)
         row = res.data[0] if res.data else None
         if row:
@@ -571,7 +574,7 @@ _ACTIVITY_CLOCKS: dict[str, tuple[str, ...]] = {
 
 
 async def _touch_conversation_activity(
-    conversation_id: str, role: str, created_at: Optional[str]
+    conversation_id: str, role: str, created_at: Optional[str], *, catch_up: bool = False
 ) -> None:
     """Keep the conversation's activity clocks current (migration 024).
 
@@ -579,15 +582,26 @@ async def _touch_conversation_activity(
     `messages` would be one extra query per row on every 5-second list poll,
     so the answer is cached on the conversation and refreshed here.
 
+    `catch_up`: a row found stored before (add_message: its insert's answer
+    was lost, so that insert never moved the clocks). Each clock moves to the
+    row's own time only while it is unset or earlier, in the UPDATE itself:
+    a newer message's time is never put back. No time on the row: nothing.
+
     Never fatal: a message must not be lost because a denormalised timestamp
     failed to write, and the columns may not exist yet if the code deploys
     ahead of the migration.
     """
     fields = _ACTIVITY_CLOCKS.get(role)
-    if not fields or not _supervisor_columns_available():
+    if not fields or not _supervisor_columns_available() or (catch_up and not created_at):
         return
     stamp = created_at or datetime.now(timezone.utc).isoformat()
     try:
+        if catch_up:
+            db = get_client()
+            for f in fields:
+                await _run_sync(lambda f=f: db.table("conversations").update({f: stamp}).eq("id", conversation_id)
+                                .or_(f'{f}.is.null,{f}.lt."{stamp}"').execute(), label="conv_activity")
+            return
         await update_conversation(conversation_id, {f: stamp for f in fields})
     except Exception as e:
         logger.warning(

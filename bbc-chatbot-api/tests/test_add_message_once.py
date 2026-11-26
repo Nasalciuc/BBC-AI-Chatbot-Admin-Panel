@@ -56,7 +56,58 @@ async def test_an_insert_made_again_finds_the_row_stored_before_and_stores_nothi
     dup = APIError({"code": "23505", "message": 'duplicate key value violates unique constraint "messages_pkey"'})
     row, touch, _ = await _add(_client(insert=dup, read=ROW), message_id=MID)
     assert isinstance(row, db.StoredBefore) and row == ROW
-    touch.assert_not_awaited()
+    # The insert whose answer was lost never moved the chat's clocks: they catch up to the row's own time.
+    touch.assert_awaited_once_with(CONV, "user", ROW["created_at"], catch_up=True)
+
+
+class _Conversations:
+    """The conversations table as a catch-up writes it: one UPDATE a clock, which lands only where its filter holds
+    (the clock unset, or earlier than the row's time)."""
+
+    def __init__(self, clocks: dict):
+        self.row = dict(clocks)
+        self.updates: list[str] = []
+
+    def table(self, name):
+        assert name == "conversations"
+        return self
+
+    def update(self, payload):
+        self._payload = payload
+        return self
+
+    def eq(self, column, value):
+        assert (column, value) == ("id", CONV)
+        return self
+
+    def or_(self, condition):
+        self._condition = condition
+        return self
+
+    def execute(self):
+        ((field, stamp),) = self._payload.items()
+        assert self._condition == f'{field}.is.null,{field}.lt."{stamp}"'
+        self.updates.append(field)
+        now = self.row.get(field)
+        if now is None or now < stamp:  # the same ISO form: compared as times
+            self.row[field] = stamp
+        return SimpleNamespace(data=[self.row])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before, after", [
+    (None, ROW["created_at"]),                       # never moved: caught up
+    ("2026-11-26T00:30:00Z", ROW["created_at"]),     # earlier: caught up
+    ("2026-11-26T02:00:00Z", "2026-11-26T02:00:00Z"),  # a newer message's time: never put back
+])
+async def test_a_row_stored_before_catches_its_chats_clocks_up_and_never_back(before, after):
+    table = _Conversations({"last_user_message_at": before})
+    with patch.object(db, "get_client", return_value=table), \
+            patch.object(db, "_supervisor_columns_available", return_value=True):
+        await db._touch_conversation_activity(CONV, "user", ROW["created_at"], catch_up=True)
+        # Rule 5: a row with no time of its own moves nothing (no guess at "now").
+        await db._touch_conversation_activity(CONV, "user", None, catch_up=True)
+    assert table.row["last_user_message_at"] == after and table.updates == ["last_user_message_at"]
 
 
 @pytest.mark.asyncio
