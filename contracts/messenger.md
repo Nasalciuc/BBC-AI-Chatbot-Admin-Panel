@@ -92,7 +92,9 @@ What the API does with an event:
   `utm_source: "messenger"`, `utm_medium` (`messenger_ads` for an ad, else `messenger`), `utm_campaign` (the ref),
   `messenger_referral`. A referral before the first message waits in Redis for the chat; with no chat yet, Redis is
   the only place it lives, so one Redis does not keep fails the event, delivered again (no Redis at all: nothing to
-  keep it in, best effort). One to a chat that goes on is saved to it, or the event fails and is delivered again (the
+  keep it in, best effort). The first chat reads it through the process's own cooldown, as it was kept; Redis failing
+  that read, the chat is made all the same, the person's answer first, counted (`referral_unread`). One to a chat
+  that goes on is saved to it, or the event fails and is delivered again (the
   next message goes on in that chat, and never reads the one kept in Redis).
 - **The turn.** A message (or a Page button, as its words) takes the widget's own turn (`app.api.chat.chat`): the
   blocklist, the message limit, the chat's doors, an agent who holds the chat, the card's buttons (a quick reply whose
@@ -120,7 +122,8 @@ What the API does with an event:
   stored before and not readable: the event fails.
 - **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: the turn's claim, `pending:<its own
   token>`, for 2 minutes, renewed every 40 seconds while its turn runs and only while it still holds that token,
-  then the replies given and who sent them, a day): a delivery made again gets the same replies and no second turn
+  then the replies given and who sent them, 2 days, as long as the inbox keeps an event, so an answer kept for the
+  API to send outlives its event's place): a delivery made again gets the same replies and no second turn
   (none when the API sent them itself); one made while the first is still answered, however long its turn takes,
   gets 409. A turn starts only on a claim it took: one let go of between the delivery's SET NX and its read (run
   out, or its turn failed) is taken again, and one let go of each time it is looked at reads as still answered
@@ -382,7 +385,7 @@ back (or gave them again to a delivery made again): the call's 75 seconds, then 
 
 | Key | Type | Holds | Lives |
 |---|---|---|---|
-| `msgr:event:<mid or kind:page:psid:time>` | string | the turn's claim, `pending:<its token>`, then `{"replies", "by": "gateway" \| "api"}` | 2 min, then a day |
+| `msgr:event:<mid or kind:page:psid:time>` | string | the turn's claim, `pending:<its token>`, then `{"replies", "by": "gateway" \| "api"}` | 2 min, then 2 days |
 | `msgr:inbox` | sorted set | the events taken and not answered yet, by when they were taken | until answered |
 | `msgr:inbox:<key>` | string | one of them, as the gateway handed it over | 2 days |
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
@@ -413,7 +416,7 @@ waits for the requests still running (an agent's send): both share the 25 second
 the queues without time.
 
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
-`turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
+`turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `referral_unread`, `no_dedupe`,
 `saved_once`, `not_kept`, `take_unsure`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
 `claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `turn_rows_left`, `bad_signature`,
 `sent`, `send_failed`
