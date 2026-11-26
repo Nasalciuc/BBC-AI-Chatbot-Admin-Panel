@@ -1,4 +1,5 @@
 """Conversation service — business logic for conversations."""
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -56,12 +57,24 @@ async def add_message(conversation_id: str, role: str, content: str,
         if not follows:  # once, whichever insert stored it
             follows.append(messenger_channel.place(conversation_id, role, stored, entry))
 
+    unknown: list = []
     kw: dict = {"message_id": message_id} if message_id else {}
     if outbound and role in ("ai", "agent", "system") and channel_on:
         kw["on_stored"] = hand_on
+        if entry is not None:
+            kw["on_unknown"] = lambda: unknown.append(True)
     ordered = messenger_channel.in_order(conversation_id) if "on_stored" in kw else contextlib.nullcontext()
     async with ordered:
-        row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+        try:
+            row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+        except asyncio.CancelledError:
+            if unknown and not follows:
+                # Cancelled, its insert's answer an error (stored with its answer lost, or refused): never placed.
+                # Marked unsure before the chat's next row may go, so the recovery minute looks its row up while
+                # this process lives: stored, the agent is told it was not sent; not stored, crossed out. Cancelled
+                # before its insert's end was known: left written down, for the next process's minute.
+                await messenger_channel.unsure(entry, conversation_id, message_id)
+            raise
         if not row and entry is not None:
             # Its insert may have landed with its answer lost: asked again under the same id, the row stored before
             # comes back (StoredBefore), or it is stored now. Still none: stored or not is not known, and the recovery

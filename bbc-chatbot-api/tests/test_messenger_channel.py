@@ -147,7 +147,7 @@ class Chat:
         self.unreadable: set[str] = set()  # row ids whose read by id fails
 
     async def add_message(self, conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
-                          on_stored=None):
+                          on_stored=None, on_unknown=None):
         """As app.db.supabase.add_message: an id stored before is refused by the database and its row read back, and
         the caller is called back with the row the moment it is known stored (or found stored before)."""
         from app.db.supabase import StoredBefore
@@ -705,7 +705,7 @@ async def test_an_agents_message_goes_out_through_the_gateway(redis, monkeypatch
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     from app.services.conversation_service import add_message
 
-    async def stored(c, r, t, m=None, x=0.0, *, message_id=None, on_stored=None):
+    async def stored(c, r, t, m=None, x=0.0, *, message_id=None, on_stored=None, on_unknown=None):
         row = {"id": message_id or "r9", "role": r, "content": t}
         if on_stored is not None:
             on_stored(row)
@@ -1096,6 +1096,89 @@ async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("insert", ["stored_answer_lost", "refused"])
+async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_the_recovery_minute(redis, insert):
+    """CodeRabbit #288, the real db.add_message: the agent's request is cancelled while its insert is on its way, and
+    the insert's answer comes back an error (stored, its answer lost; or refused), late or not: the cancel waits for
+    it, as a request not cancelled would. Nothing is placed, and the message is marked unsure before the chat's next
+    row may go, so the recovery minute looks its row up while this process lives: stored, the agent is told it was
+    not sent, once; refused, it is crossed out without a word. Never sent, and never inserted again. Rule 5: an insert
+    that answers with its row is placed before the cancel goes on
+    (test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next)."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+    inserts = {"n": 0}
+
+    def insert_row(payload):
+        def execute():
+            inserts["n"] += 1
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            if not (insert == "refused" and row["role"] == "agent"):
+                stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert_row
+    landed, answer = asyncio.Event(), asyncio.Event()
+
+    async def run_sync(fn, **kw):
+        out = fn()
+        if out.data[0]["role"] == "agent" and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back, later than any bound
+            raise RedisConnectionError("the connection dropped")  # an error, whatever the database did
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    async def get_message(row_id):
+        return next((r for r in stored if r["id"] == row_id), None)
+
+    order: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        order.append(messages[0]["text"])
+        return {"sent": 1}
+
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(db, "get_message", new=get_message), \
+            patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=AsyncMock()):
+        from app.services.conversation_service import add_message
+
+        first = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+        await asyncio.wait_for(landed.wait(), 1)
+        first.cancel()  # the request goes, its insert on its way
+        line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not line.done(), "the next row waits for the cancelled one's answer"
+        answer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        left = [json.loads(v)["state"] for v in (await redis.hgetall(mc.OUTBOX)).values()]
+        assert left == ["unsure"], "left to the recovery minute while its save is not known"
+        await asyncio.wait_for(line, 1)
+        await mc.drain(CONV)
+        out = await mc.run_messenger_recover()  # this process alive: unsure is looked up all the same
+    notes = [r["content"] for r in stored if r["role"] == "system" and r["content"] == mc.NOT_SENT_OTHER]
+    assert order == ["Ana shared the itinerary"], "the agent's message never sent"
+    assert notes == ([mc.NOT_SENT_OTHER] if insert == "stored_answer_lost" else [])
+    assert out["told"] == len(notes) and not await redis.hgetall(mc.OUTBOX)
+    assert inserts["n"] == 2 + len(notes), "never inserted again"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("between", ["unread", "nowhere", "found"])
 async def test_a_row_with_nothing_to_send_keeps_the_next_one_behind_the_one_before(redis, monkeypatch, between):
     """CodeRabbit #288: the agent's first message is with the gateway when their second one's chat cannot be read
@@ -1364,7 +1447,7 @@ async def test_a_note_the_shutdown_could_not_wait_for_is_written_by_the_next_pro
     real = c.add_message
 
     async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
-                         on_stored=None):
+                         on_stored=None, on_unknown=None):
         if role == "system":
             await asyncio.sleep(30)
         return await real(conversation_id, role, content, model_used, cost, message_id=message_id, on_stored=on_stored)
@@ -1420,7 +1503,7 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
     real = c.add_message
 
     async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
-                         on_stored=None):
+                         on_stored=None, on_unknown=None):
         if role == "system":
             noting.set()
             await asyncio.sleep(30)
@@ -1513,7 +1596,7 @@ async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_n
     stored = asyncio.Event()
 
     async def answer_hangs(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
-                           on_stored=None):
+                           on_stored=None, on_unknown=None):
         # Stored in the database; the insert's answer, which hands the row on (on_stored), never comes back.
         row = await real(conversation_id, role, content, model_used, cost, message_id=message_id)
         if role == "agent":

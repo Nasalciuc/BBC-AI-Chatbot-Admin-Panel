@@ -510,24 +510,28 @@ def _stored(on_stored: Optional[Callable[[dict], None]], row: dict, conversation
         logger.error(f"add_message: the caller's on_stored failed conv={conversation_id}: {type(e).__name__}: {e}")
 
 
-# How long a cancelled caller waits for its insert's answer (past the PostgREST client's own 10 s).
-INSERT_WAIT_S = 12.0
-
-
-async def _place_if_stored(landing: "asyncio.Future", on_stored: Callable[[dict], None], conversation_id: str) -> None:
+async def _place_if_stored(landing: "asyncio.Future", on_stored: Callable[[dict], None], conversation_id: str,
+                           on_unknown: Optional[Callable[[], None]] = None) -> None:
     """add_message's caller cancelled while its insert was on its way: the database may store the row all the same.
-    Its answer is waited for (INSERT_WAIT_S at most), and a row stored is given its place (on_stored) before the
-    cancel goes on. Refused, or no answer in time: not known stored, nothing placed (its written-down delivery is
-    the recovery minute's to look up)."""
+    Its answer is waited for, as a caller not cancelled waits for it (the PostgREST client's own 10 s bound it: the
+    insert is never still on its way once the cancel goes on), and a row stored is given its place (on_stored) before
+    the cancel goes on. No row for an answer (an error: refused, or its answer lost): not known stored, nothing
+    placed, and the caller is told (on_unknown: conversation_service.add_message leaves its written-down delivery to
+    the recovery minute, unsure). A second cancel while it waits: the insert's end is not waited for."""
     try:
-        res = await asyncio.wait_for(asyncio.shield(landing), INSERT_WAIT_S)
+        res = await asyncio.shield(landing)
     except Exception as e:
         logger.warning(f"add_message: a cancelled caller's insert not known stored conv={conversation_id}: "
                        f"{type(e).__name__}: {e}")
-        return
-    row = res.data[0] if res.data else None
+        res = None
+    row = res.data[0] if res is not None and res.data else None
     if row:
         _stored(on_stored, row, conversation_id)
+    elif on_unknown is not None:
+        try:
+            on_unknown()
+        except Exception as e:
+            logger.error(f"add_message: the caller's on_unknown failed conv={conversation_id}: {type(e).__name__}: {e}")
 
 
 async def add_message(
@@ -539,6 +543,7 @@ async def add_message(
     *,
     message_id: Optional[str] = None,
     on_stored: Optional[Callable[[dict], None]] = None,
+    on_unknown: Optional[Callable[[], None]] = None,
 ) -> Optional[dict]:
     """Insert a message. Never loses a message.
 
@@ -549,7 +554,8 @@ async def add_message(
 
     `on_stored`: called with the row the moment it is known stored (or found stored before), before anything else
     is awaited here: a caller's place in an order (a chat's Messenger sends) follows the order rows were stored.
-    Never raises into the save."""
+    Never raises into the save. `on_unknown`: called when the caller was cancelled while the insert was on its way
+    and its answer then was no row (an error: stored or not is not known), before the cancel goes on."""
     try:
         db = get_client()
         if role == "ai":
@@ -580,7 +586,7 @@ async def add_message(
                 try:
                     res = await asyncio.shield(landing)
                 except asyncio.CancelledError:
-                    await _place_if_stored(landing, on_stored, conversation_id)
+                    await _place_if_stored(landing, on_stored, conversation_id, on_unknown)
                     raise
         except Exception as e:
             # By the database's code only (23505 on the id, the table's one unique key): its text quotes the row.
