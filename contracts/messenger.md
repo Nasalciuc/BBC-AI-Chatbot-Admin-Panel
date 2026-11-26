@@ -122,7 +122,10 @@ What the API does with an event:
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
   JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once 10
   minutes have passed (longer than the gateway's own tries of a kept event), its replies sent through `/v1/send`; the
-  gateway down then, the same replies go the next minute, without a second turn. One process at a time (a lock in
+  gateway down then, the same replies go the next minute, without a second turn. The pass reads and writes each
+  event's mark and its place in the inbox through its own Redis client: a cooldown begun meanwhile (another call's
+  failure, process wide) never reads as an event with no mark, and Redis failing stops the pass, the event left for
+  the next one. One process at a time (a lock in
   Redis, 5 minutes, held under the pass's own token, renewed every 100 seconds while the pass runs and let go only
   while it is still that pass's, so a slow turn or send never lets another pass in beside it and a pass never frees
   another's); a pass starts nothing new after 2 minutes, nor once its lock is found lost (what it is on goes on: a
@@ -191,7 +194,10 @@ database stores it, before the chat's activity clocks and the live push: an agen
 never cross); a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
-chat Redis no longer knows reads the chat's metadata. When an agent's message did not go out, the agent sees a line
+chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
+chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
+process alive or not, and tells the agent it was not sent (a site chat's is crossed out then, without a word; at a
+shutdown it is left for the next process's minute). When an agent's message did not go out, the agent sees a line
 in the chat, stored and never sent: past the 24 hours "reach them by SMS or email" (the owner's default until they
 decide on Human Agent), unreachable the same, the inbox's thread, "maybe not sent" (`unknown`: send it again if the
 client doesn't reply), "only the first k of m pieces" (`partly_sent`: send the rest, not the whole message), "the
@@ -284,7 +290,7 @@ The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`,
 `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
-`off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
+`target_unread`, `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
 
 ## The gateway's environment
 
