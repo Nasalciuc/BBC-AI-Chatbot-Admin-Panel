@@ -2294,6 +2294,89 @@ async def test_a_shutdown_stops_the_recovery_before_it_writes_the_held_answers(m
 
 
 @pytest.mark.asyncio
+async def test_a_recovery_that_outlasts_the_shutdowns_wait_never_holds_an_answer_after_the_flush(redis, monkeypatch):
+    """CodeRabbit #288: the recovery is in a turn as the process stops, its row's insert on its way (the real
+    db.add_message, whose answer a cancel waits for), past RECOVER_STOP_S, with Redis refusing every answer: the held
+    answers are written while it still runs, and once its insert answers it stops, the turn never reaching its answer's
+    keeping. Nothing held after the flush (nothing to go with the process): its claim is left to run out, and the next
+    process answers the event. Rule 5: stopped in time, the same order
+    (test_a_shutdown_stops_the_recovery_before_it_writes_the_held_answers)."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    with patch("app.db.supabase.get_client"):
+        from app import main
+
+    c = Chat().start()
+    fake_add = c._ps.pop(0)  # the real db.add_message from here: its insert's answer waited for on a cancel
+    fake_add.stop()
+    try:
+        await _fail_once(c, redis)
+        landed, answer = asyncio.Event(), asyncio.Event()
+
+        async def run_sync(fn, **kw):
+            out = fn()
+            if not answer.is_set():
+                landed.set()
+                await answer.wait()  # the insert on its way past the shutdown's wait
+            return out
+
+        def insert_row(payload):
+            row = {"id": payload.get("id") or "r1", "created_at": now_iso(), **payload}
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=[row]))
+
+        client = MagicMock()
+        client.table.return_value.insert.side_effect = insert_row
+
+        async def turn(req, add_message):
+            await add_message(req.conversation_id, "ai", "Here now.")
+            return ChatResponse(conversation_id=req.conversation_id, message="x", type="ai", model_used="x")
+
+        c.answer = turn
+        real_eval = redis.eval
+
+        async def refusing(script, numkeys, *keys_and_args):
+            if script in (mc.KEEP_ANSWER_LUA, mc.GIVE_TO_GATEWAY_LUA):
+                raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+            return await real_eval(script, numkeys, *keys_and_args)
+
+        flushed: list = []
+        real_write_held = mc.write_held
+
+        async def write_held(*a, **kw):
+            out = await real_write_held(*a, **kw)
+            flushed.append((out, recover.done()))
+            return out
+
+        async def touch(*a, **kw):
+            return None
+
+        with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+                patch.object(db, "_touch_conversation_activity", new=touch):
+            monkeypatch.setattr(redis, "eval", refusing)
+            recover = asyncio.create_task(mc.run_messenger_recover(), name="scheduler_messenger_recover")
+            await asyncio.wait_for(landed.wait(), 1)
+            monkeypatch.setattr(main, "RECOVER_STOP_S", 0.05)
+            monkeypatch.setattr(mc, "drain_all", AsyncMock(return_value={"left": 0}))
+            monkeypatch.setattr(mc, "write_held", write_held)
+            for name, value in (("ledger_task", None), ("flags_task", None), ("scheduler_tasks", [recover])):
+                monkeypatch.setattr(main.app.state, name, value, raising=False)
+            await main.shutdown()
+            assert flushed == [({"written": 0, "dropped": 0}, False)], "flushed while the recovery still runs"
+            answer.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(recover, 1)
+    finally:
+        c.stop()
+    assert not mc._UNKEPT and not mc._UNGIVEN and not mc._HELD_BESIDE, "nothing held after the flush"
+    assert mc.MESSENGER_HEALTH["answer_unkept"] == 0 and mc.MESSENGER_HEALTH["answer_dropped"] == 0
+    assert str(redis.kv["msgr:event:m1"]).startswith("pending:"), "its claim left to run out"
+
+
+@pytest.mark.asyncio
 async def test_a_shutdown_tries_each_held_answer_whatever_redis_said_of_the_one_before(redis, monkeypatch):
     """CodeRabbit #288: the process holds two answers and Redis refuses the first one's write (a key of its own): the
     second is written all the same, and only the first goes with the process (answer_dropped). Rule 5: every one
