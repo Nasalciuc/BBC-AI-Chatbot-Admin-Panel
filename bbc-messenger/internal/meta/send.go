@@ -61,11 +61,13 @@ func (e *Error) Error() string {
 //	unavailable    the person can't be reached (blocked the Page, deleted their account, …)
 //	thread_owned   another app (the Page Inbox) owns the thread now (conversation routing)
 //	token          the Page's token is wrong or expired: nothing goes out until it is replaced
-//	rate           too many calls (a Graph code, or HTTP 429 with no code): later
+//	rate           too many calls (a Graph code, or HTTP 429 with no code: a call turned away, never taken): later
 //	temporary      Meta says it did not send it, for now (code 2: the service is down a while; code 1200: a send
-//	               that failed for now; HTTP 503 with no code: it could not take the call): later
-//	unknown        any other 5xx (500 with code 1 or none, 502, 504, …): Meta, or a proxy before it, failed once it
-//	               had the call, and the message may be with the person (RFC 9110 15.6): never sent again
+//	               that failed for now): later
+//	unknown        any other 5xx (500 with code 1 or none, 502, 503 or 504 that do not say, …): Meta, or a proxy
+//	               before it, failed once it may have had the call (a proxy answers 503 too when the server it passed
+//	               the call to went away before answering), and the message may be with the person (RFC 9110 15.6):
+//	               never sent again
 //	other          anything else
 func (e *Error) Kind() string {
 	switch {
@@ -79,7 +81,7 @@ func (e *Error) Kind() string {
 		return "token"
 	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040 || (e.Status == http.StatusTooManyRequests && e.Code == 0):
 		return "rate"
-	case e.Code == 2 || e.Code == 1200 || (e.Status == http.StatusServiceUnavailable && e.Code == 0):
+	case e.Code == 2 || e.Code == 1200:
 		return "temporary"
 	case e.Status >= 500:
 		return "unknown"
@@ -159,18 +161,20 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	if err != nil {
 		return err
 	}
-	// Whether Meta may have the whole request. Only two things say it does not: no connection was ever had, or the
-	// transport said its write failed. The write goes on apart from Do, and Do can return (a deadline, a cancel, a
-	// connection lost) before the write's end is told (HTTP/1 and HTTP/2 both): a call with a connection and no
-	// word of its write may be with Meta.
-	var connected, wrote, writeFailed atomic.Bool
+	// Whether Meta may have the whole request. The transport may try one call more than once (again, on a new
+	// connection, after a try it knows Meta did not take: nothing written, a stream refused), each try's write goes
+	// on apart from Do, and Do can return (a deadline, a cancel, a connection lost) before a try's end is told, which
+	// can then come after the next try began (HTTP/1 and HTTP/2 both): the tries are counted, never paired. Only
+	// two things say Meta does not have it: no try ever had a connection, or each one that did was told its write
+	// failed and none that it wrote.
+	var conns, wrote, writesFailed atomic.Int32
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+		GotConn: func(httptrace.GotConnInfo) { conns.Add(1) },
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			if info.Err != nil {
-				writeFailed.Store(true)
+				writesFailed.Add(1)
 			} else {
-				wrote.Store(true)
+				wrote.Add(1)
 			}
 		},
 	})
@@ -184,7 +188,7 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		if wrote.Load() || (connected.Load() && !writeFailed.Load()) {
+		if n := conns.Load(); n > 0 && (wrote.Load() > 0 || writesFailed.Load() < n) {
 			return &Unconfirmed{Err: err}
 		}
 		return err

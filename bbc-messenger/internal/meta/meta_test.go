@@ -133,11 +133,12 @@ func TestErrorKinds(t *testing.T) {
 		{Error{Status: 500, Code: 2}, "temporary", true},
 		{Error{Status: 400, Code: 2}, "temporary", true},
 		{Error{Status: 500, Code: 1200}, "temporary", true},
-		{Error{Status: 503}, "temporary", true},
-		// A 5xx that does not say (RFC 9110: a server or a proxy failed once it had the call): maybe sent, never
-		// sent again.
+		{Error{Status: 503, Code: 2}, "temporary", true},
+		// A 5xx that does not say (RFC 9110: a server or a proxy failed once it may have had the call; a proxy
+		// answers 503 when the server it passed the call to went away): maybe sent, never sent again.
 		{Error{Status: 500}, "unknown", false},
 		{Error{Status: 500, Code: 1}, "unknown", false},
+		{Error{Status: 503}, "unknown", false},
 		{Error{Status: 503, Code: 1}, "unknown", false},
 		{Error{Status: 502}, "unknown", false},
 		{Error{Status: 504}, "unknown", false},
@@ -235,45 +236,58 @@ func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
 	}
 }
 
-// earlyTransport is a transport whose Do comes back before it tells the write's end (HTTP/1 and HTTP/2 both may,
-// on a deadline or a lost connection): a connection had or not, the write's end told or not, the error given back.
-type earlyTransport struct {
-	connected bool
-	writeErr  error // told as the write's end, when set
-	err       error
+// tracedTransport tells a call's tries as the real transport may, in the order given (each try a connection had,
+// then its write's end, failed or whole, or not told yet; a try's end told after the next one began), then gives
+// back err: Do comes back on a deadline or a lost connection, whatever was told by then.
+type tracedTransport struct {
+	told []string // "conn", "wrote", "write failed"
+	err  error
 }
 
-func (e *earlyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+func (tt *tracedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	trace := httptrace.ContextClientTrace(r.Context())
-	if e.connected && trace != nil && trace.GotConn != nil {
-		trace.GotConn(httptrace.GotConnInfo{})
+	for _, step := range tt.told {
+		switch step {
+		case "conn":
+			trace.GotConn(httptrace.GotConnInfo{})
+		case "wrote":
+			trace.WroteRequest(httptrace.WroteRequestInfo{})
+		case "write failed":
+			trace.WroteRequest(httptrace.WroteRequestInfo{Err: io.ErrUnexpectedEOF})
+		}
 	}
-	if e.writeErr != nil && trace != nil && trace.WroteRequest != nil {
-		trace.WroteRequest(httptrace.WroteRequestInfo{Err: e.writeErr})
-	}
-	return nil, e.err
+	return nil, tt.err
 }
 
-func TestACallWhoseWriteWasNeverToldIsUnconfirmed(t *testing.T) {
-	send := func(tr *earlyTransport) error {
-		c := &Client{HTTP: &http.Client{Transport: tr}, Base: "https://graph.example.test", Version: "v26.0"}
-		_, err := c.Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
-		return err
+func TestACallIsSentAgainOnlyWhenNoneOfItsTriesCanBeWithMeta(t *testing.T) {
+	cases := []struct {
+		name        string
+		told        []string
+		err         error
+		unconfirmed bool
+	}{
+		{"a connection, then the deadline, no word of the write", []string{"conn"}, context.DeadlineExceeded, true},
+		// The transport tried again after a write it knew failed; the second try had a connection and no word of
+		// its write when the deadline came: it may be with Meta.
+		{"a failed write, a second try, then the deadline", []string{"conn", "write failed", "conn"}, context.DeadlineExceeded, true},
+		{"the first try's failed write told after the second began", []string{"conn", "conn", "write failed"}, context.DeadlineExceeded, true},
+		{"a try that wrote, then one whose write failed", []string{"conn", "wrote", "conn", "write failed"}, io.ErrUnexpectedEOF, true},
+		// Rule 5: no try can be with Meta: tried again.
+		{"a write that failed", []string{"conn", "write failed"}, io.ErrUnexpectedEOF, false},
+		{"every try's write failed", []string{"conn", "write failed", "conn", "write failed"}, io.ErrUnexpectedEOF, false},
+		{"never a connection", nil, errors.New("dial tcp: connection refused"), false},
 	}
-	var ue *Unconfirmed
-	// A connection, then the deadline, and no word of the write: it may be with Meta, never sent again.
-	if err := send(&earlyTransport{connected: true, err: context.DeadlineExceeded}); !errors.As(err, &ue) ||
-		KindOf(err) != "unknown" || Retryable(err) {
-		t.Errorf("deadline before the write's end was told: %v %s %v", err, KindOf(err), Retryable(err))
-	}
-	// Rule 5: the transport told its write failed: not with Meta, tried again.
-	if err := send(&earlyTransport{connected: true, writeErr: io.ErrUnexpectedEOF, err: io.ErrUnexpectedEOF}); errors.As(err, &ue) ||
-		!Retryable(err) {
-		t.Errorf("a write that failed: %v %s %v", err, KindOf(err), Retryable(err))
-	}
-	// Rule 5: never a connection: tried again.
-	if err := send(&earlyTransport{err: errors.New("dial tcp: connection refused")}); errors.As(err, &ue) || !Retryable(err) {
-		t.Errorf("no connection: %v %s %v", err, KindOf(err), Retryable(err))
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl := &Client{HTTP: &http.Client{Transport: &tracedTransport{told: c.told, err: c.err}},
+				Base: "https://graph.example.test", Version: "v26.0"}
+			_, err := cl.Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+			var ue *Unconfirmed
+			if errors.As(err, &ue) != c.unconfirmed || Retryable(err) == c.unconfirmed ||
+				(KindOf(err) == "unknown") != c.unconfirmed {
+				t.Errorf("%v: %s, tried again %v", err, KindOf(err), Retryable(err))
+			}
+		})
 	}
 }
 

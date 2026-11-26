@@ -1063,6 +1063,8 @@ func TestASendWithNoSureAnswerIsUnknownAndNeverSentAgain(t *testing.T) {
 	for name, answer := range map[string]func() (int, string){
 		"a proxy's 504":           func() (int, string) { return 504, "upstream timed out" },
 		"a 500 that does not say": func() (int, string) { return 500, `{"error":{"message":"An unknown error occurred","code":1}}` },
+		// A proxy's 503 when the server it passed the call to went away: Meta may have sent it.
+		"a 503 that does not say": func() (int, string) { return 503, "upstream connect error or disconnect/reset before headers" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t, 1, 4)
@@ -1077,17 +1079,17 @@ func TestASendWithNoSureAnswerIsUnknownAndNeverSentAgain(t *testing.T) {
 			}
 		})
 	}
-	// Rule 5: Meta saying it could not take the call now (503, no code) is tried again.
+	// Rule 5: Meta itself saying it did not send it, for now (a 503 with its code 2), is tried again.
 	r := newRig(t, 1, 4)
 	var n atomic.Int32
 	r.graph.answer = func(map[string]any) (int, string) {
 		if n.Add(1) == 1 {
-			return 503, ""
+			return 503, `{"error":{"message":"Service temporarily unavailable","code":2}}`
 		}
 		return 200, `{"message_id":"mid.1"}`
 	}
 	if code, out := signedSend(t, r, agentCall("Hi, I'm Ana."), time.Now(), gwSecret); code != 200 || out["sent"] != float64(1) || n.Load() != 2 {
-		t.Errorf("503 then sent: %d %v, %d calls", code, out, n.Load())
+		t.Errorf("503 code 2 then sent: %d %v, %d calls", code, out, n.Load())
 	}
 }
 
