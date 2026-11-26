@@ -2102,10 +2102,11 @@ async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") 
 # is found again. A place whose event is gone (answered, given up) is dropped in the same step, so a putting back never
 # lands between the look and the drop. None left: this one's passing marked as the person's latest take (KEYS[3]),
 # now on Redis's clock, for ARGV[2] seconds, so an earlier one put back after this for a late send of its replies
-# finds it (-1).
+# finds it (-1). Only the places below this one's are read (its score as Redis gives it, as the exclusive bound:
+# never rounded), every one when this one is not there.
 EARLIER_LUA = """
-local mine = redis.call('zscore', KEYS[1], ARGV[1])
-mine = mine and tonumber(mine) or nil
+local raw = redis.call('zscore', KEYS[1], ARGV[1])
+local mine = raw and tonumber(raw) or nil
 local besides = {}
 for i = 4, #KEYS do
   local j = 2 * (i - 4) + 3
@@ -2114,7 +2115,12 @@ for i = 4, #KEYS do
   end
 end
 local out = {}
-local places = redis.call('zrange', KEYS[2], 0, -1, 'WITHSCORES')
+local places
+if raw then
+  places = redis.call('zrangebyscore', KEYS[2], '-inf', '(' .. raw, 'WITHSCORES')
+else
+  places = redis.call('zrange', KEYS[2], 0, -1, 'WITHSCORES')
+end
 for i = 1, #places, 2 do
   local m, s = places[i], tonumber(places[i + 1])
   if mine ~= nil and s >= mine then
