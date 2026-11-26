@@ -878,15 +878,26 @@ def _sending_key(k: str) -> str:
     return f"{INBOX}:sending:{k}"
 
 
+# Kept events whose send is known to have sent nothing (the call never reached the gateway) and whose mark could not
+# be cleared then (Redis failing): this process clears it the next time it looks at them, and their replies go again,
+# however long Redis took to answer. A process that stops first leaves the mark to age into "begun": maybe out, never
+# sent twice (counted).
+_UNSENT: set[str] = set()
+
+
 async def _send_state(r, k: str) -> str:
-    """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun), "on_its_way" (begun
-    lately: its process may still be at it), "begun" (begun and never over: its process stopped in it), "done" (over,
-    and the event not taken out of the inbox after). Redis failing raises."""
+    """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun, or known to have sent
+    nothing), "on_its_way" (begun lately: its process may still be at it), "begun" (begun and never over: its process
+    stopped in it), "done" (over, and the event not taken out of the inbox after). Redis failing raises."""
     raw = await r.get(_sending_key(k))
-    if raw is None:
+    if raw is None or raw == "done":
+        _UNSENT.discard(k)
+        return "none" if raw is None else "done"
+    if k in _UNSENT:
+        # Its send sent nothing, and the mark was left only because clearing it failed: cleared now.
+        await r.delete(_sending_key(k))
+        _UNSENT.discard(k)
         return "none"
-    if raw == "done":
-        return "done"
     since = 0.0  # unreadable: taken for one begun long ago
     try:
         since = float(raw)
@@ -903,12 +914,19 @@ async def _begin_send(r, k: str) -> None:
 async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict]) -> bool:
     """A kept event's replies sent through the gateway, the send written down already (_begin_send). True once the
     event is done with: they went out, or may have, or Meta refused them (counted, never sent again); False when the
-    call never reached the gateway (nothing went out: the mark is cleared, and they go again later)."""
+    call never reached the gateway (nothing went out: the mark is cleared, and they go again later; Redis failing
+    then, this process clears it when it next looks at the event, _UNSENT)."""
     result = await send(event.page_id, event.psid, replies)
     failed = result.get("failed") or {}
     kind = str(failed.get("kind") or "")
     if failed and kind == "gateway":
-        await r.delete(_sending_key(k))
+        try:
+            await r.delete(_sending_key(k))
+        except Exception as e:
+            redis_failed("messenger inbox", e)
+            _UNSENT.add(k)
+            logger.warning(f"[messenger] a kept event's send that sent nothing, its mark not cleared (cleared when it "
+                           f"is next looked at): {type(e).__name__}: {e}")
         return False
     await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
     if failed:

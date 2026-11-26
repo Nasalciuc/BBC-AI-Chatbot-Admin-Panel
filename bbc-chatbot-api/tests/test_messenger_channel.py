@@ -48,6 +48,7 @@ def fresh(monkeypatch):
     for k in mc.MESSENGER_HEALTH:
         mc.MESSENGER_HEALTH[k] = 0
     mc._LAST.clear()
+    mc._UNSENT.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
     monkeypatch.setattr(settings, "messenger_gateway_url", "https://gateway.example.test")
@@ -1347,6 +1348,34 @@ async def test_a_recovery_with_the_gateway_down_sends_next_minute_without_a_seco
         assert (await mc.run_messenger_recover())["waiting"] == 1
         assert (await mc.run_messenger_recover())["answered"] == 1
     assert gw.sent == ["Here now.", "Here now."] and len(chat.requests) == 2, "one turn for the failure, one after"
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_sent_nothing_goes_again_after_its_mark_could_not_be_cleared(chat, redis, monkeypatch):
+    """CodeRabbit #288: the recovery's send never reached the gateway, and clearing its mark failed (Redis
+    blinking): once Redis answers, the same replies go, with no second turn, however long the mark has waited (past
+    SENDING_S it would read as a send a stopped process was making). Rule 5: one the gateway may have had (unknown)
+    is never sent again (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again)."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    real_delete = redis.delete
+    blinks = {"on": True}
+
+    async def delete(*keys):
+        if blinks["on"] and any(str(k).startswith(f"{mc.INBOX}:sending:") for k in keys):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_delete(*keys)
+
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(redis, "delete", delete)
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        assert f"{mc.INBOX}:sending:m1" in redis.kv, "its mark left by the failed clear"
+        blinks["on"] = False
+        redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time() - mc.SENDING_S - 1)
+        assert (await mc.run_messenger_recover())["answered"] == 1
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] * 2 and len(chat.requests) == 2
+    assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 0
 
 
 @pytest.mark.asyncio
