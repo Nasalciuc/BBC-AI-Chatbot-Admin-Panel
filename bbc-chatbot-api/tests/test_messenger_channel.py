@@ -760,6 +760,58 @@ async def test_a_chats_rows_go_out_in_order(redis):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["push", "outbox"])
+async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypatch, held):
+    """CodeRabbit #288: the agent's message stored, then its live push slow: a line stored after it, for the same
+    chat, goes out after it (its place in the chat's order is taken as it is stored, before the push). Rule 5: the
+    agent's message held up in its outbox write is not stored yet, so a line stored meanwhile is the earlier one in
+    the chat, and goes first."""
+    import asyncio
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    order: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        order.append(messages[0]["text"])
+        return {"sent": 1}
+
+    gate, holding = asyncio.Event(), asyncio.Event()
+    real_hset = redis.hset
+
+    async def push(conversation_id, row):
+        if held == "push" and row["role"] == "agent":
+            holding.set()
+            await gate.wait()
+
+    async def outbox_held(*a, **kw):
+        if held == "outbox" and not holding.is_set():
+            holding.set()
+            await gate.wait()
+        return await real_hset(*a, **kw)
+
+    c = Chat().start()
+    try:
+        with patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=push):
+            from app.services.conversation_service import add_message
+
+            monkeypatch.setattr(redis, "hset", outbox_held)
+            agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+            await asyncio.wait_for(holding.wait(), 1)
+            await add_message(CONV, "system", "Ana shared the itinerary")
+            gate.set()
+            await agent
+            await mc.drain(CONV)
+            await asyncio.sleep(0)
+            await mc.drain(CONV)
+    finally:
+        c.stop()
+    stored = [r["content"] for r in c.rows]
+    assert order == stored, "out in the order stored"
+    assert stored == (["Hi, I'm Ana.", "Ana shared the itinerary"] if held == "push"
+                      else ["Ana shared the itinerary", "Hi, I'm Ana."])
+
+
+@pytest.mark.asyncio
 async def test_an_agents_message_finds_its_thread_when_redis_forgot_it(redis):
     conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
     gw = Gateway([])
@@ -1033,24 +1085,30 @@ async def test_a_request_cancelled_while_its_message_is_written_down_leaves_noth
 
 @pytest.mark.asyncio
 async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_next_process(redis, monkeypatch):
-    """CodeRabbit #288: the agent's message stored, then their request cancelled before it is handed on (the live
-    push hangs): written down first, under its row's id, it is the next process's minute's to tell, once. Rule 5:
-    while its process is alive, or while its row can't be read, nothing is said yet."""
+    """CodeRabbit #288: the agent's message stored, then their request cancelled before it is handed on (the insert
+    landed, its answer still on its way): written down first, under its row's id, it is the next process's minute's
+    to tell, once. Rule 5: while its process is alive, or while its row can't be read, nothing is said yet."""
     import asyncio
 
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
-
-    async def hangs(*a, **kw):
-        await asyncio.sleep(30)
-
     c = Chat().start()
+    real = c.add_message
+    stored = asyncio.Event()
+
+    async def answer_hangs(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
+        row = await real(conversation_id, role, content, model_used, cost, message_id=message_id)
+        if role == "agent":
+            stored.set()
+            await asyncio.sleep(30)
+        return row
+
     gw = Gateway([])
     try:
-        with patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=hangs):
+        with patch.object(mc, "send", new=gw), patch("app.db.supabase.add_message", new=answer_hangs):
             from app.services.conversation_service import add_message
 
             saving = asyncio.create_task(add_message(CONV, "agent", "Stored, then the request cancelled"))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(stored.wait(), 1)
             saving.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await saving

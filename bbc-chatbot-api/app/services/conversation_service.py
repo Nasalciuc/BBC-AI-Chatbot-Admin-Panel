@@ -44,6 +44,13 @@ async def add_message(conversation_id: str, role: str, content: str,
                                **({"message_id": message_id} if message_id else {}))
     if not row:
         await messenger_channel.not_stored(entry)
+    # A chat on Facebook Messenger: what is said to the person goes out there too (app.services.messenger_channel,
+    # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
+    # from the Page's inbox, a note for the agent). Nothing here while the channel is off. Handed on before the live
+    # push, with nothing awaited between the insert and its place in the chat's order: a chat's rows go out in the
+    # order they were stored, and a slow push never lets one stored after this go first.
+    if row and outbound and role in ("ai", "agent", "system"):
+        await messenger_channel.outbound(conversation_id, role, row, entry)
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live
@@ -59,9 +66,4 @@ async def add_message(conversation_id: str, role: str, content: str,
             await manager.push(conversation_id, {**row, **live_extra} if live_extra else row)
         except Exception as e:  # noqa: silent — the message is SAVED; a failed fan-out must never fail the save
             logger.warning(f"[sse] push after add_message failed conv={conversation_id}: {e}")
-    # A chat on Facebook Messenger: what is said to the person goes out there too (app.services.messenger_channel,
-    # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
-    # from the Page's inbox, a note for the agent). Nothing here while the channel is off.
-    if row and outbound and role in ("ai", "agent", "system"):
-        await messenger_channel.outbound(conversation_id, role, row, entry)
     return row
