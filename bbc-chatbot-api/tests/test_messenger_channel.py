@@ -2076,19 +2076,22 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_and_not_crossed
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["its_process_lives", "its_process_stopped_first", "its_cross_out_taken"])
+@pytest.mark.parametrize("case", ["its_process_lives", "its_process_stopped_first", "its_process_cut_off_past_alive_s",
+                                  "its_cross_out_taken"])
 async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_off_nor_cross_out_taken_is_counted(
         redis, monkeypatch, case):
     """CodeRabbit #288: as above, and Redis refuses the entry's write as off too: it still reads "sending". Its process
     knows nothing went out: it holds it and crosses it out at its next minutes, the channel still off, saying it is
     alive meanwhile (a minute whose cross-out Redis refuses again keeps it), and no agent is told. The limit
-    (contracts/messenger.md): that process stopped before Redis took a write, the next one's minute cannot tell it from
-    a send a stopped process began, and tells the agent it may have gone out: a note too many, never a message lost
-    without one. Counted (off_unsettled) and logged. Rule 5: the write as off refused alone, its cross-out taken:
-    nothing is left, held, told or counted."""
+    (contracts/messenger.md): that process stopped before Redis took a write, or was cut off from Redis past its alive
+    mark's ALIVE_S while another process's minute ran with the channel on: that minute cannot tell it from a send a
+    stopped process began, and tells the agent it may have gone out, once (its own minute, Redis back, finds it gone
+    and tells nothing more): a note too many, never a message lost without one. Counted (off_unsettled) and logged.
+    Rule 5: the write as off refused alone, its cross-out taken: nothing is left, held, told or counted."""
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     real_hset, real_hdel = redis.hset, redis.hdel
-    refusals = {"its_process_lives": 2, "its_process_stopped_first": 1, "its_cross_out_taken": 0}[case]
+    refusals = {"its_process_lives": 2, "its_process_stopped_first": 1, "its_process_cut_off_past_alive_s": 1,
+                "its_cross_out_taken": 0}[case]
     once = {"off": True, "mark": True, "hdel": refusals}
 
     async def off_then_refused(key, field=None, value=None, mapping=None):
@@ -2136,13 +2139,23 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_of
                 mc._OFF_UNSETTLED.clear()  # what it held went with it
                 monkeypatch.setattr(mc, "BOOT", "the-next-process")
                 redis.kv.pop(alive, None)
+            elif case == "its_process_cut_off_past_alive_s":
+                a, held = mc.BOOT, dict(mc._OFF_UNSETTLED)
+                redis.kv.pop(alive, None)  # A cut off from Redis past ALIVE_S: its alive mark ran out
+                mc._OFF_UNSETTLED.clear()  # B never sees what A holds
+                monkeypatch.setattr(mc, "BOOT", "process-b")
+                monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+                assert (await mc.run_messenger_recover())["told"] == 1, "B's minute: read as a send A began"
+                monkeypatch.setattr(mc, "BOOT", a)  # A, Redis back: its own minute
+                mc._OFF_UNSETTLED.update(held)
             monkeypatch.setenv("MESSENGER_CHANNEL", "true")
             out = await mc.run_messenger_recover()
     finally:
         c.stop()
     notes = [r["content"] for r in c.rows if r["role"] == "system"]
-    if case == "its_process_stopped_first":
-        assert out["told"] == 1 and notes == [mc.NOT_SENT["unknown"]], "the limit: a note too many, none missing"
+    if case in ("its_process_stopped_first", "its_process_cut_off_past_alive_s"):
+        assert notes == [mc.NOT_SENT["unknown"]], "the limit: a note too many, once, none missing"
+        assert out["told"] == (1 if case == "its_process_stopped_first" else 0) and not mc._OFF_UNSETTLED
     else:
         assert out["told"] == 0 and notes == [], "no call was made, and its process knew it"
     assert not await redis.hgetall(mc.OUTBOX) and gw.sent == []
