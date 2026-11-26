@@ -4574,6 +4574,37 @@ def _turns(chat, fail_first: int = 0):
 
 
 @pytest.mark.asyncio
+async def test_an_earlier_event_given_up_as_a_later_one_answers_it_first_gets_no_turn(chat, redis):
+    """CodeRabbit #288: the person's first message, kept in the inbox, is given up by the recovery (its tries over) in
+    the moment between their second message's delivery reading it, to answer it first, and claiming it. Its turn never
+    runs: at its own step (EARLIER_LUA) it reads as gone from the inbox, the second one found kept, so the second
+    waits (StillAnswering, 409) with nothing sent; delivered again, it finds nothing before it and is answered, once.
+    The first stays given up (counted by the pass), never answered after it."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    real_state = mc._send_state_of
+    given = {"up": False}
+
+    async def given_up_after_the_read(r, k):
+        if k == "m1" and not given["up"]:
+            # The recovery's pass, right then: m1 nothing holds, given up in one step (GIVE_UP_LUA).
+            given["up"] = await mc._give_up(r, "m1", mc._who(event(mid="m1")))
+        return await real_state(r, k)
+
+    gw = Gateway([])
+    with patch.object(mc, "_send_state_of", new=given_up_after_the_read), patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert given["up"] and "m1" not in redis.kv[mc.INBOX] and "m2" in redis.kv[mc.INBOX]
+        assert gw.sent == [] and len(chat.requests) == 1, "the first's turn never ran after it was given up"
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))  # delivered again
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
+    assert [(r["role"], r["content"]) for r in chat.rows] == [("user", "Second"), ("ai", "About: Second")]
+    assert len(chat.requests) == 2 and mc.MESSENGER_HEALTH["answered_first"] == 0
+
+
+@pytest.mark.asyncio
 async def test_a_later_message_never_comes_before_an_earlier_one_whose_turn_failed(chat, redis):
     """The person's first message failed (kept in the inbox, CodeRabbit #288); their second, from the gateway, has
     the first answered and its replies sent before its own turn: in order, each once, nothing left for the
