@@ -10,7 +10,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
+from typing import Any, Callable, Optional
 
 import httpx
 from postgrest import SyncPostgrestClient
@@ -500,6 +500,16 @@ async def get_message(message_id: str) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
+def _stored(on_stored: Optional[Callable[[dict], None]], row: dict, conversation_id: str) -> None:
+    """add_message's caller told the row is stored, never at the save's cost."""
+    if on_stored is None:
+        return
+    try:
+        on_stored(row)
+    except Exception as e:
+        logger.error(f"add_message: the caller's on_stored failed conv={conversation_id}: {type(e).__name__}: {e}")
+
+
 async def add_message(
     conversation_id: str,
     role: str,
@@ -508,13 +518,18 @@ async def add_message(
     cost: float = 0.0,
     *,
     message_id: Optional[str] = None,
+    on_stored: Optional[Callable[[dict], None]] = None,
 ) -> Optional[dict]:
     """Insert a message. Never loses a message.
 
     `message_id`: the row's id, fixed by the caller from what the message is (a Messenger event and its part), so
     an insert made again finds the row an earlier one stored, its answer lost included: that row comes back as a
     StoredBefore, and nothing is stored twice. None back: not stored, or not known to be (it could not be read):
-    the caller tries again later."""
+    the caller tries again later.
+
+    `on_stored`: called with the row the moment it is known stored (or found stored before), before anything else
+    is awaited here: a caller's place in an order (a chat's Messenger sends) follows the order rows were stored.
+    Never raises into the save."""
     try:
         db = get_client()
         if role == "ai":
@@ -546,12 +561,14 @@ async def add_message(
                 logger.error(f"add_message: message {message_id} refused as stored before, then not found "
                              f"conv={conversation_id}")
                 return None
+            _stored(on_stored, before, conversation_id)
             # The insert whose answer was lost never moved the chat's clocks: they catch up to the row's time now,
             # never back from a newer message's.
             await _touch_conversation_activity(conversation_id, role, before.get("created_at"), catch_up=True)
             return StoredBefore(before)
         row = res.data[0] if res.data else None
         if row:
+            _stored(on_stored, row, conversation_id)
             await _touch_conversation_activity(
                 conversation_id, role, row.get("created_at")
             )

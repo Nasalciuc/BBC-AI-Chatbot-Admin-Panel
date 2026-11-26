@@ -86,21 +86,31 @@ class Chat:
         self.patch_ok = True
         self.unreadable: set[str] = set()  # row ids whose read by id fails
 
-    async def add_message(self, conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
-        """As app.db.supabase.add_message: an id stored before is refused by the database and its row read back."""
+    async def add_message(self, conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
+                          on_stored=None):
+        """As app.db.supabase.add_message: an id stored before is refused by the database and its row read back, and
+        the caller is called back with the row the moment it is known stored (or found stored before)."""
         from app.db.supabase import StoredBefore
 
         queue = self.saves.get(role)
         what = queue.pop(0) if queue else None
         before = next((r for r in self.rows if message_id and r["id"] == message_id), None)
         if before is not None:
-            return None if what == "unreadable" else StoredBefore(before)
+            if what == "unreadable":
+                return None
+            if on_stored is not None:
+                on_stored(before)
+            return StoredBefore(before)
         row = {"id": message_id or f"r{len(self.rows) + 1}", "conversation_id": conversation_id, "role": role,
                "content": content, "created_at": now_iso()}
         if what == "fail":
             return None
         self.rows.append(row)
-        return None if what == "lost" else row
+        if what == "lost":
+            return None  # stored, its answer lost: the caller never learns it was
+        if on_stored is not None:
+            on_stored(row)
+        return row
 
     async def get_message(self, message_id):
         """As app.db.supabase.get_message: the row, None when there is none, raising when it could not be read
@@ -635,8 +645,13 @@ async def test_an_agents_message_goes_out_through_the_gateway(redis, monkeypatch
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     from app.services.conversation_service import add_message
 
-    with patch("app.db.supabase.add_message", new=AsyncMock(side_effect=lambda c, r, t, m=None, x=0.0, **kw: {
-            "id": kw.get("message_id") or "r9", "role": r, "content": t})), \
+    async def stored(c, r, t, m=None, x=0.0, *, message_id=None, on_stored=None):
+        row = {"id": message_id or "r9", "role": r, "content": t}
+        if on_stored is not None:
+            on_stored(row)
+        return row
+
+    with patch("app.db.supabase.add_message", new=stored), \
             patch("app.realtime.manager.manager.push", new=AsyncMock()):
         await add_message(CONV, "agent", "Hi, I'm Ana. Which dates suit you?")
         await mc.drain(CONV)
@@ -813,6 +828,70 @@ async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_rows_place_is_taken_as_the_database_stores_it_before_its_activity_clocks(redis):
+    """CodeRabbit #288, the real db.add_message: the agent's message inserted, then the chat's activity clocks slow to
+    update: it takes its place in the chat's order the moment it is stored, so a line stored after it goes out after
+    it. Rule 5: a row the database refused takes no place and goes nowhere."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+    refuse = {"on": False}
+
+    def insert(payload):
+        def execute():
+            if refuse["on"]:
+                raise RuntimeError("the database refused the insert")
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert
+
+    async def run_sync(fn, **kw):
+        return fn()
+
+    clocks, go_on = asyncio.Event(), asyncio.Event()
+
+    async def touch(conversation_id, role, created_at, *, catch_up=False):
+        if role == "agent" and not go_on.is_set():
+            clocks.set()
+            await go_on.wait()
+
+    order: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        order.append(messages[0]["text"])
+        return {"sent": 1}
+
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock()):
+        from app.services.conversation_service import add_message
+
+        agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+        await asyncio.wait_for(clocks.wait(), 1)  # stored, its clocks being updated
+        await add_message(CONV, "system", "Ana shared the itinerary")
+        go_on.set()
+        assert (await agent)["content"] == "Hi, I'm Ana."
+        refuse["on"] = True
+        assert await add_message(CONV, "system", "Refused by the database") is None
+        await mc.drain(CONV)
+        await asyncio.sleep(0)
+        await mc.drain(CONV)
+    assert [r["content"] for r in stored] == ["Hi, I'm Ana.", "Ana shared the itinerary"]
+    assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "out in the order stored"
+    assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
 async def test_an_agents_message_finds_its_thread_when_redis_forgot_it(redis):
     conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
     gw = Gateway([])
@@ -954,10 +1033,11 @@ async def test_a_note_the_shutdown_could_not_wait_for_is_written_by_the_next_pro
     c = Chat().start()
     real = c.add_message
 
-    async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
+    async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
+                         on_stored=None):
         if role == "system":
             await asyncio.sleep(30)
-        return await real(conversation_id, role, content, model_used, cost, message_id=message_id)
+        return await real(conversation_id, role, content, model_used, cost, message_id=message_id, on_stored=on_stored)
 
     monkeypatch.setattr(mc, "NOTES_S", 0.05)
     try:
@@ -1009,11 +1089,12 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
     c = Chat().start()
     real = c.add_message
 
-    async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
+    async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
+                         on_stored=None):
         if role == "system":
             noting.set()
             await asyncio.sleep(30)
-        return await real(conversation_id, role, content, model_used, cost, message_id=message_id)
+        return await real(conversation_id, role, content, model_used, cost, message_id=message_id, on_stored=on_stored)
 
     gw = Gateway([])
     try:
@@ -1090,8 +1171,9 @@ async def test_a_request_cancelled_while_its_message_is_written_down_leaves_noth
 @pytest.mark.asyncio
 async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_next_process(redis, monkeypatch):
     """CodeRabbit #288: the agent's message stored, then their request cancelled before it is handed on (the insert
-    landed, its answer still on its way): written down first, under its row's id, it is the next process's minute's
-    to tell, once. Rule 5: while its process is alive, or while its row can't be read, nothing is said yet."""
+    landed, its answer still on its way, and with it the row's hand-off): written down first, under its row's id, it
+    is the next process's minute's to tell, once. Rule 5: while its process is alive, or while its row can't be read,
+    nothing is said yet."""
     import asyncio
 
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
@@ -1099,11 +1181,15 @@ async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_n
     real = c.add_message
     stored = asyncio.Event()
 
-    async def answer_hangs(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
+    async def answer_hangs(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None,
+                           on_stored=None):
+        # Stored in the database; the insert's answer, which hands the row on (on_stored), never comes back.
         row = await real(conversation_id, role, content, model_used, cost, message_id=message_id)
         if role == "agent":
             stored.set()
             await asyncio.sleep(30)
+        if row and on_stored is not None:
+            on_stored(row)
         return row
 
     gw = Gateway([])
@@ -1132,6 +1218,45 @@ async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_n
         c.stop()
     notes = [r["content"] for r in c.rows if r["role"] == "system"]
     assert out["told"] == 1 and again["told"] == 0 and notes == [mc.NOT_SENT_RESTART] and gw.sent == []
+    assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saves, sent, notes", [
+    # Stored, its answer lost: asked again under its id, the row stored before comes back and goes out, once.
+    (["lost"], ["Stored, its answer lost?"], []),
+    # Stored, its answer lost, and the row then not read back: stored or not is not known. The minute finds it stored
+    # (this process alive all the same) and tells the agent, once.
+    (["lost", "unreadable"], [], [mc.NOT_SENT_OTHER]),
+    # Rule 5: nothing stored, either time: the minute crosses it out without a word.
+    (["fail", "fail"], [], []),
+])
+async def test_an_agents_message_whose_insert_may_have_landed_is_never_left_without_a_word(redis, saves, sent, notes):
+    """CodeRabbit #288: db.add_message gives None for an insert that may have been committed (its answer lost). The
+    message is never left stored in the panel with nothing sent, no note and nothing written down: asked again under
+    the same id, the row stored before is handed on; still not known, it stays written down, marked unsure, and the
+    recovery minute looks its row up while this process lives."""
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    c = Chat().start()
+    c.saves["agent"] = list(saves)
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            row = await add_message(CONV, "agent", "Stored, its answer lost?")
+            await mc.drain(CONV)
+            left = [json.loads(v)["state"] for v in (await redis.hgetall(mc.OUTBOX)).values()]
+            out = await mc.run_messenger_recover()
+            again = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    assert bool(row) == (saves == ["lost"]) and gw.sent == sent
+    assert left == ([] if sent else ["unsure"]), "kept for the minute while its save is not known"
+    assert out["told"] == len(notes) and again["told"] == 0
+    assert [r["content"] for r in c.rows if r["role"] == "system"] == notes
+    assert [r["content"] for r in c.rows if r["role"] == "agent"] == ([] if saves[0] == "fail" else
+                                                                      ["Stored, its answer lost?"])
     assert not await redis.hgetall(mc.OUTBOX)
 
 

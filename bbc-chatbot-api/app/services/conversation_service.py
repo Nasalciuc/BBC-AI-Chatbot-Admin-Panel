@@ -35,22 +35,39 @@ async def add_message(conversation_id: str, role: str, content: str,
     # BEFORE it is stored, under the id its row gets: a stop at any point after
     # (a deploy, a cancelled request) leaves it to the next process's recovery
     # minute, which tells the agent it was not sent once it finds the row (none:
-    # nothing to tell). Nothing while the channel is off.
+    # nothing to tell). Nothing while the channel is off (asked once: a
+    # message written down is always handed on, place() crosses it out if the
+    # channel went off meanwhile).
+    channel_on = messenger_channel.enabled()
     entry: Optional[str] = None
-    if outbound and role == "agent" and messenger_channel.enabled():
+    if outbound and role == "agent" and channel_on:
         message_id = message_id or str(uuid.uuid4())
         entry = await messenger_channel.write_down(conversation_id, message_id)
-    row = await db.add_message(conversation_id, role, content, model_used, cost,
-                               **({"message_id": message_id} if message_id else {}))
-    if not row:
-        await messenger_channel.not_stored(entry)
     # A chat on Facebook Messenger: what is said to the person goes out there too (app.services.messenger_channel,
     # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
-    # from the Page's inbox, a note for the agent). Nothing here while the channel is off. Handed on before the live
-    # push, with nothing awaited between the insert and its place in the chat's order: a chat's rows go out in the
-    # order they were stored, and a slow push never lets one stored after this go first.
-    if row and outbound and role in ("ai", "agent", "system"):
-        await messenger_channel.outbound(conversation_id, role, row, entry)
+    # from the Page's inbox, a note for the agent). Nothing here while the channel is off. The row's place in the
+    # chat's order is taken the moment it is stored (db.add_message calls back before it awaits anything else, the
+    # activity clocks included), so a chat's rows go out in the order they were stored, whatever is slow after.
+    follows: list = []
+
+    def hand_on(stored: dict) -> None:
+        if not follows:  # once, whichever insert stored it
+            follows.append(messenger_channel.place(conversation_id, role, stored, entry))
+
+    kw: dict = {"message_id": message_id} if message_id else {}
+    if outbound and role in ("ai", "agent", "system") and channel_on:
+        kw["on_stored"] = hand_on
+    row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+    if not row and entry is not None:
+        # Its insert may have landed with its answer lost: asked again under the same id, the row stored before comes
+        # back (StoredBefore), or it is stored now. Still none: stored or not is not known, and the recovery minute
+        # looks the row up (this process alive or not): stored, the agent is told it was not sent.
+        row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+        if not row:
+            await messenger_channel.unsure(entry, conversation_id, message_id)
+    for follow in follows:
+        if follow is not None:
+            await follow
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live

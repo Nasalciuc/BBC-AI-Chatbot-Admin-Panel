@@ -36,7 +36,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Coroutine, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -276,25 +276,25 @@ _LAST: dict[str, asyncio.Task] = {}
 _CLOSING = False
 
 
-async def outbound(conversation_id: str, role: str, row: dict, entry: Optional[str] = None) -> None:
-    """A row stored for the person in some chat (conversation_service.add_message): in a Messenger turn it joins
-    the turn's answer; outside one, a Messenger chat's row goes out through the gateway, after the chat's previous
-    one. An agent's comes written down already (write_down, before it was stored: `entry`, None when Redis could not
-    take it), whatever the chat (where it goes is looked up after), until it went out or they were told: a stop at
-    any point leaves it for the next process's minute. Nothing here awaits before the delivery is in _LAST, so a
-    shutdown (drain_all) never misses one handed on. Never raises: the row is saved whatever happens here."""
+def place(conversation_id: str, role: str, row: dict,
+          entry: Optional[str] = None) -> Optional[Coroutine[Any, Any, None]]:
+    """A row stored for the person in some chat, given its place without awaiting anything (db.add_message calls it
+    back the moment the row is stored, conversation_service.add_message): a chat's rows go out in the order they were
+    stored. In a Messenger turn it joins the turn's answer; outside one, a Messenger chat's row goes out through the
+    gateway, after the chat's previous one. An agent's comes written down already (write_down, before it was stored:
+    `entry`, None when Redis could not take it), whatever the chat (where it goes is looked up after), until it went
+    out or they were told: a stop at any point leaves it for the next process's minute. What is left to do and must
+    be awaited (an entry crossed out, an agent told during a shutdown) comes back, to await (never raising); None when
+    there is nothing. Never raises: the row is saved whatever happens here."""
     try:
         turn = _TURN.get()
         if turn is not None and turn.open and turn.conversation_id == conversation_id:
             turn.rows.append(row)
-            await _cross_out(entry)  # the turn's answer carries it
-            return
+            return _quietly(_cross_out(entry), conversation_id) if entry else None  # the turn's answer carries it
         if not enabled():
-            await _cross_out(entry)
-            return
+            return _quietly(_cross_out(entry), conversation_id) if entry else None
         if _CLOSING:
-            await _not_started(conversation_id, role, entry)
-            return
+            return _quietly(_not_started(conversation_id, role, entry), conversation_id)
         prev = _LAST.get(conversation_id)
         task = asyncio.create_task(_deliver_after(prev, conversation_id, role, row, entry))
         _LAST[conversation_id] = task
@@ -302,6 +302,23 @@ async def outbound(conversation_id: str, role: str, row: dict, entry: Optional[s
     except Exception as e:
         MESSENGER_HEALTH["send_failed"] += 1
         logger.error(f"[messenger] conv {conversation_id}: a row not handed on: {type(e).__name__}: {e}")
+    return None
+
+
+async def _quietly(work: Coroutine[Any, Any, None], conversation_id: str) -> None:
+    """What place() left to do, awaited by its caller: never raises."""
+    try:
+        await work
+    except Exception as e:
+        MESSENGER_HEALTH["send_failed"] += 1
+        logger.error(f"[messenger] conv {conversation_id}: a row's hand-off not finished: {type(e).__name__}: {e}")
+
+
+async def outbound(conversation_id: str, role: str, row: dict, entry: Optional[str] = None) -> None:
+    """place(), and what it leaves, awaited."""
+    follow = place(conversation_id, role, row, entry)
+    if follow is not None:
+        await follow
 
 
 async def _not_started(conversation_id: str, role: str, entry: Optional[str]) -> None:
@@ -500,25 +517,33 @@ async def write_down(conversation_id: str, row_id: Optional[str] = None) -> Opti
     return entry
 
 
-async def not_stored(entry: Optional[str]) -> None:
-    """An agent's message written down (write_down) whose row was not stored: nothing to send, nothing to tell."""
-    await _cross_out(entry)
+async def unsure(entry: Optional[str], conversation_id: str, row_id: str) -> None:
+    """An agent's message written down (write_down) whose row may be stored or not (its insert failed, and so did
+    the one made again under its id): nothing was handed on. Left to the recovery minute, which looks the row up
+    even while this process lives: stored, its agent is told it was not sent; not stored, it is crossed out without
+    a word. Not written so (Redis failing), it stays "waiting" with its row's id, for the next process's minute."""
+    if entry is not None and not await _mark_entry(entry, conversation_id, "unsure", row=row_id):
+        logger.warning(f"[messenger] conv {conversation_id}: an agent's message whose save is not known left as written "
+                       f"down before (the next process's minute looks its row up)")
 
 
 # A written-down delivery's own state is written through a Redis cooldown (another call's failure, process wide):
 # skipped, a message may go out with its entry still saying "waiting", or stay written down once it went out.
 
 
-async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, note: Optional[str] = None) -> bool:
+async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, note: Optional[str] = None,
+                      row: Optional[str] = None) -> bool:
     """Where a written-down delivery is: "sending" (with the gateway: maybe out from now on), "untold" (its note,
-    kept here, not saved: the recovery minute saves it). True once written; False when it could not be (no entry,
-    Redis gone or failing: logged)."""
+    kept here, not saved: the recovery minute saves it), "unsure" (its row stored or not, not known: the minute looks
+    it up). True once written; False when it could not be (no entry, Redis gone or failing: logged)."""
     r = get_redis(even_cooling_down=True) if entry is not None else None
     if r is None:
         return False
     data: dict[str, Any] = {"cid": conversation_id, "boot": BOOT, "state": state, "at": time.time()}
     if note:
         data["note"] = note
+    if row:
+        data["row"] = row
     try:
         await r.hset(OUTBOX, entry, json.dumps(data))
         return True
@@ -1327,10 +1352,12 @@ async def _keep_lock(r, token: str, held: dict) -> None:
 
 
 async def _tell_left(r, until: float) -> int:
-    """The agents' messages written down that no live process is on (theirs stopped: its alive mark is gone), and
-    the notes not saved (untold): each agent told now, once (the note's id is the delivery's), when the chat is on
-    Messenger (one left before that was looked up is looked up now). How many were told. One whose note still is not
-    saved after OUTBOX_KEEP_S, or whose chat could not be read by then, or unreadable, is given up (counted).
+    """The agents' messages written down that no live process is on (theirs stopped: its alive mark is gone), the
+    notes not saved (untold) and the messages whose save is not known (unsure): each agent told now, once (the
+    note's id is the delivery's), when the chat is on Messenger (one left before that was looked up is looked up
+    now) and, for one written down before its row was stored, once the row is found stored. How many were told. One
+    whose note still is not saved after OUTBOX_KEEP_S, or whose chat or row could not be read by then, or
+    unreadable, is given up (counted).
 
     A part at a time: the outbox is gone through by a cursor (OUTBOX_CURSOR), TELL_BATCH of its deliveries looked up
     or told at most and none started past `until` (time.monotonic), each one's work cut there (its note may be saved
@@ -1365,7 +1392,7 @@ async def _tell_left(r, until: float) -> int:
                 logger.error(f"[messenger] a written-down delivery not readable ({type(e).__name__}): given up")
                 await r.hdel(OUTBOX, entry)
                 continue
-            if state != "untold":
+            if state not in ("untold", "unsure"):
                 if boot not in alive:
                     alive[boot] = boot == BOOT or bool(await r.exists(f"msgr:alive:{boot}"))
                 if alive[boot]:
@@ -1387,9 +1414,9 @@ async def _tell_left(r, until: float) -> int:
 
 
 async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> int:
-    """One written-down delivery no live process is on: its agent told (1), or not now (0: looked at again next
-    pass, given up after OUTBOX_KEEP_S)."""
-    if state == "waiting":
+    """One written-down delivery no live process is on, or whose save is not known: its agent told (1), or not now
+    (0: looked at again later, given up after OUTBOX_KEEP_S)."""
+    if state in ("waiting", "unsure"):
         # Written down before where it goes was looked up, and before its row was stored: a site chat's says
         # nothing, nor one whose row never was (the stop came before the insert, or the insert failed); a chat or a
         # row not read now is looked at again next pass (given up after OUTBOX_KEEP_S).
@@ -1406,7 +1433,9 @@ async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> 
                 logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat or row could not be read "
                              f"for {OUTBOX_KEEP_S // 3600} h: given up")
             return 0
-    note = d.get("note") or (NOT_SENT["unknown"] if state == "sending" else NOT_SENT_RESTART)
+    # Stored and never handed on (unsure), with the gateway when its process stopped (sending: maybe out), or not
+    # started (waiting).
+    note = d.get("note") or {"sending": NOT_SENT["unknown"], "unsure": NOT_SENT_OTHER}.get(str(state), NOT_SENT_RESTART)
     if await _tell_agent(cid, str(note), _note_id(entry)):
         await r.hdel(OUTBOX, entry)
         MESSENGER_HEALTH["told_later"] += 1
