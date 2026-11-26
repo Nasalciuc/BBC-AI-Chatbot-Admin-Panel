@@ -1763,7 +1763,10 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
 # that failed: the mark cleared (KEYS[2], only while it is still ARGV[2]) and the event's answer written back where
 # there is none (KEYS[3], ARGV[3] for ARGV[4] seconds), in one step and only while the event is still in the inbox
 # (KEYS[1], ARGV[1]): 1; -1 when it was let go of meanwhile (the mark kept: its process sends them late, in the
-# person's order, _send_late); 0 when the mark is not this one any more.
+# person's order, _send_late); 0 when the mark is not this one any more. The same answer there already (these
+# replies, the API's to send) is kept at least as long as the event it answers (KEYS[4], its payload): an event put
+# back in the inbox (REKEEP_LUA) lives anew, and its answer, written before, could run out first, leaving the event
+# to a second turn. Another turn's claim, or another answer, is left as it is.
 CLEAR_UNSENT_LUA = """
 if redis.call('get', KEYS[2]) ~= ARGV[2] then
   return 0
@@ -1771,8 +1774,15 @@ end
 if not redis.call('zscore', KEYS[1], ARGV[1]) then
   return -1
 end
-if not redis.call('get', KEYS[3]) then
+local answer = redis.call('get', KEYS[3])
+if not answer then
   redis.call('set', KEYS[3], ARGV[3], 'EX', ARGV[4])
+elseif answer == ARGV[3] then
+  local event_left = redis.call('pttl', KEYS[4])
+  local answer_left = redis.call('pttl', KEYS[3])
+  if answer_left >= 0 and event_left > answer_left then
+    redis.call('pexpire', KEYS[3], event_left)
+  end
 end
 redis.call('del', KEYS[2])
 return 1
@@ -1782,7 +1792,7 @@ return 1
 async def _clear_unsent(r, k: str, mark: str, replies: list) -> int:
     """CLEAR_UNSENT_LUA for one send of this process that sent nothing: 1, -1 or 0. Redis failing raises (the mark and
     what this process wrote down of it stay, for a later look)."""
-    return int(await r.eval(CLEAR_UNSENT_LUA, 3, INBOX, _sending_key(k), f"msgr:event:{k}", k, mark,
+    return int(await r.eval(CLEAR_UNSENT_LUA, 4, INBOX, _sending_key(k), f"msgr:event:{k}", f"{INBOX}:{k}", k, mark,
                             json.dumps({"replies": replies, "by": "api"}), ANSWERED_S))
 
 

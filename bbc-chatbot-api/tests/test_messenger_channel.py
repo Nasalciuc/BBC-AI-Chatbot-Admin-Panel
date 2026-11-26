@@ -167,7 +167,7 @@ def rekeep(fake: FakeRedis, keys: list, args: list) -> int:
 
 def clear_unsent(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.CLEAR_UNSENT_LUA does."""
-    inbox, sending_key, event_key = keys
+    inbox, sending_key, event_key, payload_key = keys
     k, mark, answer, ex = args[0], args[1], args[2], int(args[3])
     if (fake.kv.get(sending_key) if fake._alive(sending_key) else None) != mark:
         return 0
@@ -176,6 +176,10 @@ def clear_unsent(fake: FakeRedis, keys: list, args: list) -> int:
     if not fake._alive(event_key):
         fake.kv[event_key] = answer
         fake._set_expiry(event_key, ex=ex)
+    elif fake.kv[event_key] == answer:
+        mine, its = fake.expires.get(event_key), fake.expires.get(payload_key) if fake._alive(payload_key) else None
+        if mine is not None and its is not None and its > mine:
+            fake.expires[event_key] = its
     fake.kv.pop(sending_key, None)
     return 1
 
@@ -5537,6 +5541,43 @@ async def test_a_late_send_met_with_the_channel_off_sends_nothing_and_stays_this
         await mc._send_late(redis, "m1", entry[1], entry[2], mark)
     assert gw.sent == [] and mc._UNSENT["m1"] is entry and redis.kv[mc._sending_key("m1")] == mark
     assert "m1" not in redis.kv.get(mc.INBOX, {}) and mc.MESSENGER_HEALTH["off_skipped"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("there", ["the_same_answer", "another_turns_claim"])
+async def test_an_answer_cleared_for_an_event_put_back_lasts_as_long_as_the_event(chat, redis, monkeypatch, there):
+    """CodeRabbit #288: replies sent late, their event put back in the inbox (REKEEP_LUA: it lives anew, two days),
+    meet the channel turned off: their mark is cleared, and the event's answer, the same replies written long before
+    and close to running out, is kept as long as the event now is. Hours later, the channel on, the recovery sends them
+    from that answer, once, never by a second turn. Rule 5: another turn's claim there is left as it was."""
+    from tests.fake_redis import FakeClock
+
+    clock = FakeClock()
+    redis.clock = clock
+    await _fail_once(chat, redis)  # m1 kept; its turn fails if it ever runs again
+    ev = event()
+    replies = [{"text": "Their answer"}]
+    answer_key, payload_key = "msgr:event:m1", f"{mc.INBOX}:m1"
+    redis._set_expiry(payload_key, ex=mc.INBOX_KEEP_S)  # put back: the event lives anew
+    redis.kv[answer_key] = (json.dumps({"replies": replies, "by": "api"}) if there == "the_same_answer"
+                            else "pending:another-turn")
+    redis._set_expiry(answer_key, ex=3600)  # written long before: an hour left
+    mark = f"{await mc._redis_now(redis)}:{mc.BOOT}"
+    redis.kv[mc._sending_key("m1")] = mark
+    monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        await mc._send_put_back(redis, "m1", ev, ev.model_dump_json(), replies, mark)
+        assert gw.sent == [] and mc._sending_key("m1") not in redis.kv and not mc._UNSENT
+        if there == "another_turns_claim":
+            assert await redis.ttl(answer_key) <= 3600 and redis.kv[answer_key] == "pending:another-turn"
+            return
+        assert await redis.ttl(answer_key) >= await redis.ttl(payload_key) > 3600
+        clock.advance(2 * 3600)  # past the hour the answer had
+        monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 1 and gw.sent == ["Their answer"] and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == 1, "the turn that failed: never a second"
 
 
 @pytest.mark.asyncio
