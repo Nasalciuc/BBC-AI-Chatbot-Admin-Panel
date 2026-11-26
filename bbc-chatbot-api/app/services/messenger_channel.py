@@ -2665,7 +2665,9 @@ async def _alive_while_off() -> None:
     replies never sent). Nothing is settled or sent; a process holding none writes nothing."""
     if not (_UNSENT or _ENDED or _PUTTING_BACK):
         return
-    r = get_redis()
+    # Through a cooldown another call began (CodeRabbit #288): skipped, the mark could run out while Redis answers,
+    # and another process take one of these sends for one a stopped process began.
+    r = get_redis(even_cooling_down=True)
     if r is None:
         return
     try:

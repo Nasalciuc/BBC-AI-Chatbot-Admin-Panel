@@ -5448,6 +5448,24 @@ async def test_a_process_holding_marks_of_its_own_says_it_is_alive_while_the_cha
 
 
 @pytest.mark.asyncio
+async def test_a_process_holding_marks_of_its_own_says_it_is_alive_through_a_cooldown_while_off(redis, monkeypatch):
+    """CodeRabbit #288: as above, and a cooldown begins in this process just before its minute (another call's
+    connection lost, Redis answering again): its alive mark is renewed all the same, so it never runs out while the
+    channel is off and another process never takes one of its sends for one a stopped process began. Rule 5: a
+    process holding no mark of its own writes nothing, in a cooldown too."""
+    monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+    alive = f"msgr:alive:{mc.BOOT}"
+    redis.kv.pop(alive, None)
+    redis_client.redis_failed("another call", ConnectionError("Connection reset by peer"))
+    assert redis_client.get_redis() is None, "this process cools down"
+    assert (await mc.run_messenger_recover())["state"] == "off"
+    assert alive not in redis.kv, "no mark of its own: nothing written"
+    mc._UNSENT["m1"] = (f"{time.time()}:{mc.BOOT}", event(mid="m1").model_dump_json(), [{"text": "About: First"}])
+    assert (await mc.run_messenger_recover())["state"] == "off"
+    assert alive in redis.kv, "it says it is alive through the cooldown"
+
+
+@pytest.mark.asyncio
 async def test_a_late_send_met_with_the_channel_off_sends_nothing_and_stays_this_processs(redis, monkeypatch):
     """CodeRabbit #288: replies this process knows never went out, to send late (their event let go of meanwhile),
     met with the channel off: nothing is sent and nothing written (no putting back, no new mark), and they stay this
