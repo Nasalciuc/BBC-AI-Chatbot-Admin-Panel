@@ -164,8 +164,10 @@ What the API does with an event:
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
-  that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send):
-  the check comes before a send's mark is written, so the answer stays kept as the API's to send, and goes once the
+  that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send).
+  The switch is read right before each turn starts and right before each call to the gateway: off before a send's
+  mark is written, nothing is written; off after it, no call is made and the send is taken for one that never
+  reached the gateway (its mark cleared, its answer kept as the API's to send). The same replies go once the
   channel is on again, without a second turn (`off_skipped`).
 - **Sent once.** Each send of an event's replies the API makes (the recovery's, or an earlier event's below) is
   written down before it starts (`msgr:inbox:sending:<key>`: when, and by which process), by one sender only (SET
