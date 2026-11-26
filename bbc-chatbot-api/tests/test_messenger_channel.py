@@ -1051,6 +1051,27 @@ async def test_a_chats_rows_are_stored_one_at_a_time_however_long_an_inserts_ans
     assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "out in the order stored"
 
 
+def _order_watched(at_call: int = 2):
+    """mc.in_order watched: `asked` is set as its at_call-th caller asks for its chat's order, before it waits for it
+    (the boundary a test of a chat's order looks at, never a count of loop turns)."""
+    import asyncio
+    import contextlib
+
+    real = mc.in_order
+    asked = asyncio.Event()
+    calls = {"n": 0}
+
+    @contextlib.asynccontextmanager
+    async def watched(conversation_id):
+        calls["n"] += 1
+        if calls["n"] == at_call:
+            asked.set()
+        async with real(conversation_id):
+            yield
+
+    return watched, asked
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["agent", "user"])
 async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the_next(redis, role):
@@ -1096,9 +1117,11 @@ async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the
         return {"sent": 1}
 
     text = "Hi, I'm Ana." if role == "agent" else "Thanks!"
+    watched, asked = _order_watched()
     with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
             patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
-            patch("app.realtime.manager.manager.push", new=AsyncMock()):
+            patch("app.realtime.manager.manager.push", new=AsyncMock()), \
+            patch.object(mc, "in_order", new=watched):
         from app.services.conversation_service import add_message
 
         first = asyncio.create_task(add_message(CONV, role, text))
@@ -1110,9 +1133,11 @@ async def test_a_stored_row_whose_caller_was_cancelled_still_goes_out_before_the
             answer.set()
             return
         line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        await asyncio.wait_for(asked.wait(), 1)  # the next row asks for the chat's order
         for _ in range(5):
-            await asyncio.sleep(0)
-        assert not line.done(), "the next row waits for the cancelled one's answer"
+            await asyncio.sleep(0)  # every chance to go on
+        assert [r["role"] for r in stored] == ["agent"] and not line.done(), \
+            "the next row waits for the cancelled one's answer, not inserted"
         answer.set()
         with pytest.raises(asyncio.CancelledError):
             await first
@@ -1238,18 +1263,23 @@ async def test_a_cancelled_agents_message_whose_insert_is_not_known_is_left_to_t
         order.append(messages[0]["text"])
         return {"sent": 1}
 
+    watched, asked = _order_watched()
     with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
             patch.object(db, "_touch_conversation_activity", new=touch), patch.object(db, "get_message", new=get_message), \
-            patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=AsyncMock()):
+            patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=AsyncMock()), \
+            patch.object(mc, "in_order", new=watched):
         from app.services.conversation_service import add_message
 
         first = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
         await asyncio.wait_for(landed.wait(), 1)
         first.cancel()  # the request goes, its insert on its way
         line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        await asyncio.wait_for(asked.wait(), 1)  # the next row asks for the chat's order
         for _ in range(5):
-            await asyncio.sleep(0)
-        assert not line.done(), "the next row waits for the cancelled one's answer"
+            await asyncio.sleep(0)  # every chance to go on
+        assert [r["role"] for r in stored] == (["agent"] if insert == "stored_answer_lost" else []), \
+            "the next row waits for the cancelled one's answer, not inserted"
+        assert not line.done()
         answer.set()
         with pytest.raises(asyncio.CancelledError):
             await first
