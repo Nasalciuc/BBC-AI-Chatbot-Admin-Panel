@@ -160,8 +160,9 @@ What the API does with an event:
   an earlier one of their person's not counted (one person's events never keep another's out), and the agents'
   notes go first within 30 seconds and 20 of them at
   most, each one cut at the 30 seconds (its note's id makes saving it again harmless; a delivery deleted without a
-  note, off or unreadable, counts among the 20 too, its deletion cut at the 30 seconds the same way and left for a
-  later pass), the outbox gone through in
+  note, off or unreadable, counts among the 20 too, its deletion cut at the 30 seconds the same way: left for a
+  later pass when Redis did not run it; one Redis ran anyway is gone without a note, as meant, and an unreadable one
+  deleted so goes uncounted in `outbox_given_up`, at most one a cut), the outbox gone through in
   parts, the deliveries looked at in the part the passes are on kept by their ids until it is gone through (a part
   can be any size, and not always the same one for a cursor: HSCAN's COUNT is a hint), so a pass goes on from those
   not looked at yet whatever left the part meanwhile, the events always get their part, and a note that keeps
