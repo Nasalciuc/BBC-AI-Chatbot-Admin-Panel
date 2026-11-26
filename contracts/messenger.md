@@ -217,14 +217,21 @@ What the API does with an event:
   makes this one wait (409: the
   gateway tries again); one failing again makes this one fail too, kept behind it, and so does one Redis could
   not read (never taken for one gone: this one is never answered past it). One there and unreadable is left to the
-  recovery to give up. Redis down (this one not kept): there is no inbox to look in. Once this one is kept, a Redis
+  recovery to give up. Redis down before anything was written (this one not kept): there is no inbox to look in. A
+  take Redis may have run with its answer lost makes this one wait (409, `take_unsure`): the delivery made again looks
+  in Redis even while it cools down, so this one is never answered past an earlier one as one not kept; Redis still
+  away after 30 s, it is answered as one not kept. Once this one is kept, a Redis
   cooldown begun since (another call's failure, process wide, while Redis may answer) never reads as "nothing
-  earlier": they are looked up all the same, and Redis failing makes this one fail, kept. What an answered event's
+  earlier": they are looked up all the same, and Redis failing makes this one fail, kept. This one goes on only once
+  one step finds none of the earlier ones left and marks its passing as the person's latest take: an earlier one put
+  back for a late send of its replies before that step makes this one wait behind it; one put back after it finds
+  this one passed, and its replies are never sent after this one's (`late_dropped`). What an answered event's
   mark and its place in the inbox say is written through a cooldown too, so the recovery never answers it a second
   time. The recovery goes oldest first, and a person whose event still waits has their later ones wait that minute,
   untried.
 - **One clock.** Every time the inbox keeps and compares is read from Redis's own clock (`TIME`), never from a
-  process's: an event's place among its person's, each take (`msgr:inbox:last`), a send's mark, the gateway's right,
+  process's: an event's place among its person's, each take (`msgr:inbox:last`: when it is written, never only when
+  its process read the clock), a send's mark, the gateway's right,
   and a kept event's age. Processes whose clocks disagree, however far, still tell which came first: a later event
   is never taken for an earlier one, a take after a send began, or after the gateway's right, is never missed, and
   how long a mark or a right has stood is told alike by all. Two takes of the person's that read the same
@@ -367,7 +374,7 @@ the queues without time.
 
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
 `turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
-`saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
+`saved_once`, `not_kept`, `take_unsure`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
 `claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `turn_rows_left`, `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
