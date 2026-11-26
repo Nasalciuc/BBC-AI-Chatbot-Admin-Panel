@@ -102,12 +102,26 @@ export function sourceLabel(source: string): string {
   return SOURCE_LABEL[source] ?? 'Site'
 }
 
-/** Who the visitor is to me: free to greet, mine, a colleague's, said not now, or in a chat already. */
-export type RowState = 'free' | 'mine' | 'taken' | 'declined' | 'in_chat'
+/** Who holds a visitor while an agent's own bot says hello to them (bbc-chatbot-api app/services/live_bot.py, HOLDER):
+ *  `bot:<agent id>`, for the hello's 15 minutes. The bot's hellos never count in the three an agent holds. */
+export const BOT_HOLDER = 'bot:'
+
+/** The day an agent's bot key works until ("Feb 23, 2027"); '' for none. */
+export function keyDay(iso: string | null | undefined): string {
+  const at = iso ? new Date(iso) : null
+  return at && !Number.isNaN(at.getTime())
+    ? at.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    : ''
+}
+
+/** Who the visitor is to me: free to greet, mine, a colleague's, greeted by my bot or a colleague's, said not now, or in
+ *  a chat already. */
+export type RowState = 'free' | 'mine' | 'taken' | 'my_bot' | 'bot' | 'declined' | 'in_chat'
 
 export function rowState(v: LiveVisitor, me: string | undefined): RowState {
   if (v.has_chat) return 'in_chat'
   if (v.dismissed) return 'declined'
+  if (v.claimed_by?.startsWith(BOT_HOLDER)) return me && v.claimed_by === `${BOT_HOLDER}${me}` ? 'my_bot' : 'bot'
   if (v.claimed_by) return v.claimed_by === me ? 'mine' : 'taken'
   return 'free'
 }
@@ -116,6 +130,8 @@ export const ROW_LABEL: Record<RowState, string> = {
   free: 'Nobody yet',
   mine: 'Yours: say hello',
   taken: 'A colleague is on it',
+  my_bot: 'Your bot said hello',
+  bot: 'A colleague’s bot said hello',
   declined: 'Said not now',
   in_chat: 'In a chat',
 }
@@ -129,7 +145,7 @@ export function heldBy(rows: LiveVisitor[], me: string | undefined): number {
  *  comes to soonest first), then the one Alex's card showed to last (still on the page he left), then the longest
  *  on the site. */
 export function ordered(rows: LiveVisitor[], me: string | undefined, nowS: number = Math.floor(Date.now() / 1000)): LiveVisitor[] {
-  const rank: Record<RowState, number> = { mine: 0, free: 1, taken: 2, declined: 3, in_chat: 4 }
+  const rank: Record<RowState, number> = { mine: 0, my_bot: 1, free: 2, taken: 3, bot: 3, declined: 4, in_chat: 5 }
   const due = (v: LiveVisitor) => (alexWaiting(v, nowS) ? (v.alex_at as number) : Number.POSITIVE_INFINITY)
   const since = (v: LiveVisitor) => (typeof v.alex_card_s === 'number' ? v.alex_card_s : Number.POSITIVE_INFINITY)
   return [...rows].sort((a, b) => rank[rowState(a, me)] - rank[rowState(b, me)]
@@ -155,7 +171,8 @@ export function alexCouldnt(v: Pick<LiveVisitor, 'alex_card' | 'alex_card_s' | '
 /** The page's list: who Alex's card didn't start a chat with; who Alex still waits on with no chat yet (the
  *  agent-first test, while it runs); and the ones I hold, whatever became of them since (in a chat now: let them go). */
 export function listed(rows: LiveVisitor[], me: string | undefined, nowS: number): LiveVisitor[] {
-  return rows.filter((v) => alexCouldnt(v) || (alexWaiting(v, nowS) && !v.has_chat) || (!!me && v.claimed_by === me))
+  return rows.filter((v) => alexCouldnt(v) || (alexWaiting(v, nowS) && !v.has_chat)
+    || (!!me && (v.claimed_by === me || v.claimed_by === `${BOT_HOLDER}${me}`)))
 }
 
 /** What came of Alex's card, in words: "Alex’s card 45 s ago, no answer", "Said not now to Alex’s card", "Opened the
@@ -291,4 +308,124 @@ export function suggestedHello(v: LiveVisitor, agentFirstName: string): string {
   const t = v.trip
   if (t?.to) return `${who} Looking at flights to ${t.to}? I can check business class fares for your dates.`
   return `${who} Can I help you find a business class fare?`
+}
+
+// ── The groups (the owner, 25 Nov 2026; the "Cardul pe grupe de clienți" analysis, 11–24 Nov) ─────────────────
+// Where the group matters, the row names it and has its hello ready, sent in one tap: the claim, then the hello.
+// On a computer Skye's card gets from 1.2 % to 17.9 % answers depending on the group; agents greeted 102 visitors in
+// the week to 25 Nov and 7 answered. The hello goes out with its group (bbc-chatbot-api live_visitors.HELLO_GROUPS),
+// so the answers can be counted per group.
+
+export type HelloGroup = 'form' | 'anz' | 'soon' | 'back'
+
+export const GROUP_LABEL: Record<HelloGroup, string> = {
+  form: 'Stuck in the quote form',
+  anz: 'Australia or New Zealand, on a computer',
+  soon: 'Flying in 15–45 days, on a computer',
+  back: 'Came back',
+}
+
+/** Australia or New Zealand, by the browser's time zone. */
+export function anzZone(tz: string | undefined): boolean {
+  return !!tz && (tz.startsWith('Australia/') || ['Pacific/Auckland', 'Pacific/Chatham', 'NZ', 'NZ-CHAT'].includes(tz))
+}
+
+/** Whole days from today to the page's departure day, by the calendar (UTC days); null without a day. */
+export function daysToFlight(depart: string | undefined, nowMs: number): number | null {
+  if (!depart || !/^\d{4}-\d{2}-\d{2}$/.test(depart)) return null
+  const day = Date.parse(`${depart}T00:00:00Z`)
+  if (Number.isNaN(day)) return null
+  const today = Date.parse(`${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00Z`)
+  return Math.round((day - today) / 86_400_000)
+}
+
+// ── The quote form being filled in (25 Nov 2026, "De ce nu lasă contactul") ─────────────────────────────────────────
+// On 24–25 Nov 4 hellos reached visitors who were filling in the site's quote form: 3 sent it 5–37 s later, and 2 then
+// got "Sorry for the wait" without having asked anything. While a visitor moves through the form, the hello waits.
+
+/** How long the visitor's newest step, the form opened or a step moved on, holds the hello. Steps carry no time
+ *  (contracts/live.md): the clock runs from when this panel saw the step come (stepClock). Past it, a form left open is
+ *  "Stuck in the quote form", as before. */
+export const FORM_QUIET_S = 120
+
+export const FORM_HOLD =
+  `Filling in the quote form: a hello now interrupts it. It is offered again after ${FORM_QUIET_S / 60} minutes without a new step.`
+
+/** Per visitor, their steps as this panel last saw them and when it first saw them so (ms). */
+export type StepClock = ReadonlyMap<string, { line: string; at: number }>
+
+/** The clock after a list came in at `atMs`: steps that changed start it again, the same steps keep their time, and a
+ *  visitor no longer in the list is forgotten. One seen for the first time counts as having just moved: how long ago
+ *  their newest step came, the list doesn't say. */
+export function stepClock(prev: StepClock, rows: Pick<LiveVisitor, 'visitor_id' | 'activity'>[], atMs: number): StepClock {
+  const next = new Map<string, { line: string; at: number }>()
+  for (const v of rows) {
+    const line = (v.activity ?? []).join(';')
+    const was = prev.get(v.visitor_id)
+    next.set(v.visitor_id, was && was.line === line ? was : { line, at: atMs })
+  }
+  return next
+}
+
+/** In the middle of the site's quote form now: their newest step opened it or moved on in it, and came less than
+ *  FORM_QUIET_S ago by `seen` (steps the clock hasn't seen yet just came). A visitor who left the form for another
+ *  step, sent it, or had it flagged or fail is not filling it in. */
+export function fillingForm(v: Pick<LiveVisitor, 'visitor_id' | 'activity'>, seen: StepClock, nowMs: number): boolean {
+  const last = (v.activity ?? []).map((s) => s.split(':')[0]).pop()
+  if (last !== 'quote_opened' && last !== 'quote_step') return false
+  const at = seen.get(v.visitor_id)
+  return !at || at.line !== (v.activity ?? []).join(';') || nowMs - at.at < FORM_QUIET_S * 1000
+}
+
+/** The quote form's last word on this visit: opened, moved on in, flagged a field or didn't go through, and not
+ *  sent since. */
+export function stuckInForm(v: Pick<LiveVisitor, 'activity'>): boolean {
+  const quote = (v.activity ?? []).map((s) => s.split(':')[0]).filter((k) => k.startsWith('quote_'))
+  const last = quote[quote.length - 1]
+  return last === 'quote_opened' || last === 'quote_step' || last === 'quote_invalid' || last === 'quote_failed'
+}
+
+/** The visitor's group, the first that fits: stuck in the form, Australia or New Zealand on a computer, flying in
+ *  15–45 days on a computer, came back; null for the rest (their hello is suggestedHello's, written by the agent). */
+export function groupOf(v: LiveVisitor, nowMs: number): HelloGroup | null {
+  if (stuckInForm(v)) return 'form'
+  const computer = v.device === 'computer'
+  if (computer && anzZone(v.tz)) return 'anz'
+  const days = daysToFlight(v.trip?.depart, nowMs)
+  if (computer && days !== null && days >= 15 && days <= 45) return 'soon'
+  if (v.returning === true) return 'back'
+  return null
+}
+
+/** The group's hello, ready to send as it is (the agent may still edit it): never a price, a contact or a long
+ *  dash (the owner's rules for what a client reads). */
+export function groupHello(group: HelloGroup, v: LiveVisitor, agentFirstName: string): string {
+  const who = agentFirstName ? `Hi, I'm ${agentFirstName} from the travel team.` : 'Hi, I am from the travel team.'
+  const to = v.trip?.to
+  switch (group) {
+    case 'form': {
+      const last = (v.activity ?? []).map((s) => s.split(':')[0]).filter((k) => k.startsWith('quote_')).pop()
+      return last === 'quote_failed'
+        ? `${who} Did the quote form give you trouble? I can take your request right here.`
+        : `${who} Need a hand with the quote form? I can take your trip details right here, it only takes a minute.`
+    }
+    case 'anz':
+      return to
+        ? `${who} Planning the long trip to ${to}? I can find business class options for your dates and send them right here.`
+        : `${who} Planning a long trip? I can find business class options for your dates and send them right here.`
+    case 'soon': {
+      const when = day(v.trip?.depart)
+      return `${who} Flying${to ? ` to ${to}` : ''}${when ? ` on ${when}` : ''}? A good moment to book business class. Want me to check options for your dates?`
+    }
+    case 'back':
+      return `${who} Welcome back! Want me to pick up your search${to ? ` for ${to}` : ''} and check business class options for you?`
+  }
+}
+
+/** The hello the editor opens with and the group it was written for, taken together: the group goes out with
+ *  the draft, never one worked out again when it is sent (a refresh after midnight UTC can move a visitor from
+ *  "soon" to "back" while the words stay "soon"'s; CodeRabbit #282, round 3). */
+export function helloDraft(v: LiveVisitor, nowMs: number, agentFirstName: string): { words: string; group: HelloGroup | null } {
+  const group = groupOf(v, nowMs)
+  return { words: group ? groupHello(group, v, agentFirstName) : suggestedHello(v, agentFirstName), group }
 }

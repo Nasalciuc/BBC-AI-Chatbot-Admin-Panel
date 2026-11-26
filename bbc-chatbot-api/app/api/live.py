@@ -3,6 +3,7 @@ contracts/live.md). The list, the claims and the delivery are bbc-live's; the wo
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -19,6 +20,8 @@ router = APIRouter()
 class SendBody(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
     text: str = Field(..., min_length=1, max_length=1000)
+    # The group the panel named the visitor by, its hello ready-written (live_visitors.HELLO_GROUPS).
+    group: Optional[str] = Field(None, max_length=16)
 
 
 @router.post("/live/send")
@@ -27,10 +30,55 @@ async def send(body: SendBody, user: dict = Depends(get_current_user)):
     # The row decides the role and the line, not a token signed hours ago.
     who = {**user, **{k: user_db[k] for k in ("role", "tunnel_scope") if user_db and user_db.get(k)}}
     try:
-        out = await live_visitors.send_hello(who, user_db, body.visitor_id, body.text)
+        out = await live_visitors.send_hello(who, user_db, body.visitor_id, body.text, group=body.group)
     except live_visitors.SendRefused as e:
         # The admin envelope, with the refusal's status (rule 4); `code` lets the panel tell the reasons apart.
         logger.info(f"[live] hello refused: {e.code}")
         return JSONResponse(status_code=e.status, content={"success": False, "data": None, "count": 0,
                                                            "error": e.detail, "code": e.code})
+    return {"success": True, "data": out, "count": 1}
+
+
+# ── The agent's bot key (app.services.live_bot): the agent's own bot works as them by it ──────────
+
+
+def _bot_refused(e) -> JSONResponse:
+    return JSONResponse(status_code=e.status, content={"success": False, "data": None, "count": 0,
+                                                       "error": e.detail, "code": e.code})
+
+
+@router.get("/live/bot-key")
+async def bot_key_status(user: dict = Depends(get_current_user)):
+    from app.services import live_bot
+
+    try:
+        out = await live_bot.key_status(user)
+    except live_bot.BotRefused as e:
+        logger.info(f"[live-bot] key refused: {e.code}")
+        return _bot_refused(e)
+    return {"success": True, "data": out, "count": 1}
+
+
+@router.post("/live/bot-key")
+async def bot_key_issue(user: dict = Depends(get_current_user)):
+    """A new key for the agent's bot; the one before stops working. Shown once."""
+    from app.services import live_bot
+
+    try:
+        out = await live_bot.issue_key(user)
+    except live_bot.BotRefused as e:
+        logger.info(f"[live-bot] key refused: {e.code}")
+        return _bot_refused(e)
+    return {"success": True, "data": out, "count": 1}
+
+
+@router.delete("/live/bot-key")
+async def bot_key_revoke(user: dict = Depends(get_current_user)):
+    from app.services import live_bot
+
+    try:
+        out = await live_bot.revoke_key(user)
+    except live_bot.BotRefused as e:
+        logger.info(f"[live-bot] key refused: {e.code}")
+        return _bot_refused(e)
     return {"success": True, "data": out, "count": 1}

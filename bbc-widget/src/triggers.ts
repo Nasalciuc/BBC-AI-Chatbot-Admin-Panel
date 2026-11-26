@@ -63,12 +63,25 @@
  * What follows the yes is the owner's contact test (bbc-chatbot-api app/services/contact_field_test.py), not this
  * moment.
  *
+ * The reading moment (owner, 25 Nov, "Mai multe chaturi și leaduri", levers 3 and 4): READING_VISIBLE_S in view with
+ * READING_SCROLL_SCREENS scrolled, for the visitors who read before they decide. On 17-25 Nov the ads card at 2.5 s got
+ * an answer from 0.9% of the phones it came to (8 of 894), on computers 3.5% (43 of 1,235); the reader's card, which
+ * comes after a read, 13.9% on phones (22 of 158). Meta's paid visits (Facebook, Instagram: 1,297 to the /lp/ pages)
+ * had a moment in 12 of them: the widget did not know them as a paid visit, and 40% open the site's quote form, which
+ * holds every card. Half of those who open it do so within 6 s, a quarter after 11 s: at 12 s a card comes to the
+ * visitors who are reading, not to the ones heading for the form. So:
+ *   social  a paid visit from Meta (socialVisit) gets its own card at the reading moment;
+ *   ads     on a phone waits for the reading moment; on a computer it stays at ADS_VISIBLE_S (the panel, 3.5%);
+ *   reader  comes at the reading moment for a visit the widget knows no source of (directVisit), a Meta visit and an
+ *           ad visit on a phone; at READER_VISIBLE_S with half a screen for every other visit, as before.
+ * Kayak stays at 2.5 s: those visitors decide in seconds (ADR A1).
+ *
  * Pure: proactive.ts measures the page and asks; this decides (node-testable).
  */
 
 /** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
-export type Trigger = 'kayak' | 'ads' | 'quote' | 'reader' | 'exit'
-const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'quote', 'reader', 'exit']
+export type Trigger = 'kayak' | 'ads' | 'social' | 'quote' | 'reader' | 'exit'
+const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit']
 
 /** The server's answer for a moment switched off on its own (PROACTIVE_TRIGGERS), with the feature on: the
  *  visit keeps its one moment for the others (proactive.ts), and this one is not asked again in it. Without
@@ -89,6 +102,28 @@ export function offAfter(kept: string | null, trigger: Trigger): string {
   return (off.includes(trigger) ? off : [...off, trigger]).join(',')
 }
 
+/** How many times a page asks its moment again after the page named another trip while the answer was on its way
+ *  (givesMomentBack): a page whose destination keeps changing is not asked every second, and the server's limit per
+ *  address is the chat's too. */
+export const TRIP_ASKS_AGAIN = 2
+
+/** Whether an answer that came after its moment passed (proactive.ts, momentPassed) gives the visit its moment back.
+ *  Only a trip that changed under it, at most TRIP_ASKS_AGAIN times on a page: the ads card's and the Meta ad's card's
+ *  words name the page's old destination and say nothing about the new one, as a "no" about the old trip says nothing
+ *  (CodeRabbit #272; #282, round 5). Every other reason (the visitor typing, searching, leaving, the chat opened…)
+ *  keeps the moment used. */
+export function givesMomentBack(passed: string | null, askedAgain: number): boolean {
+  return passed === 'trip_changed' && askedAgain < TRIP_ASKS_AGAIN
+}
+
+/** Whether the row's second chance (rowAgainOpen) goes back when its answer came after its moment passed. Only a new
+ *  press of the form: that press is a new send, which the site may refuse too, and its refusal is then the row's
+ *  moment (CodeRabbit #282, round 8). Every other reason spends the chance as it spends the visit's moment, an answer
+ *  that never came among them: one ask a chance, never one a second while the server doesn't answer. */
+export function givesRowBack(passed: string | null, rowOnly: boolean): boolean {
+  return rowOnly && passed === 'quote_form'
+}
+
 /** What can open the chat without the form: one of the moments, or `note` — the visitor tapped the 10 s
  *  note beside the button (owner's decision, 16 Nov: from 13 Nov, 0 of the 35 visitors who opened the
  *  chat got past the form the note led to). The note is no moment: no arm and no switch holds it. */
@@ -98,6 +133,9 @@ export const KAYAK_VISIBLE_S = 2.5
 export const ADS_VISIBLE_S = 2.5
 export const READER_VISIBLE_S = 25
 export const READER_SCROLL_SCREENS = 0.5
+/** The reading moment (above): in view this long, with this much of the page scrolled. */
+export const READING_VISIBLE_S = 12
+export const READING_SCROLL_SCREENS = 0.25
 export const QUOTE_IDLE_S = 8
 export const QUOTE_INVALID_IDLE_S = 5
 /** D1 (ADR-4a): a refused send whose form the widget can put a row beside — the row covers nothing, so it
@@ -152,6 +190,11 @@ export interface PageState {
   /** The page names a destination the card can say back (tripContext.hasContext). Read only on an ad visit:
    *  false on any other. */
   destination: boolean
+  /** The visit came from a paid Meta ad: Facebook or Instagram with a paid medium (socialVisit, first touch of the
+   *  tab). False on a Kayak or a Google/Bing visit. */
+  social?: boolean
+  /** The tab's record names no source at all: no campaign tag, no click id, no other site before it (directVisit). */
+  direct?: boolean
   /** Seconds the page has been in view since it first showed something (inViewBeforeStartMs, then counted). */
   visibleS: number
   /** Seconds this widget has watched the page (since it started on it). */
@@ -176,8 +219,25 @@ export interface PageState {
   siteSignals?: boolean
 }
 
+/** The row beside a refused quote form may come once more in a visit whose card brought no contact (owner, 25 Nov
+ *  2026: "Rândul de lângă formular și după un card fără contact", on for every visitor). A visit has one moment, and a
+ *  card shown used it: on 24-25 Nov 5 of the 19 who left a card's chat without a contact were then refused by the
+ *  site's form, none of them sent it, and the row never came. `done`: the visit's moment (proactive.ts DONE_KEY),
+ *  'shown' once a card showed, answered or not (a "Not now" or ✕ pauses every moment for 24 h before this is read);
+ *  `rowAgain`: the second chance, '' until it is asked for, then 'asked', 'used' (also when the visit's moment was
+ *  the row itself) or the site's stop; `contactLeft`: the visitor left a contact in the chat this visit (ChatWindow). */
+export function rowAgainOpen(done: string | null, rowAgain: string | null, contactLeft: boolean): boolean {
+  return done === 'shown' && !rowAgain && !contactLeft
+}
+
+/** The one moment that second chance may be: the quote moment on a refused send whose form is still on the page,
+ *  where the row stands (QUOTE_ROW_IDLE_S). A quote card over the form, or any other moment, never comes again. */
+export function rowMoment(trigger: Trigger | null, quote: QuoteState | null): boolean {
+  return trigger === 'quote' && !!quote?.invalid && !!quote.row
+}
+
 /** No card on the thank-you page, the legal pages or the like (the paths the site uses, Nov 2026). */
-const BLOCKED = /^\/(?:thank-?you|thanks|legal|terms|privacy|cookie|refund|disclaimer|unsubscribe)(?:[/?#_-]|$)/i
+const BLOCKED =/^\/(?:thank-?you|thanks|legal|terms|privacy|cookie|refund|disclaimer|unsubscribe)(?:[/?#_-]|$)/i
 
 export function blockedPath(path: string): boolean {
   return BLOCKED.test(path || '/')
@@ -207,9 +267,40 @@ export function pickTrigger(s: PageState): Trigger | null {
   // The quote form being worked on, pressed or not: no card over it (only the quote moment above).
   if (s.sinceQuoteFormS !== null && s.sinceQuoteFormS <= QUOTE_WATCH_S) return null
   if (on('kayak') && s.kayak && s.visibleS >= KAYAK_VISIBLE_S) return 'kayak'
-  if (on('ads') && s.ad && s.destination && s.visibleS >= ADS_VISIBLE_S) return 'ads'
-  if (on('reader') && s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS) return 'reader'
+  const reading = s.visibleS >= READING_VISIBLE_S && s.scrolledScreens >= READING_SCROLL_SCREENS
+  if (on('ads') && s.ad && s.destination && (s.phone ? reading : s.visibleS >= ADS_VISIBLE_S)) return 'ads'
+  if (on('social') && s.social && reading) return 'social'
+  const read = readsFirst(s) ? reading : s.visibleS >= READER_VISIBLE_S && s.scrolledScreens >= READER_SCROLL_SCREENS
+  if (on('reader') && read) return 'reader'
   return null
+}
+
+/** The visitors whose reader comes at the reading moment, not after 25 s (above). */
+function readsFirst(s: PageState): boolean {
+  return !s.kayak && (!!s.direct || !!s.social || (s.ad && s.phone))
+}
+
+/** The moment `t` came at the reading moment (READING_VISIBLE_S), not at its own time: what the measurements
+ *  compare (proactive_eligible and proactive_shown carry `moment: 'reading'`). */
+export function readingMoment(s: PageState, t: Trigger): boolean {
+  if (t === 'social') return true
+  if (t === 'ads') return s.phone
+  if (t === 'reader') return readsFirst(s)
+  return false
+}
+
+/** Meta's ads (Facebook, Instagram), as its campaigns tag them: utm_source facebook / fb / ig with a paid medium
+ *  (paid_social on the /lp/ pages, paid on the others). A fbclid alone is no ad: Facebook adds it to every link
+ *  people share, paid or not. */
+const SOCIAL_SOURCES = new Set(['facebook', 'fb', 'ig', 'instagram', 'meta'])
+const SOCIAL_MEDIUMS = new Set(['paid_social', 'paidsocial', 'paid-social', 'social_paid', 'paid', 'cpc', 'ppc'])
+
+/** The visit came from a paid Meta ad (above). A Kayak visit is Kayak's, a Google or Bing click the ads moment's. */
+export function socialVisit(kept: { gclid?: string; msclkid?: string; utm_source?: string; utm_medium?: string }): boolean {
+  if (adVisit(kept)) return false
+  const source = (kept.utm_source || '').trim().toLowerCase()
+  if (source === 'kayak' || !SOCIAL_SOURCES.has(source)) return false
+  return SOCIAL_MEDIUMS.has((kept.utm_medium || '').trim().toLowerCase())
 }
 
 /** The ads' own tags, for a click that came without its id: 7 of the 596 Google ad visits of 16-18 Nov

@@ -170,14 +170,14 @@ def passes(redis):
     return redis
 
 
-def _ask(vid=VID, live_pass=None, ip="203.0.113.7"):
+def _ask(vid=VID, live_pass=None, ip="203.0.113.7", headers=None):
     from app.api import chat as chat_api
 
     app = FastAPI()
     app.include_router(chat_api.router)
     body = {"visitor_id": vid, **({"live_pass": live_pass} if live_pass is not None else {})}
     with patch("app.api.chat.client_ip", return_value=ip):
-        return TestClient(app).post("/chat/live", json=body)
+        return TestClient(app).post("/chat/live", json=body, headers=headers or {})
 
 
 def test_a_new_visitor_gets_where_to_beat_and_a_pass(passes):
@@ -333,9 +333,9 @@ def _hold(fake, vid=VID, agent=AGENT):
 
 
 async def _send(text="Hi, I'm Ana from the travel team. Can I help with your trip?", *, user=SALES, user_db=SALES_DB,
-                vid=VID):
+                vid=VID, group=None):
     with patch("app.db.supabase.log_audit", new=AsyncMock()) as audit:
-        out = await live_visitors.send_hello(user, user_db, vid, text)
+        out = await live_visitors.send_hello(user, user_db, vid, text, group=group)
     return out, audit
 
 
@@ -458,7 +458,7 @@ async def test_a_tap_takes_its_hello_once_and_frees_the_agents_place(redis):
     tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
     got = await live_visitors.take_tap(VID, tap)
     assert got == {"agent_id": AGENT, "text": "Hi, can I help with your trip?", "hello_id": out["hello_id"],
-                   "sent_at": got["sent_at"]}
+                   "sent_at": got["sent_at"], "group": None, "bot": False}
     assert f"live:claim:{VID}" not in redis.kv, "the agent's place came back"
     assert await live_visitors.take_tap(VID, tap) is None, "one tap"
 
@@ -488,13 +488,15 @@ def _request():
 STORED_AT = "2026-11-23T10:00:00.123456+00:00"
 
 
-def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
+def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, reread=None, marked=True):
     row = {**SALES_DB, "avatar_url": None} if agent_row is None else agent_row
+    # `marked`: what the presence fields' writes answer, one for all or one each (a list).
+    mark = AsyncMock(side_effect=marked) if isinstance(marked, list) else AsyncMock(return_value=marked)
     return [
         patch("app.api.chat.is_blocked", new=AsyncMock(return_value=False)),
         patch("app.services.conversation_service.get_or_create_conversation", new=AsyncMock(return_value={"id": "c1"})),
         patch("app.db.supabase.claim_conversation_if_unassigned", new=AsyncMock(return_value={"won": claim_won})),
-        patch("app.db.supabase.patch_conversation_presence", new=AsyncMock(return_value=True)),
+        patch("app.db.supabase.patch_conversation_presence", new=mark),
         patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=row)),
         patch("app.services.conversation_service.db.add_message",
               new=AsyncMock(return_value={"id": "m1", "created_at": STORED_AT} if stored else None)),
@@ -503,10 +505,10 @@ def _init_patches(claim_won=True, agent_row=None, stored=True, given_back=True, 
     ]
 
 
-async def _init(payload, claim_won=True, agent_row=None, stored=True, given_back=True, reread=None):
+async def _init(payload, claim_won=True, agent_row=None, stored=True, given_back=True, reread=None, marked=True):
     from app.api.chat import chat_init
 
-    ps = _init_patches(claim_won, agent_row, stored, given_back, reread)
+    ps = _init_patches(claim_won, agent_row, stored, given_back, reread, marked)
     mocks = [p.start() for p in ps]
     try:
         res = await chat_init(payload, _request(), None)
@@ -532,6 +534,50 @@ async def test_the_tapped_chat_starts_as_the_agents_with_the_hello_first(redis):
     assert patched["engaged_agent_id"] == AGENT and patched["live_hello"]["agent_id"] == AGENT
     conv_id, role, content = m["add"].await_args.args[:3]
     assert (conv_id, role, content) == ("c1", "agent", "Hi, can I help with your trip?")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group, kept", [
+    ("anz", "anz"), ("soon", "soon"), ("back", "back"), ("form", "form"),
+    # Rule 5: a group the panel doesn't name, and none, are left out; the hello goes all the same.
+    ("vip", None), ("", None), (None, None),
+])
+async def test_the_group_of_a_ready_hello_stays_with_it_to_the_chat(redis, group, kept):
+    """The owner, 25 Nov 2026: the panel names the visitor's group and has its hello ready; the answers are
+    counted per group, from the hello's audit and the chat its tap starts."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    out, audit = await _send("Hi, I'm Ana from the travel team. A long trip ahead?", group=group)
+    hello = json.loads(redis.kv[f"live:hello:{out['hello_id']}"])
+    assert hello.get("group") == kept and ("group" in hello) is bool(kept)
+    assert audit.await_args.args[5]["group"] == kept
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    # The visitor's widget never sees it: the inbox message keeps the contract's fields.
+    assert "group" not in json.loads(redis.kv[f"live:inbox:{VID}"][0])
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap))
+    assert res.live_agent == "Ana"
+    live_hello = m["meta"].await_args.args[1]["live_hello"]
+    assert live_hello.get("group") == kept and ("group" in live_hello) is bool(kept)
+
+
+def test_the_route_hands_the_group_on(redis):
+    from app.api import live as live_api
+    from app.api.live import SendBody
+    from app.security.auth import get_current_user
+
+    assert SendBody(visitor_id=VID, text="Hi").group is None
+    with pytest.raises(Exception):
+        SendBody(visitor_id=VID, text="Hi", group="x" * 17)
+    _hold(redis)
+    app = FastAPI()
+    app.include_router(live_api.router, prefix="/api")
+    app.dependency_overrides[get_current_user] = lambda: SALES
+    with patch("app.db.supabase.get_user_by_id", new=AsyncMock(return_value=SALES_DB)), \
+            patch("app.db.supabase.log_audit", new=AsyncMock()):
+        ok = TestClient(app).post("/api/live/send", json={"visitor_id": VID, "text": "Hi there!", "group": "back"})
+    assert ok.status_code == 200
+    assert json.loads(redis.kv[f"live:hello:{ok.json()['data']['hello_id']}"])["group"] == "back"
 
 
 @pytest.mark.asyncio
@@ -619,6 +665,33 @@ def test_the_list_pass_follows_the_database_row_not_the_session(configured, row,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("marked, writes, counted", [
+    (True, 1, 0),             # Rule 5: written at once, written once
+    ([False, True], 2, 0),    # a write that failed once: the second holds
+    (False, 2, 1),            # failed twice: counted, the chat from the panel stays the agent's
+])
+async def test_the_hellos_chat_fields_are_tried_twice(redis, marked, writes, counted):
+    """CodeRabbit #282, round 7: the presence fields (the hello's live_hello among them) are no longer written once
+    and forgotten."""
+    from app.api.chat import ChatInitRequest
+
+    _hold(redis)
+    await _send()
+    tap = json.loads(redis.kv[f"live:inbox:{VID}"][0])["tap"]
+    res, m = await _init(ChatInitRequest(visitor_id=VID, live_tap=tap), marked=marked)
+    assert m["meta"].await_count == writes and live_visitors.LIVE_HEALTH["mark_failed"] == counted
+    # Each try is the same write, on the tapped chat (CodeRabbit #282, round 8: a mock answers any arguments).
+    tries = [c.args for c in m["meta"].await_args_list]
+    assert all(conv_id == "c1" for conv_id, _ in tries)
+    first = tries[0][1]
+    assert set(first) == {"engaged_agent_id", "agent_assigned_at", "clock_agent_id", "live_hello"}
+    assert first["engaged_agent_id"] == first["clock_agent_id"] == first["live_hello"]["agent_id"] == AGENT
+    assert all(fields == first for _, fields in tries), "a second try writes what the first meant to"
+    assert res.live_agent == "Ana", "a hello from the panel: its agent is at the panel, the chat stays theirs"
+    m["give_back"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_chat_the_agent_cannot_take_stays_the_visitors_and_is_counted(redis):
     from app.api.chat import ChatInitRequest
 
@@ -674,3 +747,63 @@ async def test_a_chat_that_is_no_longer_the_agents_starts_ordinary(redis):
                          reread={"id": "c1", "assigned_agent_id": "someone-else"})
     assert res.live_agent is None and res.live_hello is None
     m["meta"].assert_not_awaited()
+
+
+# ── the visit registry's pass (app/services/visit_registry.py, contracts/live.md "The visit registry") ──────
+
+
+@pytest.fixture
+def registry_on(passes, monkeypatch):
+    from app.services import visit_registry
+
+    monkeypatch.setenv("VISIT_REGISTRY", "true")
+    for k in visit_registry.VISIT_HEALTH:
+        visit_registry.VISIT_HEALTH[k] = None if k == "queued" else 0
+    return passes
+
+
+def test_the_registry_alone_hands_a_pass_and_no_beats(registry_on, monkeypatch):
+    from app.services import visit_registry
+
+    monkeypatch.setenv("LIVE_VISITORS", "false")
+    out = _ask(headers={"cf-ipcountry": "us"}).json()
+    assert out["enabled"] is False, "no beats, no list, no hello: the registry only"
+    assert out["visits"] is True and out["url"] == "https://live.example.test" and out["country"] == "US"
+    assert live_tokens.read_pass(out["pass"])[0]["v"] == VID
+    assert "after_s" not in out and "hello" not in out
+    assert live_visitors.LIVE_HEALTH["passes"] == 1 and visit_registry.VISIT_HEALTH["passes"] == 1
+
+
+def test_with_the_list_on_the_registry_rides_on_the_same_pass(registry_on):
+    from app.services import visit_registry
+
+    out = _ask(headers={"cf-ipcountry": "GB"}).json()
+    assert out["enabled"] is True and out["visits"] is True and out["country"] == "GB" and out["after_s"] == 20
+    assert visit_registry.VISIT_HEALTH["passes"] == 0, "counted as the registry's alone only without the list"
+
+
+def test_alexs_side_is_never_listed_but_its_visit_is_kept(registry_on, monkeypatch):
+    from app.services import agent_first_test
+
+    monkeypatch.setattr(agent_first_test, "side", lambda vid: agent_first_test.ALEX)
+    out = _ask().json()
+    assert out["enabled"] is False and out["test"] == "alex", "the owner's test: Alex's side is never listed"
+    assert out["visits"] is True and live_tokens.read_pass(out["pass"])[0]["v"] == VID
+    monkeypatch.setenv("VISIT_REGISTRY", "false")
+    with patch.object(registry_on, "eval", new=AsyncMock()) as ev:
+        assert _ask().json() == {"enabled": False, "test": "alex"}, "the registry off: as before"
+    ev.assert_not_called()
+
+
+@pytest.mark.parametrize("header", ["XX", "T1", "usa", "", "1A"])
+def test_a_country_that_is_not_one_is_left_out(registry_on, header):
+    out = _ask(headers={"cf-ipcountry": header}).json()
+    assert out["visits"] is True and "country" not in out
+
+
+def test_the_registry_off_adds_nothing(passes, monkeypatch):
+    monkeypatch.delenv("VISIT_REGISTRY", raising=False)
+    out = _ask(headers={"cf-ipcountry": "US"}).json()
+    assert out["enabled"] is True and "visits" not in out and "country" not in out
+    monkeypatch.setenv("LIVE_VISITORS", "false")
+    assert _ask().json() == {"enabled": False}

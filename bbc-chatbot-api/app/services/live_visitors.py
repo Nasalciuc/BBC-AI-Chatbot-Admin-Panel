@@ -36,13 +36,18 @@ AFTER_S = 20             # the widget beats from 20 s on the page
 BEAT_S = 15
 
 VISITOR_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+# The group the panel named the visitor by, its hello ready-written (the owner, 25 Nov 2026; the panel's
+# features/live/view.ts groupOf): stuck in the quote form, Australia or New Zealand on a computer, flying in 15 to
+# 45 days on a computer, a client who comes back. Kept with the hello, and with the chat a tap on it starts, so
+# the answers can be counted per group.
+HELLO_GROUPS = frozenset({"form", "anz", "soon", "back"})
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 PASS_NEW_PER_ADDRESS = 20   # new visitor ids one address gets passes for in an hour (pass.lua ARGV[3])
 
 LIVE_HEALTH: dict = {"tokens": 0, "sent": 0, "refused": 0, "send_failed": 0, "taps": 0, "taps_refused": 0,
                      "tap_failed": 0, "release_failed": 0, "redis_failed": 0, "passes": 0, "passes_refused": 0,
-                     "pass_failed": 0}
+                     "pass_failed": 0, "mark_failed": 0}
 
 _LUA_DIR = Path(__file__).with_name("live_lua")
 
@@ -105,16 +110,26 @@ def widget_config() -> dict:
 _PASS_REFUSALS = {-1: "the id has a pass already", -2: "too many new visitors from one address"}
 
 
-async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Optional[str]) -> dict:
+async def widget_pass(
+    visitor_id: Optional[str], old_pass: Optional[str], ip: Optional[str], *, live: bool = True
+) -> dict:
     """POST /chat/live: widget_config() and, while it is on, the visitor's pass to bbc-live (b1).
+
+    The visit registry (app.services.visit_registry, VISIT_REGISTRY): while it is on, every visitor gets the pass and
+    bbc-live's place with `"visits": true`, also when the list is off for them (`live=False`: the agent-first test's
+    Alex side; or LIVE_VISITORS off): `"enabled"` then stays false, so the widget beats nowhere and only sends the
+    registry its snapshots.
 
     A visitor id gets a pass without proof once (pass.lua); after that only by showing its own pass, which
     the widget keeps and shows on every page. {"enabled": False} whenever no pass is handed: the widget then
     beats nowhere. {"enabled": False, "later": True} when Redis can't bind the id for now: the widget asks again
     later instead of ending the page's live work (CodeRabbit #273). Every refusal and failure is counted in
     LIVE_HEALTH."""
-    config = widget_config()
-    if not config["enabled"]:
+    from app.services import visit_registry
+
+    config = widget_config() if live else {"enabled": False}
+    visits = visit_registry.registry_enabled()
+    if not config["enabled"] and not visits:
         return config
     off = {"enabled": False}
     for_now = {"enabled": False, "later": True}
@@ -156,7 +171,12 @@ async def widget_pass(visitor_id: Optional[str], old_pass: Optional[str], ip: Op
         return off
     LIVE_HEALTH["passes"] += 1
     expires = datetime.now(timezone.utc) + timedelta(seconds=live_tokens.PASS_TTL)
-    return {**config, "pass": token, "pass_expires_at": expires.isoformat()}
+    out = {**config, "pass": token, "pass_expires_at": expires.isoformat()}
+    if visits:
+        out = {**out, "url": out.get("url") or _url(), "visits": True}
+        if not config["enabled"]:
+            visit_registry.VISIT_HEALTH["passes"] += 1
+    return out
 
 
 class SendRefused(Exception):
@@ -176,8 +196,10 @@ def first_name(name: Optional[str]) -> str:
     return parts[0][:40] if parts else "Your travel agent"
 
 
-async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text: str) -> dict:
-    """The agent's hello to a visitor they hold in bbc-live. Raises SendRefused."""
+async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text: str,
+                     group: Optional[str] = None) -> dict:
+    """The agent's hello to a visitor they hold in bbc-live. Raises SendRefused. `group`: the group the panel
+    named the visitor by (HELLO_GROUPS), kept with the hello; anything else is left out, never refused."""
     from app.ai.output_guard import foreign_contact_kinds
     from app.services.agent_presence import _may_take_chats
 
@@ -209,6 +231,9 @@ async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text:
                "tap": tap}
     hello = {"id": hello_id, "visitor_id": visitor_id, "agent_id": agent_id, "text": words,
              "sent_at": now.isoformat()}
+    group = group if group in HELLO_GROUPS else None
+    if group:
+        hello["group"] = group
     keys = [f"live:claim:{visitor_id}", f"live:dismissed:{visitor_id}", f"live:inbox:{visitor_id}",
             f"live:hello:{hello_id}", f"live:said:{visitor_id}"]
     result = 0
@@ -235,7 +260,7 @@ async def send_hello(user: dict, user_db: Optional[dict], visitor_id: str, text:
     await agent_first_test.note_hello(visitor_id)  # the owner's test: before Alex's card or after its wait
     from app.db import supabase as db
     await db.log_audit(agent_id, user.get("email"), "live_hello_sent", "live_visitors", visitor_id,
-                       {"hello_id": hello_id, "text": words, "length": len(words)})
+                       {"hello_id": hello_id, "text": words, "length": len(words), "group": group})
     return {"hello_id": hello_id, "sent_at": now.isoformat(), "expires_at": message["expires_at"]}
 
 
@@ -285,7 +310,20 @@ async def take_tap(visitor_id: Optional[str], tap: Optional[str]) -> Optional[di
         LIVE_HEALTH["taps_refused"] += 1
         return None
     return {"agent_id": payload["a"], "text": str(hello.get("text") or ""), "hello_id": payload["h"],
-            "sent_at": hello.get("sent_at")}
+            "sent_at": hello.get("sent_at"),
+            "group": hello.get("group") if hello.get("group") in HELLO_GROUPS else None,
+            # Sent by the agent's own bot (app.services.live_bot): the chat it starts is the bot's to answer.
+            "bot": hello.get("bot") is True}
+
+
+async def _still_theirs(conv_id: str, agent_id: str) -> bool:
+    """After a give-back that didn't happen: the write failed (the chat is still the agent's, in human mode) or the
+    chat is no longer theirs. A chat that can't be read counts as theirs, so the visitor and the panel agree on who
+    answers (CodeRabbit #273)."""
+    from app.db import supabase as db
+
+    now_conv = await db.get_conversation_simple(conv_id)
+    return now_conv is None or now_conv.get("assigned_agent_id") == agent_id
 
 
 async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str) -> dict:
@@ -297,7 +335,10 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
 
     Order: the agent may still take chats; the claim; the hello stored; then the presence fields. A hello that
     cannot be stored after the claim gives the chat back (unassigned, AI mode), so {} always means ordinary; a
-    chat that cannot be given back stays the agent's, and the answer says so."""
+    chat that cannot be given back stays the agent's, and the answer says so, once read again (one someone else has
+    by then is answered as ordinary). The presence fields are tried twice;
+    a bot's chat they can't be written on is given back the same way (its bot would never see it), a chat from the
+    panel stays the agent's, counted (mark_failed)."""
     from app.db import supabase as db
     from app.services.agent_presence import _may_take_chats
     from app.services.conversation_service import add_message
@@ -339,16 +380,38 @@ async def start_with_the_agent(conv_id: str, visitor_id: Optional[str], tap: str
         # theirs. Only a chat that is not the agent's starts as an ordinary one; theirs, or one that can't be read,
         # stays theirs, so the visitor and the panel agree on who answers (CodeRabbit #273).
         LIVE_HEALTH["release_failed"] += 1
-        now_conv = await db.get_conversation_simple(conv_id)
-        if now_conv is not None and now_conv.get("assigned_agent_id") != agent_id:
+        if not await _still_theirs(conv_id, agent_id):
             logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat is no longer the agent's")
             return {}
         logger.error(f"[live] conv {conv_id}: the hello was not stored and the chat could not be given back: "
                      "it stays the agent's")
     now = datetime.now(timezone.utc).isoformat()
-    await db.patch_conversation_presence(conv_id, {
+    fields = {
         "engaged_agent_id": agent_id, "agent_assigned_at": now, "clock_agent_id": agent_id,
         "live_hello": {"id": hello["hello_id"], "agent_id": agent_id, "sent_at": hello.get("sent_at"),
-                       "tapped_at": now},
-    })
+                       "tapped_at": now, **({"group": hello["group"]} if hello.get("group") else {}),
+                       **({"bot": True} if hello.get("bot") else {})},
+    }
+    # The merge writes the same keys again, so a second try is safe (CodeRabbit #282, round 7).
+    marked = await db.patch_conversation_presence(conv_id, fields)
+    if not marked:
+        marked = await db.patch_conversation_presence(conv_id, fields)
+    if not marked:
+        LIVE_HEALTH["mark_failed"] += 1
+        if hello.get("bot"):
+            # Without live_hello.bot the agent's bot never sees this chat (live_bot._bots_chat), and nobody may be at the
+            # panel for it: given back, Skye answers the visitor who tapped (the hello stays in the chat, as said).
+            if await db.release_live_claim(conv_id, agent_id):
+                logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked; given back to Skye")
+                return {}
+            LIVE_HEALTH["release_failed"] += 1
+            # Not given back: the write failed, or someone else has the chat now. Read again, as just above for an
+            # unstored hello: only a chat still the agent's (or one that can't be read) is named theirs (CodeRabbit
+            # #282, round 8).
+            if not await _still_theirs(conv_id, agent_id):
+                logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked and is no longer the agent's")
+                return {}
+            logger.error(f"[live] conv {conv_id}: the bot's chat could not be marked nor given back: it stays the agent's")
+        else:
+            logger.error(f"[live] conv {conv_id}: the hello's chat fields were not written; the chat stays the agent's")
     return {"agent": first_name(agent.get("name")), "text": hello["text"], "at": (row or {}).get("created_at")}

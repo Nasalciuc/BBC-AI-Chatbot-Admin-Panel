@@ -14,16 +14,17 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
-import { apiFetch, ensureVisitorId } from './api'
+import { apiFetch, ensureVisitorId, getVisitorId } from './api'
 import {
-  afterRefusedPass, beatBody, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello, readKeptHello,
-  renewalOf,
+  afterRefusedPass, beatBody, configFor, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
+  readKeptHello, renewalOf,
   type BeatAlexCard, type LiveConfig, type LiveHello, type Renewal,
 } from './liveRead'
 import { posthog } from './posthog'
 import { activityLine, siteEvents, sitePage } from './siteSignals'
 import type { TripPayload } from './tripContext'
 import { getUtm } from './utm'
+import { isReturning, noteVisit, timeZone } from './visitCount'
 
 export type { LiveHello } from './liveRead'
 
@@ -98,8 +99,26 @@ function liveFetch(url: string, pass: string, init: RequestInit = {}): Promise<R
   return fetch(url, { ...init, headers, credentials: 'omit', mode: 'cors' })
 }
 
+/** The last config the API gave this page (the registry reads its place and pass at each snapshot: visits.ts), for
+ *  the visitor it was asked for only (configFor). */
+let latest: { cfg: LiveConfig; visitorId: string } | null = null
+export function currentConfig(): LiveConfig | null { return configFor(latest, getVisitorId()) }
+
+let pageAsk: Promise<LiveConfig> | null = null
+/** This page's config, asked once: at the page's start for the visit registry (visits.ts), the live list takes the
+ *  same answer 20 s in. Asked again only after an answer "for now" or a failure (and by a pass renewal). */
+export function pageConfig(apiUrl: string): Promise<LiveConfig> {
+  if (!pageAsk) {
+    pageAsk = askConfig(apiUrl).then(
+      (cfg) => { if (cfg.later) pageAsk = null; return cfg },
+      (err: unknown) => { pageAsk = null; throw err },
+    )
+  }
+  return pageAsk
+}
+
 /** POST /chat/live: on or off, where, and a pass (kept for the next page). */
-async function askConfig(apiUrl: string): Promise<LiveConfig> {
+export async function askConfig(apiUrl: string): Promise<LiveConfig> {
   const visitorId = ensureVisitorId()
   const res = await apiFetch(`${apiUrl}/api/chat/live`, {
     method: 'POST',
@@ -110,9 +129,11 @@ async function askConfig(apiUrl: string): Promise<LiveConfig> {
   // The owner's agent-first test: an answer names this visitor's side (Alex's side gets no pass, never listed).
   if (res.ok) noteSide(cfg.test)
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
-  // inherit the last one's pass, which would only be refused (CodeRabbit #273).
-  if (cfg.enabled && cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
-  if (cfg.enabled && cfg.url) keepUrl(cfg.url)
+  // inherit the last one's pass, which would only be refused (CodeRabbit #273). The registry's pass alone (the list
+  // off) is kept too: the next page renews it.
+  if (cfg.pass && ensureVisitorId() === visitorId) keepPass(cfg.pass)
+  if (cfg.url) keepUrl(cfg.url)
+  if (!cfg.later && ensureVisitorId() === visitorId) latest = { cfg, visitorId }
   return cfg
 }
 
@@ -182,6 +203,8 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (!cfg.url || !cfg.pass) return
       let path = '/'
       try { path = location.pathname } catch { /* keep "/" */ }
+      // A beat keeps this visit going in the browser's count of visits (visitCount.ts).
+      noteVisit()
       // What the visitor is doing right now, for the agent who says hello first (the owner, 22 Nov 2026): the
       // kind of page and the steps on the site, as the site told the widget; never what they typed.
       const body = beatBody({ path, trip: tripRef.current(), utm: getUtm() as Record<string, string | undefined>,
@@ -190,7 +213,10 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
         // The agent-first test: when Alex's card may come, so the agent sees how long they have.
         alexAt: alexAt(),
         // What came of Alex's card: the panel lists the visitors it didn't start a chat with.
-        alexCard: alexCardNow(Date.now()) })
+        alexCard: alexCardNow(Date.now()),
+        // The panel's groups (the owner, 25 Nov 2026): Australia and New Zealand by the time zone, and a browser
+        // that was here before.
+        tz: timeZone(), returning: isReturning() })
       liveFetch(`${cfg.url}/v1/beat`, cfg.pass, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) })
         .then((res): number | 'error' => res.status, (): number | 'error' => 'error')
@@ -265,10 +291,11 @@ export function useLive({ apiUrl, active, chatOpen, trip, site }: {
       if (!stopped) later(poll, nextPollDelay(status, failures))
     }
 
-    // The first config, from AFTER_S on the page; asked again after RENEW_MS while the API can't say for now.
+    // The first config, from AFTER_S on the page (the answer the registry asked for at the page's start, when there
+    // is one); asked again after RENEW_MS while the API can't say for now.
     const start = () => {
       if (stopped) return
-      askConfig(apiUrl)
+      pageConfig(apiUrl)
         .then(cfg => {
           // An answer for an effect cleaned up meanwhile is not this page's config any more (CodeRabbit #273).
           if (stopped) return

@@ -22,6 +22,8 @@ import type {
   QaVerdict,
   MessageHit,
   RecentChat,
+  LiveBotKey,
+  LiveBotKeyMade,
   LiveClaimResponse,
   LiveHelloSent,
   LiveListResponse,
@@ -987,13 +989,39 @@ export function releaseVisitor(pass: LivePass, visitorId: string) {
   })
 }
 
-/** The hello itself goes through the API: it checks the words (no contact, no link) and the claim. */
-export async function sendHello(visitorId: string, text: string): Promise<LiveHelloSent> {
+/** The hello itself goes through the API: it checks the words (no contact, no link) and the claim. `group`: the
+ *  group the row named the visitor by (features/live/view.ts groupOf), kept with the hello so the answers can be
+ *  counted per group. */
+export async function sendHello(visitorId: string, text: string, group?: string | null): Promise<LiveHelloSent> {
   const res = await apiFetch<{ success: boolean; data: LiveHelloSent }>('/api/live/send', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, text }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ visitor_id: visitorId, text, ...(group ? { group } : {}) }),
   })
   return res.data
 }
+
+// The agent's own bot (bbc-chatbot-api app/services/live_bot.py): a key it works as the agent by.
+
+/** Whether the agent has a bot key now, and until when. */
+export async function getLiveBotKey(): Promise<LiveBotKey> {
+  const res = await apiFetch<{ success: boolean; data: LiveBotKey }>('/api/live/bot-key')
+  return res.data
+}
+
+/** A new key for the agent's bot, shown once; the one before stops working. */
+export async function createLiveBotKey(): Promise<LiveBotKeyMade> {
+  const res = await apiFetch<{ success: boolean; data: LiveBotKeyMade }>('/api/live/bot-key', { method: 'POST' })
+  return res.data
+}
+
+/** The agent's bot key stops working at once. */
+export async function revokeLiveBotKey(): Promise<{ revoked: boolean }> {
+  const res = await apiFetch<{ success: boolean; data: { revoked: boolean } }>('/api/live/bot-key', { method: 'DELETE' })
+  return res.data
+}
+
+/** Where the agent's bot calls: this API's own address. */
+export const LIVE_BOT_BASE = `${BASE}/api/live/bot`
 
 
 // ── The search box (part 4) ───────────────────────────────────────

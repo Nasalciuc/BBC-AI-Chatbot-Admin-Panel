@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { usePanelModeStore } from '@/stores/panel-mode-store'
 import { useQueueStore } from '@/stores/queue-store'
 import { ChatAvatar } from './chat-avatar'
-import { initials, minutesLabel, minutesSince, presenceView, queueLine } from '../view'
+import { countdown, firstName, holdButton, holdLeft, holdLine, initials, minutesLabel, minutesSince, presenceView, queueLine, takeClass, takeRefusal } from '../view'
 
 /**
  * The shared line — conversations waiting for ANY operator; first click wins.
@@ -27,6 +27,11 @@ import { initials, minutesLabel, minutesSince, presenceView, queueLine } from '.
  *
  * The line is taken blind (owner's decision, Nov 2026): who, how long, and
  * whether they asked for a person — never where they fly, never their words.
+ *
+ * A chat whose client has left no contact yet is held for up to two minutes
+ * from their first message while the AI gets a phone or an email (the server's
+ * contact hold, 25 Nov 2026): its Take counts down, and the clock ticks every
+ * second only while a row is held.
  * Only agents get this line (the heartbeat fills it for sales and support),
  * and the list endpoint no longer sends them the route or the last message
  * of a chat that isn't theirs. Nothing here opens the chat before Take.
@@ -51,10 +56,12 @@ export function QueueSection({
   const dormant = usePanelModeStore((s) => s.dormant)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [ticking, setTicking] = useState(false)
   useEffect(() => {
-    const t = setInterval(() => setNowMs(Date.now()), 15_000)
+    // Every second while a Take counts down (the contact hold), every 15 s for the waits.
+    const t = setInterval(() => setNowMs(Date.now()), ticking ? 1_000 : 15_000)
     return () => clearInterval(t)
-  }, [])
+  }, [ticking])
 
   // No timer of its own (PR-10): the heartbeat carries the queue ids, and the
   // key changes with them, so the rows refetch exactly when the line changes.
@@ -68,6 +75,9 @@ export function QueueSection({
       return (res.data ?? []).filter((c: Conversation) => wanted.has(c.id))
     },
   })
+
+  const anyHeld = rows.some((c: Conversation) => holdLeft(c, nowMs) > 0)
+  useEffect(() => { setTicking(anyHeld) }, [anyHeld])
 
   if (queueCount === 0) return null
 
@@ -84,16 +94,15 @@ export function QueueSection({
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // apiFetch keeps the raw JSON body as the message when `detail` is an
-        // object (it only unwraps string details) — parse the winner out of it.
-        let winner = ''
-        try {
-          const body = JSON.parse(err.message) as { detail?: { winner?: string } }
-          if (body?.detail?.winner) winner = body.detail.winner
-        } catch {
-          /* not JSON — fall through to the neutral message */
+        // object (it only unwraps string details): takeRefusal reads it.
+        const { winner, holdSeconds } = takeRefusal(err.message)
+        if (holdSeconds) {
+          // The AI is still getting the contact: a wait, not a lost race.
+          toast.info(holdLine(firstName(conv.visitor_name), holdSeconds))
+        } else {
+          // Neutral, not punitive — losing a race is sporting.
+          toast.info(winner ? `${winner} took ${conv.visitor_name ? `${conv.visitor_name.split(' ')[0]}’s` : 'this'} chat a moment before you` : 'This one is already taken')
         }
-        // Neutral, not punitive — losing a race is sporting.
-        toast.info(winner ? `${winner} took ${conv.visitor_name ? `${conv.visitor_name.split(' ')[0]}’s` : 'this'} chat a moment before you` : 'This one is already taken')
         queryClient.invalidateQueries({ queryKey: ['queue-rows'] })
       } else {
         toast.error('Could not take it — try again')
@@ -111,8 +120,9 @@ export function QueueSection({
           const w = waited(conv)
           const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
           const who = conv.visitor_name || 'Visitor'
+          const held = holdLeft(conv, nowMs)
           return (
-            <div key={conv.id} title={`${who} · waiting ${minutesLabel(w)}`} className='flex flex-col items-center gap-1'>
+            <div key={conv.id} title={held > 0 ? holdLine(firstName(conv.visitor_name), held) : `${who} · waiting ${minutesLabel(w)}`} className='flex flex-col items-center gap-1'>
               <ChatAvatar text={initials(conv.visitor_name)} tone='bg-k-fff3e0 text-k-8a4b00' dot={p.dot} ring='border-k-f7f7f7' size={44} />
               <span className={cn('text-[11px] font-bold', w > 5 ? 'text-k-b3261e' : 'text-k-8a4b00')}>{minutesLabel(w)}</span>
               {canTake && (
@@ -120,10 +130,10 @@ export function QueueSection({
                   type='button'
                   onClick={() => claim(conv)}
                   disabled={busyId === conv.id}
-                  aria-label={`Take ${who}’s chat`}
-                  className='h-7 rounded-full bg-kb-202020 px-3 text-xs font-bold text-on-btn disabled:opacity-50'
+                  aria-label={held > 0 ? holdLine(firstName(conv.visitor_name), held) : `Take ${who}’s chat`}
+                  className={cn('h-7 rounded-full px-3 text-xs font-bold disabled:opacity-50', takeClass(held > 0))}
                 >
-                  {busyId === conv.id ? '…' : 'Take'}
+                  {busyId === conv.id ? '…' : held > 0 ? countdown(held) : 'Take'}
                 </button>
               )}
             </div>
@@ -144,6 +154,7 @@ export function QueueSection({
       {ordered.map((conv) => {
         const w = waited(conv)
         const p = presenceView(conv.client_presence, conv.client_presence_age_seconds)
+        const held = holdLeft(conv, nowMs)
         return (
           <div key={conv.id} className='flex items-center gap-2.5'>
             <ChatAvatar text={initials(conv.visitor_name)} tone='bg-k-fff3e0 text-k-8a4b00' dot={p.dot} />
@@ -154,16 +165,17 @@ export function QueueSection({
                   {minutesLabel(w)}
                 </span>
               </span>
-              <span className='truncate text-xs text-k-555555'>{queueLine(conv)}</span>
+              <span className='truncate text-xs text-k-555555'>{held > 0 ? 'The AI is getting a phone or email' : queueLine(conv)}</span>
             </div>
             {canTake && (
               <button
                 type='button'
                 onClick={() => claim(conv)}
                 disabled={busyId === conv.id}
-                className='h-9 flex-none rounded-full bg-kb-202020 px-4 text-[13px] font-bold text-on-btn disabled:opacity-50'
+                title={held > 0 ? holdLine(firstName(conv.visitor_name), held) : undefined}
+                className={cn('h-9 flex-none rounded-full px-4 text-[13px] font-bold disabled:opacity-50', takeClass(held > 0))}
               >
-                {busyId === conv.id ? 'Taking…' : 'Take'}
+                {busyId === conv.id ? 'Taking…' : held > 0 ? holdButton(held) : 'Take'}
               </button>
             )}
           </div>

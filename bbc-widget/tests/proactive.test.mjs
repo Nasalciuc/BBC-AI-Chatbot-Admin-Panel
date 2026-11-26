@@ -23,8 +23,9 @@ const readTrip = (href, h1) => {
 }
 import {
   ADS_VISIBLE_S, KAYAK_VISIBLE_S, OFFER_TIMEOUT_MS, QUOTE_IDLE_S, QUOTE_INVALID_IDLE_S, QUOTE_WATCH_S, READER_VISIBLE_S,
-  SAME_SEND_MS, TRIGGER_OFF_ARM, WATCHED_FIRST_S, adVisit, blockedPath, inViewBeforeStartMs, isNotNow, noteWaitMs,
-  keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff, replyKind, worksOnPressedForm,
+  SAME_SEND_MS, TRIGGER_OFF_ARM, TRIP_ASKS_AGAIN, WATCHED_FIRST_S, adVisit, blockedPath, givesMomentBack,
+  inViewBeforeStartMs, isNotNow, noteWaitMs, keysOnSite, offAfter, pauseRunning, pickTrigger, quoteClick, readOff,
+  replyKind, worksOnPressedForm,
 } from '../src/triggers.ts'
 import { fetchProactiveOffer, offerMeasures, offerVariant, preconnect } from '../src/api.ts'
 import { keepOpening, readKeptOpening } from '../src/keptOpening.ts'
@@ -256,7 +257,8 @@ test('the ads card takes the newest of the page\'s trips that names a destinatio
   assert.equal(fromTitle?.destination_name, 'Paris')
   assert.deepEqual(pickTrip(...[fromAddress, fromTitle].filter(hasContext)), fromTitle)
   assert.match(hook, /function destinationTrip\(\): TripPayload \| null \{\s+return pickTrip\(\.\.\.pageTrips\(\)\.filter\(hasContext\)\)\s+\}/)
-  assert.match(hook, /const trip = trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)/)
+  assert.match(hook, /const trip = tripFor\(trigger\)/)
+  assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
   // ADR A5: the ad's search rides beside the page's destination (or alone, on the home page).
   assert.match(hook, /function adsTrip\(\): TripPayload \| null \{\s+const dest = destinationTrip\(\)\s+const keyword = adKeywordNow\(\)\s+if \(!keyword\) return dest\s+return \{ \.\.\.\(dest \?\? \{ source: 'route_page' as const \}\), keyword \}\s+\}/)
 })
@@ -308,13 +310,39 @@ test('a place name the server would drop names no place here either, and the tit
   assert.deepEqual(pickTrip(...[oneLetter, title].filter(hasContext)), title)
 })
 
-test('an ads answer whose destination left the page meanwhile is dropped and measured', () => {
+test('an ads or Meta answer whose destination left the page meanwhile is dropped and measured', () => {
   // CodeRabbit #269, round 2: the address, the title or the site's word changed while the answer was on its way.
+  // CodeRabbit #282: the Meta ad's card names its trip too, each against the trip its own request was built with.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  assert.match(ask, /const askedAds = trigger === 'ads' \? JSON\.stringify\(trip\) : null/)
-  assert.match(ask, /momentPassed\(trigger, before, askedAds\)/)
+  assert.match(ask, /const trip = tripFor\(trigger\)\n\s+const askedTrip = NAMES_ITS_TRIP\.includes\(trigger\) \? JSON\.stringify\(trip\) : null/)
+  assert.match(ask, /momentPassed\(trigger, before, askedTrip\)/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
-  assert.match(why, /if \(trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedAds\) return 'trip_changed'/)
+  assert.match(why, /if \(askedTrip !== null && JSON\.stringify\(tripFor\(trigger\)\) !== askedTrip\) return 'trip_changed'/)
+  assert.match(hook, /const NAMES_ITS_TRIP: readonly Trigger\[\] = \['ads', 'social'\]/)
+  assert.match(hook, /function tripFor\(trigger: Trigger\): TripPayload \| null \{\s+return trigger === 'ads' \? adsTrip\(\) : currentTrip\(\)\s+\}/)
+})
+
+test('a trip that changed under the answer gives the visit its moment back, a few times a page (CodeRabbit #282, round 5)', () => {
+  // The page named another destination while the ads or Meta answer was on its way: asked again with the trip of now.
+  assert.equal(givesMomentBack('trip_changed', 0), true)
+  assert.equal(givesMomentBack('trip_changed', TRIP_ASKS_AGAIN - 1), true)
+  // A page whose destination keeps changing is not asked every second: past the cap the moment stays used.
+  assert.equal(TRIP_ASKS_AGAIN, 2)
+  assert.equal(givesMomentBack('trip_changed', TRIP_ASKS_AGAIN), false)
+  // Every other reason the moment passed keeps it used, and an answer in time is no passed moment at all.
+  for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'searched', 'sent', 'contact', 'popup']) {
+    assert.equal(givesMomentBack(reason, 0), false, reason)
+  }
+  assert.equal(givesMomentBack(null, 0), false)
+  // Wired before the line that drops a passed answer: the reservation it owned goes back ('asked' only, a stop the
+  // site said meanwhile stays), evaluate may fire again, and the page counts the asks.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  // Then the row's second chance's own (round 8), then the drop that keeps the moment used.
+  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(givesRowBack\(passed, rowOnly\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{/)
+  // Measured first: the dropped answer keeps its moment_passed on proactive_eligible.
+  assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (givesMomentBack(passed, tripAskedAgain))'))
+  // Counted per page: the hook's moments start each page at nothing.
+  assert.match(hook, /let popupHeldOnce = false\n(?:\s*\/\/[^\n]*\n)*\s+let tripAskedAgain = 0\n/)
 })
 
 test('a destination code equal to the origin\'s names no place (the server drops it)', () => {
@@ -349,7 +377,7 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The tab keeps the whole list this visit knows (CodeRabbit #269, round 3): a moment whose own write was refused
   // rides on the next write that goes through.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+if \(ssGet\(DONE_KEY\) === 'asked'\) ssSet\(DONE_KEY, ''\)\s+fired = false\s+return\s+\}/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+giveBack\(\)\s+fired = false\s+return\s+\}/)
   assert.doesNotMatch(ask, /ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\)/)
   assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
   // The list holds in the page's memory too: with the tab's storage refused, the switched-off moment is not asked
@@ -730,9 +758,10 @@ test('the connection to the API opens when the widget starts, once, as the anony
 })
 
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
-  assert.match(hook, /if \(ssGet\(DONE_KEY\) \|\| ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
-  assert.match(hook, /if \(!allowed \|\| step !== 'buttons'\) return/)
-  assert.match(widget, /useProactive\(\{ apiUrl, step, allowed: !embedded && !hasOptimisticSession, restored: keptOpening \}\)/)
+  // One moment per visit, and the row's second chance alone after a card that brought no contact (rowAgainOpen,
+  // after-card.test.mjs): the pause and the closed note hold both.
+  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowOnly = rowAgain && rowAgainNow\(\)\n\s+if \(!rowOnly && \(!allowed \|\| ssGet\(DONE_KEY\)\)\) return\n\s+if \(ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
+  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,\s+\}\)/)
   assert.match(buttons, /onClick=\{\(\) => \{ markNoteClosed\(\); onDismissAttention\?\.\(\) \}\}/)
   // The card replaces the note for the rest of the visit.
   assert.match(widget, /showAttention=\{showAttention && !sessionActive && !proactive\.quiet\}/)
@@ -778,7 +807,7 @@ test('an answer that comes after the visitor moved on is dropped and measured, n
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.ok(ask.indexOf('const before = seen()') < ask.indexOf('await fetchProactiveOffer('))
   assert.match(ask, /\.\.\.\(passed \? \{ moment_passed: passed \} : \{\}\)/)
-  assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) return/)
+  assert.match(ask, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{\n(?:\s*\/\/[^\n]*\n)*\s+pending = false\n\s+return\n\s+\}/)
   const why = hook.slice(hook.indexOf('const momentPassed'), hook.indexOf('const ask = async'))
   for (const reason of ['chat_opened', 'hidden', 'note_closed', 'left_page', 'typing', 'quote_form', 'sent', 'trip_changed']) {
     assert.match(why, new RegExp(`return '${reason}'`), reason)

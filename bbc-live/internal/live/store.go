@@ -119,6 +119,9 @@ type Visit struct {
 	AlexCard    string
 	AlexCardAt  int64
 	AlexTrigger string
+	// The browser's time zone and whether it was on the site before this visit: the panel's groups.
+	TZ        string
+	Returning bool
 }
 
 func flag(b bool) string {
@@ -148,6 +151,7 @@ func (s *Store) Beat(ctx context.Context, v Visit) error {
 		"device", v.Device, "site", v.Site, "chat_open", flag(v.ChatOpen), "has_chat", flag(v.HasChat),
 		"page_type", v.PageType, "activity", v.Activity, "alex_at", alexAt,
 		"alex_card", v.AlexCard, "alex_card_at", alexCardAt, "alex_trigger", v.AlexTrigger,
+		"tz", v.TZ, "returning", flag(v.Returning),
 	}
 	args := append([]string{v.ID, strconv.FormatInt(s.now().Unix(), 10), strconv.Itoa(VisitTTL)}, fields...)
 	_, err := s.eval(ctx, beatLua, []string{visitKey(v.ID), VisitorsKey}, args...)
@@ -179,6 +183,10 @@ type Listed struct {
 	AlexCard    string `json:"alex_card,omitempty"`
 	AlexCardS   *int64 `json:"alex_card_s,omitempty"`
 	AlexTrigger string `json:"alex_trigger,omitempty"`
+	// The browser's time zone, and whether it was on the site before this visit (left out when not): the panel
+	// names a group by them (Australia and New Zealand, a client who comes back).
+	TZ        string `json:"tz,omitempty"`
+	Returning bool   `json:"returning,omitempty"`
 }
 
 // Live lists who beat in the last Window seconds, longest on the site first.
@@ -205,6 +213,7 @@ func (s *Store) Live(ctx context.Context) ([]Listed, error) {
 			ID: v.Array[i].Str, FirstAt: first, LastAt: last, Page: h["page"], Source: h["source"],
 			Device: h["device"], Site: h["site"], ChatOpen: h["chat_open"] == "1", HasChat: h["has_chat"] == "1",
 			ClaimedBy: v.Array[i+2].Str, Dismissed: v.Array[i+3].Int == 1, PageType: h["page_type"],
+			TZ: h["tz"], Returning: h["returning"] == "1",
 		}
 		if h["activity"] != "" {
 			l.Activity = strings.Split(h["activity"], ";")

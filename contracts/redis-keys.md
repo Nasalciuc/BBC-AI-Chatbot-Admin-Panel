@@ -9,7 +9,10 @@ No key or value carries a name, an email or a phone number. Ids are UUIDs.
 ## "On the site now" (`contracts/live.md`)
 
 The `live:` keys and the `live:inbox` channel are the API's and bbc-live's together, `rl:livepass:` the
-API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-keys).
+API's alone; their table, scripts and lives are in [`live.md`](live.md#redis-keys). The visit registry's
+visits (`live:reg:<vid>`, `live:ended:<vid>:<first_at>`) are the one exception to the line above: they hold
+the visitor's IP address and browser line, never a name, an e-mail or a phone, until the API stores them
+(three days at most; [`live.md`](live.md#the-visit-registry-25-nov-2026)).
 
 ## Conversation locks (`app/services/conversation_lock.py`)
 

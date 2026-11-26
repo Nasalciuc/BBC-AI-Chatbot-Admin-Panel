@@ -38,6 +38,7 @@ import {
   tripRows,
   tripText,
   whereRows,
+  notInBase,
 } from '../src/features/chats/view.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -523,4 +524,55 @@ test('under a closed chat: when it closed, with its day, and a stand-in time is 
   assert.match(panel, /label: 'Started', value: dayClock\(conv\.created_at, now\)/)
   assert.match(panel, /label: 'Asked for a person', value: dayClock\(handoff\.created_at, now\)/)
   assert.ok(!/(?<!day)clock\(/i.test(panel), 'no bare clock() left in the facts card')
+})
+
+// ── The client's name, only as the client wrote it (the owner, 25 Nov 2026) ─────────────────────────────
+
+test('nobody types the client’s name in the panel: it fills in by itself, and the open chat shows it at once', () => {
+  const panel = read('src/features/chats/components/details-panel.tsx')
+  const detail = read('src/features/chats/detail.tsx')
+  const api = read('src/lib/api.ts')
+  // No field, no button, no call: an agent writing a name from his own head could be taken for manipulation.
+  assert.doesNotMatch(panel, /Add name|Edit name|setNameDraft|onSaveName/)
+  assert.doesNotMatch(detail, /setClientName|handleSaveName/)
+  assert.doesNotMatch(api, /\/name`/)
+  assert.match(panel, /\{conv\.visitor_name \|\| 'No name yet'\}/)
+  assert.match(panel, /It fills in by itself when the client writes it in the chat\./)
+  // The stream's contact event reads the chat again at once…
+  assert.match(detail, /case 'contact':\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
+  // …and without the stream, 2 s after the client's newest message.
+  assert.match(detail, /if \(accumMsgs\[i\]\.role === 'user'\) return accumMsgs\[i\]\.id/)
+  assert.match(detail, /setTimeout\(\(\) => \{ void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\) \}, 2_000\)/)
+})
+
+test('a dormant panel drops the waiting contact read and reads the chat once it wakes (CodeRabbit #282, round 5)', () => {
+  const detail = read('src/features/chats/detail.tsx')
+  const effect = detail.slice(
+    detail.indexOf('const lastClientMsgId = useMemo('),
+    detail.indexOf('const cameBackId = cameBackMessage('),
+  )
+  // Dormant: no timer is set, and the one waiting is cleared by the effect's cleanup (dormant is in its deps).
+  assert.match(effect, /if \(!lastClientMsgId \|\| dormant\) return\n\s+const t = setTimeout\(/)
+  assert.match(effect, /return \(\) => clearTimeout\(t\)\n\s+\}, \[lastClientMsgId, conversationId, dormant, queryClient\]\)/)
+  // Awake, with a client's message: the read is still set, 2 s on (the branch not taken).
+  assert.match(effect, /const t = setTimeout\(\(\) => \{ void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\) \}, 2_000\)/)
+  assert.equal(effect.split('setTimeout(').length, 2, 'one timer, the one the cleanup clears')
+})
+
+test('a reload of the chat keeps the client’s message that came after its snapshot (CodeRabbit #282, round 3)', () => {
+  const detail = read('src/features/chats/detail.tsx')
+  const u1 = { id: 'u1' }
+  const u2 = { id: 'u2' }
+  // U1 is in the reloaded chat, U2 landed while the reload was in flight: U2 stays.
+  assert.deepEqual(notInBase([u1, u2], [{ id: 'a0' }, u1]), [u2])
+  const kept = [u2]
+  assert.equal(notInBase(kept, [u1]), kept, 'nothing leaves: the same array, no new render')
+  assert.deepEqual(notInBase([u1], undefined), [u1])
+  assert.match(detail, /setAccumMsgs\(prev => notInBase\(prev, conv\?\.messages\)\)/)
+  // Only another chat on screen empties them, never a reload of this one (CodeRabbit #282, round 4).
+  assert.equal(detail.split('setAccumMsgs([])').length, 2)
+  assert.match(detail, /if \(accumOf !== conversationId\) \{\s+setAccumOf\(conversationId\)\s+setAccumMsgs\(\[\]\)\s+\}/)
+  // Each time the stream opens, the chat is read again with the trip card: a contact push lost while it was shut.
+  const onState = detail.slice(detail.indexOf('(state) => {'), detail.indexOf('() => setSseLive(false)'))
+  assert.match(onState, /if \(state === 'open'\) \{[\s\S]*void queryClient\.invalidateQueries\(\{ queryKey: \['conversation', conversationId\] \}\)/)
 })

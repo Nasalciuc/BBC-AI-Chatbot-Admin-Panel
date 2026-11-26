@@ -574,12 +574,85 @@ class TestChannels:
         assert "first thing when our team is back" in out.message
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("button, message", [("sms", "Text message: soon"), ("whatsapp", "WhatsApp: soon"),
-                                                 ("email", "Email: client at example")])
-    async def test_no_contact_in_it_goes_to_the_model(self, button, message):
-        out, saved, m = await _tap(_req(button, message), _conv())
-        assert out is None and saved.rows == []
+    @pytest.mark.parametrize("button, message, first", [
+        ("sms", "Text message: soon", "sms"), ("whatsapp", "WhatsApp: soon", "sms"),
+        ("email", "Email: client at example", "email"),
+        ("email", "Email: j***@gmail.com", "email"),          # 25 Nov: the field let it through, the model "captured" it
+        ("email", "Email: john*doe@gmail.com", "email"),      # EMAIL_RE alone took "doe@gmail.com" out of it
+    ])
+    async def test_a_contact_it_cannot_read_is_asked_again_never_said_kept(self, button, message, first, caplog):
+        """Answered here, never by the model (it said "Email's captured" to one on 25 Nov while nothing was kept): the
+        client's words saved first (rule 4), the same channel asked again with its button first, counted (rule 2), and
+        nothing written to the lead, the queue or the log's text."""
+        with caplog.at_level(logging.INFO):
+            out, saved, m = await _tap(_req(button, message), _conv())
+        assert [r["role"] for r in saved.rows] == ["user", "ai"] and saved.rows[0]["content"] == message
+        assert saved.rows[1]["model_used"] == "template" and out.message == saved.rows[1]["content"]
+        assert out.message == card_words.contact_unreadable(button, "en")[0]
+        assert out.message.startswith("I couldn't read that " + ("email address" if first == "email" else "number"))
+        assert [b["kind"] for b in out.buttons] == [first, "email" if first == "sms" else "sms"]
         m["entities"].assert_not_awaited()
+        m["queue"].assert_not_awaited()
+        m["update_lead"].assert_not_awaited()
+        assert card_buttons.CARD_BUTTONS_HEALTH["contact_unreadable"] == 1
+        assert card_buttons.CARD_BUTTONS_HEALTH["fell_through"] == 0
+        assert message.split(": ", 1)[1] not in caplog.text                  # what was typed may be a contact
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lang, start", [("es", "No pude leer ese correo."),
+                                             ("fr", "Je n'ai pas pu lire cette adresse e-mail.")])
+    async def test_asked_again_in_the_chats_language(self, lang, start):
+        out, _, _ = await _tap(_req("email", "Correo: j***@gmail.com"), _conv({"client_lang": lang}))
+        assert out.message.startswith(start)
+        assert not has_price(out.message) and "—" not in out.message
+
+    @pytest.mark.asyncio
+    async def test_words_not_kept_go_to_the_models_turn_as_before(self):
+        """The client's message could not be saved: nothing is answered over a history without it, and the model's
+        turn saves it and answers instead (as the yes does)."""
+        saved, ps = _buttons_patches(_conv())
+        ps[2] = patch("app.services.conversation_service.add_message", new=AsyncMock(return_value=None))
+        started = [p.start() for p in ps]
+        try:
+            out = await card_buttons.answer(_req("email", "Email: j***@gmail.com"), "Email: j***@gmail.com", {})
+        finally:
+            for p in ps:
+                p.stop()
+        assert out is None and started[2].await_count == 1                   # the user's row only, no answer over it
+        assert card_buttons.CARD_BUTTONS_HEALTH["contact_unreadable"] == 1
+        assert card_buttons.CARD_BUTTONS_HEALTH["save_failures"] == 1
+        assert card_buttons.CARD_BUTTONS_HEALTH["fell_through"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("button, message, entities", [
+        ("email", "Email: Client@Example.com", {"email": "client@example.com"}),
+        ("email", "Correo: cliente@example.com · Precio visto: 4,200", {"email": "cliente@example.com"}),
+        ("email", "E-mail : client@example.com", {"email": "client@example.com"}),
+        ("sms", "Text message: +61 412 345 678", {"phone": "+61412345678", "_phone_country": None}),
+    ])
+    async def test_a_contact_it_can_read_never_takes_that_way(self, button, message, entities):
+        """Rule 5: what the widget's field sends, in each language and with the price beside it, is kept and said
+        back as before."""
+        out, saved, m = await _tap(_req(button, message), _conv())
+        m["entities"].assert_awaited_once_with(_CID, entities)
+        assert out.message.startswith("Done, an agent will")
+        assert card_buttons.CARD_BUTTONS_HEALTH["contact_unreadable"] == 0
+
+    # The same cases as the widget's (bbc-widget tests/after-card.test.mjs, "an email is what the server reads"): the
+    # field sends what the server keeps, and nothing else.
+    @pytest.mark.parametrize("value, kept", [
+        ("client@example.com", "client@example.com"),
+        ("First.Last+tag@Sub.Example.co.uk", "first.last+tag@sub.example.co.uk"),
+        ("a_b%c-d@x-y.io", "a_b%c-d@x-y.io"),
+        ("j***@gmail.com", None), ("john*doe@gmail.com", None), ("o'brien@example.com", None),
+        ("client@example", None), ("client example.com", None), ("@example.com", None), ("a@b.c", None),
+        ("-x@example.com", None), (".x@example.com", None), ("x@example.com.", None), ("x@@example.com", None),
+        ("x@exa_mple.com", None), ("x@example.c0m", None), ("", None),
+        ("a" * 108 + "@example.com", "a" * 108 + "@example.com"),             # 120 characters
+        ("a" * 109 + "@example.com", None),                                   # 121
+    ])
+    def test_an_email_is_read_whole_as_the_widgets_field_checks_it(self, value, kept):
+        assert card_buttons.channel_email(f"Email: {value}") == kept
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("button, message", [("sms", "Text message: +61 412 345 678"),

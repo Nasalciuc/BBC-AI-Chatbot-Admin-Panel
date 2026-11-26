@@ -26,7 +26,7 @@ from app.api.chat import ChatInitRequest, ProactiveOfferRequest, proactive_offer
 from app.models.chat import ChatRequest
 from app.models.trip_context import TripContext
 from app.pipeline import card_buttons
-from app.services import card_words, contact_field_test, proactive
+from app.services import card_words, contact_field_test, proactive, proactive_i18n
 
 _CID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -149,7 +149,12 @@ class TestOffer:
         assert out["contact_test"] == "field"
         assert out["confirm"]["field"] == "email"
         assert out["confirm"]["message"].startswith("Got it, New York → Paris")
-        assert out["confirm"]["message"].endswith("and email them to you. What's your email address?")
+        # Why an email, before it is asked (25 Nov): the fares are private, so a person sends them.
+        assert out["confirm"]["message"].endswith(
+            "Private fares aren't published, so an agent checks them for exactly this trip and emails them to you. "
+            "What's your email address?")
+        # The yes says where the fares go, as its answer then asks.
+        assert out["quick_replies"] == ["Yes, email me the fares", "Change details", "Not now"]
         assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email", "wait", "change"], "SMS one tap away"
         assert out["channel"] == {"kind": "sms", "label": "Fares by text"}, "the card's own button is the phone's"
         assert contact_field_test.CONTACT_FIELD_HEALTH["field"] == 1
@@ -164,14 +169,36 @@ class TestOffer:
         computer = proactive.offer(field_v, "kayak", _trip(), "bbc", device="computer", opens_field=True)
         assert phone["confirm"]["field"] == phone_field
         assert computer["confirm"]["field"] == "email"
+        assert computer["quick_replies"][0] == "Yes, email me the fares"
+        assert phone["quick_replies"][0] == ("Yes, text me the fares" if phone_field == "sms" else "Yes, email me the fares")
         if phone_field == "sms":
-            assert phone["confirm"]["message"].endswith("and text them to you. What's your mobile number?")
+            assert phone["confirm"]["message"].endswith("and texts them to you. What's your mobile number?")
         assert card_words.field_channel(None) == "email", "a widget that did not say is a computer"
 
     def test_on_a_computer_the_email_field(self, field_v):
         out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="computer", opens_field=True)
         assert out["confirm"]["field"] == "email"
-        assert out["confirm"]["message"].endswith("and email them to you. What's your email address?")
+        assert out["confirm"]["message"].endswith("and emails them to you. What's your email address?")
+        assert out["quick_replies"][0] == "Yes, email me the fares"
+
+    @pytest.mark.parametrize("lang, yes, why", [
+        ("es", "Sí, envíenme las tarifas por correo", "Las tarifas privadas no se publican, así que un agente"),
+        ("fr", "Oui, envoyez-moi les tarifs par e-mail", "Les tarifs privés ne sont pas publiés, alors un agent"),
+    ])
+    def test_the_yes_and_its_answer_say_the_same_in_spanish_and_french(self, field_v, lang, yes, why):
+        out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="computer", lang=lang, opens_field=True)
+        assert out["quick_replies"][0] == yes
+        assert why in out["confirm"]["message"]
+        assert "—" not in out["confirm"]["message"] and "$" not in out["confirm"]["message"]
+
+    def test_the_yes_label_names_the_field_or_stays_as_it_was(self):
+        assert card_words.yes_label(None, "email") == "Yes, email me the fares"
+        assert card_words.yes_label("en", "sms") == "Yes, text me the fares"
+        # No field, or one the words do not know: the yes as it was, as the card's buttons spell it.
+        for field in (None, "", "whatsapp"):
+            assert card_words.yes_label(None, field) == proactive._REPLIES["kayak"][0]
+            assert card_words.yes_label("es", field) == proactive_i18n.replies("es", "kayak")[0]
+            assert card_words.yes_label("fr", field) == proactive_i18n.replies("fr", "kayak")[0]
 
     def test_the_choice_side_is_as_it_was(self, choice_v):
         before = proactive.offer(choice_v, "kayak", _trip(), "bbc", device="phone", team_online=True)
@@ -179,12 +206,15 @@ class TestOffer:
         assert out["contact_test"] == "choice" and "field" not in out["confirm"]
         assert out["confirm"] == before["confirm"]
         assert out["confirm"]["message"].endswith("Where should they write: by text or by email?")
+        # No field opens with the answer: the yes names no channel (the branch the 25 Nov words do not take).
+        assert out["quick_replies"][0] == "Yes, send me fares"
         assert contact_field_test.CONTACT_FIELD_HEALTH["choice"] == 1, "only the answer that took part counts"
 
     def test_a_widget_cached_from_before_is_on_neither_side(self, field_v):
         out = proactive.offer(field_v, "kayak", _trip(), "bbc", device="phone", team_online=True)
         assert "contact_test" not in out and "field" not in out["confirm"]
         assert out["confirm"]["message"].endswith("Where should they write: by text or by email?")
+        assert out["quick_replies"][0] == "Yes, send me fares"
 
     @pytest.mark.parametrize("trigger, trip", [("reader", None), ("note", TripContext(destination_code="CDG"))])
     def test_get_a_fare_quote_with_no_trip_is_answered_contact_first_on_the_field_side(self, field_v, trigger, trip):
@@ -192,8 +222,8 @@ class TestOffer:
         assert out["contact_test"] == "field"
         assert out["quick_replies"][0] == "Get a fare quote"
         assert out["confirm"] == {
-            "message": "Sure. An agent will check live fares for your trip and email them to you. "
-                       "What's your email address?",
+            "message": "Sure. Private fares aren't published, so an agent checks them for your trip and emails them "
+                       "to you. What's your email address?",
             "buttons": [card_words.button(k) for k in ("sms", "email", "wait")],
             "field": "email",
         }
@@ -215,8 +245,9 @@ class TestOffer:
     def test_the_ads_card_with_a_place_and_no_dates_keeps_its_channel_and_gets_the_answer(self, field_v):
         trip = TripContext(destination_code="CDG")
         out = proactive.offer(field_v, "ads", trip, "bbc", device="computer", team_online=False, opens_field=True)
-        # Its yes is the Kayak card's (owner, 23 Nov), and it opens the field at once, as "Get a fare quote" did.
-        assert out["quick_replies"][0] == "Yes, send me fares"
+        # Its yes is the Kayak card's (owner, 23 Nov), and it opens the field at once, as "Get a fare quote" did: it
+        # says so (25 Nov).
+        assert out["quick_replies"][0] == "Yes, email me the fares"
         assert out["confirm"]["field"] == "email"
         assert out["confirm"]["message"].endswith("What's your email address?")
         assert [b["kind"] for b in out["confirm"]["buttons"]] == ["sms", "email"], "no waiting here off hours"

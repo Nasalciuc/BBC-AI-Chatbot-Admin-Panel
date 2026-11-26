@@ -437,6 +437,64 @@ export function queueLine(c: Pick<Conversation, 'status' | 'message_count'>): st
   return n === 1 ? '1 message' : `${n} messages`
 }
 
+// ── the contact hold (25 Nov 2026) ─────────────────────────────────────
+// The server holds Take for up to two minutes from the client's first message while the AI gets a phone or
+// an email (app/services/contact_hold.py): 17-24 Nov, an agent who came in before the contact got one in 22%
+// of chats, the AI alone in 59%. A client who asks for a person is never held. The row and the detail carry
+// `contact_hold_until`; the server refuses an early Take with 409 `contact_hold`, so a clock that runs early
+// here costs one toast, never a chat.
+
+/** Whole seconds until Take opens, 0 when it is open. */
+export function holdLeft(c: Pick<Conversation, 'contact_hold_until'>, nowMs: number): number {
+  if (!c.contact_hold_until) return 0
+  const t = Date.parse(c.contact_hold_until)
+  if (Number.isNaN(t)) return 0
+  return Math.max(0, Math.ceil((t - nowMs) / 1000))
+}
+
+/** What a held chat says to the agent, in place of "Take the chat to answer". */
+export function holdLine(first: string, left: number): string {
+  return `The AI is asking ${first} for a phone or email. You can take the chat in ${countdown(left)}.`
+}
+
+/** The Take button while the hold runs. */
+export function holdButton(left: number): string {
+  return `Take in ${countdown(left)}`
+}
+
+/** Take's look: dark, or light while the hold runs. The button stays pressable either way and the server decides
+ *  (409 contact_hold says how long, and the chat is read again): the hold ends early when the client leaves a contact
+ *  or asks for a person, and nothing tells a waiting chat's screen, which has no stream and no timer (PR-10). A
+ *  button shut until the cached deadline kept the agent out of a chat the server would give (CodeRabbit #282). */
+export function takeClass(held: boolean): string {
+  return held ? 'bg-k-ffffff text-k-202020 shadow-[0_0_0_1px_var(--k-ececec)]' : 'bg-kb-202020 text-on-btn'
+}
+
+/** A 409 from Take, read: the colleague who won it, or the seconds the contact hold still runs. apiFetch keeps
+ *  the raw JSON body as the message when `detail` is an object. */
+export function takeRefusal(message: string): { winner?: string; holdSeconds?: number } {
+  try {
+    const body = JSON.parse(message) as { detail?: { detail?: string; winner?: string; retry_after?: number } }
+    const d = body?.detail
+    if (d?.detail === 'contact_hold' && typeof d.retry_after === 'number' && d.retry_after > 0) {
+      return { holdSeconds: Math.ceil(d.retry_after) }
+    }
+    if (typeof d?.winner === 'string' && d.winner) return { winner: d.winner }
+  } catch {
+    /* not JSON: the caller says the neutral thing */
+  }
+  return {}
+}
+
+/** The first message the doc's rule asks for (Tab 1, problem 4): one channel, a reason to answer. A bare
+ *  "Hi, I'm …" lost 19 of 28 clients on 17-24 Nov and brought 2 contacts. No long dash: it reads as a bot. */
+export const FIRST_MESSAGE = "What's your mobile number? I'll text you the fares."
+
+/** The agent writes their first word in a chat with no contact yet: the hint and its one-tap text show. */
+export function firstMessageHint(messages: Pick<Message, 'role'>[], hasContact: boolean | undefined): boolean {
+  return !hasContact && !messages.some((m) => m.role === 'agent')
+}
+
 // ── the thread ─────────────────────────────────────────────────────────
 
 export interface ThreadLine {
@@ -979,6 +1037,25 @@ export function deviceOf(ua: unknown): string {
   return 'Computer'
 }
 
+/** The site the client wrote from, by its address: the brand the agent answers for (the server keeps `site` for
+ *  everyone for the same reason, app/security/pii.py). '' when the chat didn't say. */
+export function siteName(meta: Record<string, unknown> | undefined): string {
+  const raw = (meta ?? {}).site
+  const site = typeof raw === 'string' ? raw.trim() : ''
+  return site === 'bbc' ? 'buybusinessclass.com' : site === 'bct' ? 'businessclass-tickets.com' : site
+}
+
+/** Who opens "Where they came from" (the ad, the campaign, the Google search, the pages, the screen, the replay
+ *  of the visit): not the agents (the owner, 25 Nov 2026: an agent can't open it) and not the supervisors (they
+ *  never had it). Both see it locked. The server holds the same line: an agent's rows come without it
+ *  (app/api/conversations.py), a supervisor's masked (app/security/pii.py). */
+export function canSeeSources(role: string | undefined): boolean {
+  return !!role && role !== 'sales' && role !== 'support' && role !== 'supervisor'
+}
+
+/** Why "Where they came from" is locked, in the panel's words for a restricted action. */
+export const SOURCES_RESTRICTED = 'Not for your role: where the client came from is marketing data'
+
 // ── the chat that opened by itself (bbc-chatbot-api app/services/proactive.py) ──
 
 /** A word from one of the fixed tables below, for a key that came with the data: only the table's
@@ -992,13 +1069,20 @@ const OPENED_BY: Record<string, string> = {
   kayak: 'came from Kayak',
   // A Google or Bing ad, on a page about one destination (the widget's `ads` moment, 18 Nov).
   ads: 'came from a Google or Bing ad',
+  // A Facebook or Instagram ad, read for a while (the widget's `social` moment, 25 Nov).
+  social: 'came from a Facebook or Instagram ad',
   quote: 'pressed “Get free quote” and stopped',
   reader: 'read the page for a while',
   exit: 'was about to leave',
 }
 
-/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. */
-export function openedByText(meta: Record<string, unknown> | undefined, now: Date): string {
+/** The card's moments that name where the client came from. */
+const SOURCE_MOMENTS = new Set(['kayak', 'ads', 'social'])
+
+/** "By itself: the client came from Kayak · 23:41" for a chat the card opened (no form); '' otherwise. A reader
+ *  who doesn't see where clients came from (canSeeSources, `sources: false`) reads why the chat has no name for
+ *  those moments without the source: "By itself: Skye’s card, no form · 23:41". */
+export function openedByText(meta: Record<string, unknown> | undefined, now: Date, opts: { sources?: boolean } = {}): string {
   const m = (meta ?? {}) as Record<string, unknown>
   const trigger = typeof m.proactive_trigger === 'string' ? m.proactive_trigger : ''
   if (!trigger) return ''
@@ -1006,6 +1090,7 @@ export function openedByText(meta: Record<string, unknown> | undefined, now: Dat
   // The note beside the button did not open the chat by itself: the client tapped it, and got the chat
   // without the form (owner's decision, 16 Nov) — which is why no name, email or phone came first.
   if (trigger === 'note') return `No form: the client tapped the note beside the button${at ? ` · ${at}` : ''}`
+  if (opts.sources === false && SOURCE_MOMENTS.has(trigger)) return `By itself: Skye’s card, no form${at ? ` · ${at}` : ''}`
   return `By itself: the client ${wordFor(OPENED_BY, trigger) ?? 'hesitated'}${at ? ` · ${at}` : ''}`
 }
 
@@ -1077,8 +1162,8 @@ export function whereRows(meta: Record<string, unknown> | undefined, phoneCountr
   const m = (meta ?? {}) as Record<string, unknown>
   const s = (k: string) => (typeof m[k] === 'string' ? (m[k] as string).trim() : '')
   const rows: Row[] = []
-  const site = s('site')
-  if (site) rows.push({ label: 'Site', value: site === 'bbc' ? 'buybusinessclass.com' : site === 'bct' ? 'businessclass-tickets.com' : site })
+  const site = siteName(m)
+  if (site) rows.push({ label: 'Site', value: site })
   const ads = s('gclid') ? 'Google Ads' : s('msclkid') ? 'Microsoft Ads' : s('fbclid') ? 'Facebook ad' : ''
   const src = [s('utm_source'), s('utm_medium')].filter(Boolean).join(' · ')
   if (ads || src) rows.push({ label: 'Source', value: [ads, src].filter(Boolean).join(' · ') })
@@ -1124,4 +1209,13 @@ export function focusKey(el: { dataset?: { chatId?: string; tab?: string } } | n
   if (d?.chatId) return `chat:${d.chatId}`
   if (d?.tab) return `tab:${d.tab}`
   return null
+}
+
+/** The accumulated messages a reloaded base doesn't hold: the ones it holds leave, one that came after its snapshot
+ *  stays (a client's message that landed while the reload was in flight; CodeRabbit #282, round 3). The same array
+ *  back when nothing leaves. */
+export function notInBase<T extends { id: string }>(accum: T[], base: readonly { id: string }[] | undefined): T[] {
+  const inBase = new Set((base ?? []).map((m) => m.id))
+  const kept = accum.filter((m) => !inBase.has(m.id))
+  return kept.length === accum.length ? accum : kept
 }

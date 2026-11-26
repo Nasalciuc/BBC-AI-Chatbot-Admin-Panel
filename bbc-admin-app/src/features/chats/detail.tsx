@@ -47,6 +47,7 @@ import { DetailsPanel } from './components/details-panel'
 import { OperatorBadge } from './operator-history'
 import {
   avatarClasses,
+  canSeeSources,
   clock,
   closedNote,
   closeSentence,
@@ -55,6 +56,11 @@ import {
   dayMonth,
   deadlineLeft,
   firstName,
+  FIRST_MESSAGE,
+  firstMessageHint,
+  holdButton,
+  holdLeft,
+  holdLine,
   initials,
   confirmedOf,
   leadLine,
@@ -68,7 +74,10 @@ import {
   presenceFromMeta,
   presenceLine,
   presenceView,
+  takeClass,
+  takeRefusal,
   takenBlind,
+  notInBase,
 } from './view'
 
 export type ChatLayout = 'wide' | 'medium' | 'narrow'
@@ -147,6 +156,13 @@ export default function ConversationDetail({
   const lastMsgTime           = useRef('')
   const queryClient           = useQueryClient()
   const [accumMsgs, setAccumMsgs] = useState<Message[]>([])
+  // The messages kept beside the chat's last load are that chat's: another chat on screen starts with none, as
+  // its draft does (CodeRabbit #282, round 4). A reload of the same chat keeps them (below).
+  const [accumOf, setAccumOf] = useState(conversationId)
+  if (accumOf !== conversationId) {
+    setAccumOf(conversationId)
+    setAccumMsgs([])
+  }
   const prevBaseLen           = useRef(0)
   // A panel nobody is looking at asks nothing — see stores/panel-mode-store.
   const dormant = usePanelModeStore((s) => s.dormant)
@@ -212,13 +228,17 @@ export default function ConversationDetail({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv?.messages?.length])
 
-  // Reset accumulator when base conversation reloads (e.g. after agent sends message)
+  // When the base conversation reloads (after the agent sends, after a client's message), the messages it now
+  // holds leave the accumulator; one that came after its snapshot stays. Emptying it lost a client's message
+  // that arrived while the reload was in flight, with the stream open and nothing to add it back
+  // (CodeRabbit #282, round 3).
   useEffect(() => {
     const baseLen = conv?.messages?.length ?? 0
     if (baseLen !== prevBaseLen.current) {
       prevBaseLen.current = baseLen
-      setAccumMsgs([])
+      setAccumMsgs(prev => notInBase(prev, conv?.messages))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv?.messages?.length])
 
   // Typing indicator — polls every 1s to show client's live text to agent
@@ -343,15 +363,23 @@ export default function ConversationDetail({
             // the stream. Reload it so the gate (Take) replaces the thread.
             queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
             break
+          case 'contact':
+            // The client's name, e-mail or phone just landed on the chat: the Contact card shows it now, not at
+            // the agent's next message (the owner, 25 Nov 2026).
+            void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
+            break
         }
       },
       (state) => {
         setSseLive(state === 'open')
         // The trip card is kept fresh by lead_details pushes, and a push
         // sent while this stream was shut (another chat open, a dropped
-        // connection) is lost. Each time the stream opens, read it again.
+        // connection) is lost. Each time the stream opens, read it again,
+        // and the chat with it: a `contact` push lost the same way leaves the
+        // Contact card behind (CodeRabbit #282, round 3).
         if (state === 'open') {
           void queryClient.invalidateQueries({ queryKey: ['conversation-details', conversationId] })
+          void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
         }
       },
       () => setSseLive(false)
@@ -391,6 +419,21 @@ export default function ConversationDetail({
     const fresh = accumMsgs.filter(m => !existingIds.has(m.id))
     return fresh.length > 0 ? [...base, ...fresh] : base
   }, [conv?.messages, accumMsgs])
+
+  // A client's message can carry their name, e-mail or phone, recorded a moment after it lands
+  // (operator_contact). The stream says so (the `contact` event); without the stream, or if that push is lost,
+  // the chat is read again 2 s after the client's newest message, so the Contact card never waits for the
+  // agent's next message (the owner, 25 Nov 2026). A dormant panel asks nothing: a read still waiting when the
+  // panel goes dormant is dropped, and the panel reads the chat 2 s after it wakes (CodeRabbit #282, round 5).
+  const lastClientMsgId = useMemo(() => {
+    for (let i = accumMsgs.length - 1; i >= 0; i--) if (accumMsgs[i].role === 'user') return accumMsgs[i].id
+    return null
+  }, [accumMsgs])
+  useEffect(() => {
+    if (!lastClientMsgId || dormant) return
+    const t = setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] }) }, 2_000)
+    return () => clearTimeout(t)
+  }, [lastClientMsgId, conversationId, dormant, queryClient])
 
   // "{first} came back to the chat": over a promise of mine that's now late, the
   // client's first message after a pause (not the "thanks" right after it).
@@ -520,9 +563,15 @@ export default function ConversationDetail({
       queryClient.invalidateQueries({ queryKey: ['op-history', conversationId] })
       if (onTaken) onTaken(conversationId)
       else onConversationChange?.()
-    } catch (_err) {
-      // Most common cause: another agent grabbed it first (claim race).
-      toast.error("Couldn't take this chat — someone may have taken it a moment before you.")
+    } catch (err) {
+      // The AI is still getting the client's contact (the server's contact hold): not a failure, a wait.
+      const refusal = (err as ApiError)?.status === 409 ? takeRefusal((err as ApiError).message ?? '') : {}
+      if (refusal.holdSeconds) {
+        toast.info(holdLine(firstName(conv?.visitor_name), refusal.holdSeconds))
+      } else {
+        // Most common cause: another agent grabbed it first (claim race).
+        toast.error("Couldn't take this chat — someone may have taken it a moment before you.")
+      }
       queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] })
     } finally {
       setTaking(false)
@@ -690,6 +739,10 @@ export default function ConversationDetail({
   const viewingDeadline = viewingGraceSeconds
   const left = canWrite ? deadlineLeft(conv, nowMs, viewingDeadline) : null
   const waitingMin = owner === 'waiting' ? minutesSince(conv.queued_at ?? conv.updated_at, nowMs) : null
+  // Take waits while the AI gets the contact (the server's contact hold): the button counts down.
+  const heldS = owner === 'waiting' ? holdLeft(conv, nowMs) : 0
+  // The agent's first word in a chat with no contact: one question and a channel, never a bare hello.
+  const showFirstMessageHint = canWrite && firstMessageHint(allMessages, conv.has_contact)
   const noReply = noReplyMinutes(conv, nowMs)
   const leftMin = presence.state === 'left' && typeof presence.ageSeconds === 'number' ? Math.floor(presence.ageSeconds / 60) : null
   const level = levelOf(lead, confirmedOf(conv), { agentChat: agentHasChat(conv) })
@@ -734,6 +787,7 @@ export default function ConversationDetail({
   if (blindView) {
     const waitedMin = minutesSince(conv.queued_at ?? conv.updated_at, nowMs) ?? 0
     const canTakeBlind = conv.status !== 'closed' && (!canBeReady || ready)
+    const heldS = holdLeft(conv, nowMs)
     return (
       <section
         aria-label='Chat'
@@ -751,12 +805,14 @@ export default function ConversationDetail({
           {presence.state === 'left' && <span className={cn('text-[13px]', presence.text)}>{presenceLine(presence, conv.has_contact)}</span>}
         </div>
         <p className='m-0 max-w-[340px] text-sm leading-[1.45] text-k-555555'>
-          {conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
-          chat and the trip once you take it.
+          {heldS > 0
+            ? holdLine(first, heldS)
+            : <>{conv.status === 'needs_agent' ? `${first} asked for a person.` : `${first} is waiting for a person.`} You’ll see the
+              chat and the trip once you take it.</>}
         </p>
         {canTakeBlind ? (
-          <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
-            {taking ? 'Taking…' : 'Take'}
+          <button type='button' onClick={handleClaim} disabled={taking} className={cn('h-11 rounded-full px-6 text-[15px] font-bold disabled:opacity-50', takeClass(heldS > 0))}>
+            {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
           </button>
         ) : (
           <p className='m-0 text-sm font-bold text-k-202020'>Set yourself ready to take this chat.</p>
@@ -786,6 +842,7 @@ export default function ConversationDetail({
       owner={owner}
       messages={allMessages}
       isSupervisor={isSupervisor}
+      canSeeSources={canSeeSources(role)}
       showCost={isAdmin}
       canViewHistory={canViewHistory}
       wide={wide}
@@ -1161,6 +1218,21 @@ export default function ConversationDetail({
                 </span>
               </div>
             )}
+            {showFirstMessageHint && (
+              <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
+                <span className='text-k-555555'>First message: ask for one way to reach {first}, and say why.</span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setInput((prev) => prev.trim() ? prev : FIRST_MESSAGE)
+                    requestAnimationFrame(() => taRef.current?.focus())
+                  }}
+                  className='font-bold text-k-5b45e0 hover:underline'
+                >
+                  Insert “{FIRST_MESSAGE}”
+                </button>
+              </div>
+            )}
             {canWrite && chatTasks.lateMine?.client_wrote_at && (
               <div className='flex flex-wrap items-center justify-between gap-2 px-1 text-[13px]'>
                 <span className='text-k-b3261e'>{first} is waiting for what you promised.</span>
@@ -1228,6 +1300,9 @@ export default function ConversationDetail({
                   {leftMin !== null ? (
                     // B3 (ADR-6c): nobody is asked to answer a client who left.
                     leftNote(first, leftMin, conv.has_contact, conv.tunnel)
+                  ) : heldS > 0 ? (
+                    // The contact hold: the AI is getting the phone or email first.
+                    holdLine(first, heldS)
                   ) : (
                     <>
                       <strong className='text-k-202020'>
@@ -1237,8 +1312,8 @@ export default function ConversationDetail({
                     </>
                   )}
                 </span>
-                <button type='button' onClick={handleClaim} disabled={taking} className='h-11 rounded-full bg-kb-202020 px-6 text-[15px] font-bold text-on-btn disabled:opacity-50'>
-                  {taking ? 'Taking…' : 'Take'}
+                <button type='button' onClick={handleClaim} disabled={taking} className={cn('h-11 rounded-full px-6 text-[15px] font-bold disabled:opacity-50', takeClass(heldS > 0))}>
+                  {taking ? 'Taking…' : heldS > 0 ? holdButton(heldS) : 'Take'}
                 </button>
               </div>
             )}

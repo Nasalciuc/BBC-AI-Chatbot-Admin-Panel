@@ -287,6 +287,22 @@ async def _stored_contacts(db_client, conversation_id: str) -> Optional[dict]:
     return {k: row.get(k) for k in _CONTACT_FIELDS}
 
 
+async def _tell_the_panel(conversation_id: str, conv_payload: dict) -> None:
+    """The client's name, e-mail or phone just landed on the chat: the agent's open chat reads it again now.
+    The panel read the chat once and refreshed it only when the agent did something, so a name the client
+    gave showed as "No name yet" until the agent's next message (the owner, 25 Nov 2026). The event names
+    the fields, never their values; nobody listening is no work (manager.push)."""
+    fields = sorted(k for k in conv_payload if k in _CONTACT_FIELDS)
+    if not fields:
+        return
+    try:
+        from app.realtime.manager import manager
+
+        await manager.push(f"op:{conversation_id}", {"event": "contact", "fields": fields})
+    except Exception as e:  # noqa: silent — the contact is saved; the panel reads it at its next refresh
+        logger.warning(f"[{conversation_id}] contact saved, the panel not told ({type(e).__name__})")
+
+
 def _is_local_number(raw: str) -> bool:
     """A number typed the local way: its trunk 0, no + or 00, 8+ digits."""
     digits = re.sub(r"\D", "", raw or "")
@@ -498,7 +514,12 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
         if tasks:
             # Both writes settle before an error goes on: one still in flight would land after the
             # lock is released, under the next writer's score (CodeRabbit #268, round 3).
-            for outcome in await asyncio.gather(*tasks, return_exceptions=True):
+            outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+            # The chat's contact saved is told to the agent's open chat even when the lead's write failed
+            # (CodeRabbit #282, round 3); the conversation's write is the first task when there is one.
+            if conv_payload and not isinstance(outcomes[0], BaseException):
+                await _tell_the_panel(conversation_id, conv_payload)
+            for outcome in outcomes:
                 if isinstance(outcome, BaseException):
                     raise outcome
 

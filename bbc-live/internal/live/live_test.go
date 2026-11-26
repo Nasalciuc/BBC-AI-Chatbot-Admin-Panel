@@ -106,7 +106,8 @@ func decode(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 // ── the contract ────────────────────────────────────────────────────
 
 func TestTheScriptsAreTheContracts(t *testing.T) {
-	for _, name := range []string{"beat.lua", "list.lua", "claim.lua", "release.lua", "dismiss.lua", "take_inbox.lua"} {
+	for _, name := range []string{"beat.lua", "list.lua", "claim.lua", "release.lua", "dismiss.lua", "take_inbox.lua",
+		"visit.lua", "close.lua"} {
 		mine, err := luaFiles.ReadFile("lua/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -263,6 +264,50 @@ func TestABeatSaysWhatCameOfAlexsCard(t *testing.T) {
 	for _, k := range []string{"alex_card", "alex_card_s", "alex_trigger"} {
 		if _, has := v[k]; has {
 			t.Errorf("%s listed for a beat without Alex's card: %v", k, v)
+		}
+	}
+}
+
+// The panel's groups (the owner, 25 Nov 2026): the browser's time zone (Australia and New Zealand) and a browser that
+// was on the site before. A zone of another shape is dropped; each beat says both again.
+func TestABeatSaysTheTimeZoneAndAReturn(t *testing.T) {
+	s, c, _ := setup(t)
+	h := s.Handler()
+	listed := func() map[string]any {
+		t.Helper()
+		w := do(t, h, "GET", "/v1/live", map[string]string{"Authorization": "Bearer " + agentToken(c, agentA, "sales", "sales")}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		return decode(t, w)["data"].([]any)[0].(map[string]any)
+	}
+	beat := func(b map[string]any) {
+		t.Helper()
+		if w := do(t, h, "POST", "/v1/beat", map[string]string{"X-Live-Pass": visitorPass(c, vid1)}, b); w.Code != http.StatusOK {
+			t.Fatalf("beat: %d %s", w.Code, w.Body.String())
+		}
+	}
+	beat(map[string]any{"page": "/", "device": "computer", "tz": "Australia/Sydney", "returning": true})
+	if v := listed(); v["tz"] != "Australia/Sydney" || v["returning"] != true {
+		t.Errorf("listed %v", v)
+	}
+	for _, zone := range []string{"America/Argentina/Buenos_Aires", "UTC", "Pacific/Auckland"} {
+		c.add(10)
+		beat(map[string]any{"page": "/", "tz": zone})
+		if v := listed(); v["tz"] != zone {
+			t.Errorf("%s listed as %v", zone, v["tz"])
+		}
+	}
+	// Rule 5: a zone of another shape, and a beat without either, list without them (left out, never "" or false).
+	for _, zone := range []string{"Australia/Sydney; x", "../../etc", "a/b/c/d", "Sydney Australia"} {
+		c.add(10)
+		beat(map[string]any{"page": "/", "tz": zone})
+		v := listed()
+		if _, has := v["tz"]; has {
+			t.Errorf("%q listed as %v", zone, v["tz"])
+		}
+		if _, has := v["returning"]; has {
+			t.Errorf("returning listed for a beat without it: %v", v)
 		}
 	}
 }
@@ -728,6 +773,132 @@ func TestTheSendScriptHoldsTheRules(t *testing.T) {
 	}
 	if _, err := resp.Str(rc.Do(ctx, "EVAL", string(src), "1", "live:hello:h1")); err != resp.ErrNil {
 		t.Fatalf("a hello answers one tap: %v", err)
+	}
+}
+
+// botSend runs the API's bot_send.lua (an agent's own bot, bbc-chatbot-api app/services/live_bot.py) on this Redis.
+// botSend runs bot_send.lua as the API does; `steps` is the visitor's activity the API judged them by (none: "").
+func botSend(t *testing.T, rc *resp.Client, agent, vid, hello string, steps ...string) int64 {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "live", "bot_send.lua"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := resp.Int(rc.Do(context.Background(), "EVAL", string(src), "7", visitKey(vid), claimKey(vid),
+		dismissedKey(vid), inboxKey(vid), "live:hello:"+hello, "live:said:"+vid, "live:bot:"+vid,
+		"bot:"+agent, vid, `{"kind":"hello"}`, `{"hello":"`+hello+`"}`, "900", "86400", agent, strings.Join(steps, ";")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestTheBotSendScriptHoldsTheRules(t *testing.T) {
+	s, _, rc := setup(t)
+	ctx := context.Background()
+	if n := botSend(t, rc, agentA, vid1, "h1"); n != -1 {
+		t.Fatalf("not on the site: %d", n)
+	}
+	third := "e2e00000-0000-4000-8000-000000000003"
+	fourth := "e2e00000-0000-4000-8000-000000000004"
+	for _, v := range []Visit{{ID: vid1, Page: "/", Source: "site"}, {ID: vid2, Page: "/", Source: "site"},
+		{ID: third, Page: "/", Source: "site", HasChat: true}, {ID: fourth, Page: "/", Source: "site"}} {
+		if err := s.Store.Beat(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := botSend(t, rc, agentA, third, "h0"); n != -2 {
+		t.Fatalf("in a chat: %d", n)
+	}
+	if r, _ := s.Store.Claim(ctx, agentB, vid2); r != Claimed {
+		t.Fatal(r)
+	}
+	if n := botSend(t, rc, agentA, vid2, "h2"); n != -4 {
+		t.Fatalf("a colleague's visitor: %d", n)
+	}
+	// The agent's own claim from the panel is theirs to greet by their bot.
+	if r, _ := s.Store.Claim(ctx, agentA, fourth); r != Claimed {
+		t.Fatal(r)
+	}
+	if n := botSend(t, rc, agentA, fourth, "h4"); n != 1 {
+		t.Fatalf("the agent's own visitor: %d", n)
+	}
+	if n := botSend(t, rc, agentA, vid1, "h1"); n != 1 {
+		t.Fatalf("send: %d", n)
+	}
+	if msgs, err := rc.Do(ctx, "LRANGE", inboxKey(vid1), "0", "-1"); err != nil || len(msgs.Array) != 1 {
+		t.Fatalf("the inbox: %v %v", msgs, err)
+	}
+	if hello, err := resp.Str(rc.Do(ctx, "GET", "live:hello:h1")); err != nil || hello != `{"hello":"h1"}` {
+		t.Fatalf("the hello for /chat/init: %q %v", hello, err)
+	}
+	// The bot's hello holds the visitor while it is out: the list says whose bot, and no agent claims them, its own
+	// agent included (one hello a visitor).
+	for _, agent := range []string{agentA, agentB} {
+		if r, _ := s.Store.Claim(ctx, agent, vid1); r != Taken {
+			t.Fatalf("%s after the bot: %s", agent, r)
+		}
+	}
+	listed, err := s.Store.Live(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range listed {
+		if l.ID == vid1 && l.ClaimedBy != "bot:"+agentA {
+			t.Fatalf("the list: %+v", l)
+		}
+	}
+	// No three at a time: the bot's hellos are in no agent's claims.
+	if n, _ := rc.Do(ctx, "SCARD", claimsKey(agentA)); n.Int != 1 {
+		t.Fatalf("the agent's claims: %d", n.Int)
+	}
+	if n := botSend(t, rc, agentA, vid1, "h3"); n != -4 {
+		t.Fatalf("its own bot's visitor again: %d", n)
+	}
+	// "Not now" lets the bot's hold go, as an agent's; then nobody greets them.
+	if holder, err := s.Store.Dismiss(ctx, vid1); err != nil || holder != "bot:"+agentA {
+		t.Fatalf("dismiss: %q %v", holder, err)
+	}
+	if n := botSend(t, rc, agentA, vid1, "h3"); n != -3 {
+		t.Fatalf("said not now: %d", n)
+	}
+	// One bot's hello a visitor a day, past the hello's own 15 minutes.
+	if _, err := rc.Do(ctx, "DEL", dismissedKey(vid1), "live:said:"+vid1); err != nil {
+		t.Fatal(err)
+	}
+	if n := botSend(t, rc, agentB, vid1, "h5"); n != -6 {
+		t.Fatalf("a second bot's hello: %d", n)
+	}
+	if ttl, _ := rc.Do(ctx, "TTL", "live:bot:"+vid1); ttl.Int < 86000 {
+		t.Fatalf("a bot's hello is remembered a day: %d", ttl.Int)
+	}
+	// An agent's hello went, and its claim is gone (the tap let it go): one hello a visitor while it runs.
+	if _, err := rc.Do(ctx, "SET", "live:said:"+vid2, agentB, "EX", "900"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Store.Release(ctx, agentB, vid2); err != nil || !ok {
+		t.Fatalf("release: %v %v", ok, err)
+	}
+	if n := botSend(t, rc, agentA, vid2, "h6"); n != -5 {
+		t.Fatalf("after an agent's hello: %d", n)
+	}
+	if ex, _ := rc.Do(ctx, "EXISTS", "live:bot:"+vid2, claimKey(vid2), "live:hello:h6"); ex.Int != 0 {
+		t.Fatal("a refused hello writes nothing")
+	}
+	// A step the visitor took after the API read them (the quote form opened) refuses the hello, so the API's "not in
+	// the middle of the quote form" still holds when it goes (CodeRabbit #282, round 7); the steps it read, it sends.
+	fifth := "e2e00000-0000-4000-8000-000000000005"
+	if err := s.Store.Beat(ctx, Visit{ID: fifth, Page: "/", Source: "site", Activity: "search:JFK-IST;quote_opened"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := botSend(t, rc, agentA, fifth, "h7", "search:JFK-IST"); n != -7 {
+		t.Fatalf("a step since the read: %d", n)
+	}
+	if ex, _ := rc.Do(ctx, "EXISTS", "live:said:"+fifth, "live:bot:"+fifth, claimKey(fifth), "live:hello:h7"); ex.Int != 0 {
+		t.Fatal("a refused hello writes nothing")
+	}
+	if n := botSend(t, rc, agentA, fifth, "h7", "search:JFK-IST", "quote_opened"); n != 1 {
+		t.Fatalf("the steps the API read: %d", n)
 	}
 }
 

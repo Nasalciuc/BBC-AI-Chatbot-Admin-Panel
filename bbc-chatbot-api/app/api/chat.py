@@ -88,12 +88,12 @@ class ChatInitRequest(BaseModel):
         return None
 
 
-_PROACTIVE_TRIGGERS = ("kayak", "ads", "quote", "reader", "exit", "note")
+_PROACTIVE_TRIGGERS = ("kayak", "ads", "social", "quote", "reader", "exit", "note")
 
 
 class ProactiveInit(BaseModel):
     # "note": the visitor tapped the note beside the button (app/services/proactive).
-    trigger: Literal["kayak", "ads", "quote", "reader", "exit", "note"]
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
     # The words /offer used: how the note asked its first question (app/services/
     # note_bandit), the quote card that offered the chat instead of the form
     # (proactive.CONTACT), the row beside the refused form (ROW) or the Kayak
@@ -308,21 +308,32 @@ async def chat_live(payload: LivePassRequest, request: Request):
     from app.services import agent_first_test
     from app.services.live_visitors import widget_pass
 
-    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it.
+    from app.services import visit_registry
+
+    # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it. The
+    # visit registry still takes its visits (live=False: a pass for the registry only, "enabled" stays false).
     side = agent_first_test.side(payload.visitor_id)
-    if side == agent_first_test.ALEX:
+    if side == agent_first_test.ALEX and not visit_registry.registry_enabled():
         return JSONResponse({"enabled": False, "test": side}, headers={"Cache-Control": "no-store"})
     # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
     # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
-    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False))
-    if side == agent_first_test.AGENT:
+    out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False),
+                            live=side != agent_first_test.ALEX)
+    if side == agent_first_test.ALEX:
+        out = {**out, "enabled": False, "test": side}
+    elif side == agent_first_test.AGENT:
         out = {**out, "test": side, "hold_s": agent_first_test.hold_seconds()}
+    if out.get("visits"):
+        # The country Cloudflare saw, for the registry (bbc-live sees no Cloudflare): two letters or nothing.
+        _country = (request.headers.get("cf-ipcountry") or "").strip().upper()
+        if len(_country) == 2 and _country.isalpha() and _country not in ("XX", "T1"):
+            out = {**out, "country": _country}
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 class ProactiveOfferRequest(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
-    trigger: Literal["kayak", "ads", "quote", "reader", "exit", "note"]
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
     trip: Optional[TripContext] = None
     # The brand the visitor is on (bbc | bct), so the card names it. Anything
     # else is dropped, never a 422: the card then speaks for BBC.
@@ -1249,14 +1260,17 @@ async def mark_chat_session_open(
 @router.post("/chat/session/{conversation_id}/before-you-go")
 async def before_you_go(
     conversation_id: str,
+    why: Optional[str] = Query(None, max_length=16),
     _owner: None = Depends(require_visitor_ownership),
 ):
     """B1 (ADR-6d): a client with no contact is leaving (the tab went out of view, the page went
-    quiet, the chat was closed) and no agent has written yet: one message asks where the agent should
-    write, with the buttons. Once per conversation; {"show": false, "why"} otherwise."""
+    quiet, the chat was closed): one message asks where the agent should write, with the buttons.
+    After an agent wrote, only as the client leaves the agent's message unanswered (lever 6).
+    `why`: hidden | closed | idle, as the widget saw the client leave (anything else reads as
+    unsaid). Once per conversation; {"show": false, "why"} otherwise."""
     from app.pipeline.card_buttons import before_you_go as _before_you_go
 
-    return await _before_you_go(conversation_id)
+    return await _before_you_go(conversation_id, why=why)
 
 
 @router.post("/chat/session/{conversation_id}/ping")

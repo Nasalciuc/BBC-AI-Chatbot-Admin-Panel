@@ -97,6 +97,9 @@ async def health_detail(full: bool = False) -> dict:
     from app.api.integration import PRESENCE_GATE_HEALTH
     # Claim races: exactly one wins; the losers are counted, not punished.
     from app.api.conversations import CLAIM_HEALTH
+    # Takes the contact hold turned away while Alex was getting the contact (25 Nov), and first-message times it
+    # could not read (those chats are taken at once, as before the hold).
+    from app.services.contact_hold import HOLD_HEALTH as CONTACT_HOLD_HEALTH
     # The claim gate's write failed or came back empty, and the owner read
     # said whose the chat is: won_after_check = a Take that used to read as
     # lost ("… took it a moment before you") although the agent had it.
@@ -184,10 +187,14 @@ async def health_detail(full: bool = False) -> dict:
     from app.services.recent_chats import RECENT_HEALTH
     # "On the site now": tokens handed out, hellos sent or refused, taps honoured or not.
     from app.services.live_visitors import LIVE_HEALTH
+    # Agents' own bots there: keys made, revoked or refused, hellos and answers sent, refused or lost.
+    from app.services.live_bot import BOT_HEALTH
     # The owner's agent-first test: who waited for an agent, who was greeted first, what Redis missed.
     from app.services import agent_first_test
     # The owner's contact test: the card answers on each side (the field at once, or the choice first).
     from app.services import contact_field_test
+    # The visit registry: visits stored, lost, a table not there yet, the queue's length.
+    from app.services.visit_registry import VISIT_HEALTH
 
     # The six problems' counters (Nov 2026), in both answers under the same keys: an operator who asks for the
     # full payload while looking into a lock or the live list must not lose them.
@@ -201,8 +208,10 @@ async def health_detail(full: bool = False) -> dict:
         "crm_lookup": dict(CRM_LOOKUP_HEALTH),
         "search": {**SEARCH_HEALTH, "recent": dict(RECENT_HEALTH)},
         "live": dict(LIVE_HEALTH),
+        "live_bot": dict(BOT_HEALTH),
         "agent_first_test": agent_first_test.health(),
         "contact_field_test": contact_field_test.health(),
+        "visit_registry": dict(VISIT_HEALTH),
     }
 
     if not full:
@@ -240,6 +249,7 @@ async def health_detail(full: bool = False) -> dict:
             "ai_fallback": dict(AI_FALLBACK_HEALTH),
             "handoffs_expired": dict(HANDOFF_HEALTH),
             "claims": dict(CLAIM_HEALTH),
+            "contact_hold": dict(CONTACT_HOLD_HEALTH),
             "claim_gate": dict(CLAIM_GATE_HEALTH),
             "sso": dict(SSO_HEALTH),
             "logs": log_health_snapshot(),
@@ -343,6 +353,7 @@ async def health_detail(full: bool = False) -> dict:
         "ai_fallback": dict(AI_FALLBACK_HEALTH),
         "handoffs_expired": dict(HANDOFF_HEALTH),
         "claims": dict(CLAIM_HEALTH),
+        "contact_hold": dict(CONTACT_HOLD_HEALTH),
         "claim_gate": dict(CLAIM_GATE_HEALTH),
         "sso": dict(SSO_HEALTH),
         "logs": log_health_snapshot(),

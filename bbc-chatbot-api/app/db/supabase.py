@@ -1732,6 +1732,35 @@ async def get_messages_after(
         return []
 
 
+async def list_live_bot_chats(agent_id: str, limit: int = 50) -> Optional[list]:
+    """The open chats an agent's bot started with its hellos (metadata.live_hello.bot, app/services/live_bot.py) that
+    are still the agent's, in human mode, the most recently updated first: its own hellos (live_hello.agent_id), not a
+    colleague's bot's chat moved to the agent (CodeRabbit #282, round 7). None when they can't be read: the caller
+    says so, never "no chats"."""
+    db_client = get_client()
+    cols = "id, visitor_id, status, mode, created_at, updated_at, live_hello:metadata->live_hello"
+    if _supervisor_columns_available():
+        cols += ", last_user_message_at, last_agent_message_at"
+
+    def _q(columns: str):
+        return (
+            db_client.table("conversations").select(columns)
+            .eq("assigned_agent_id", agent_id).eq("mode", "human")
+            .in_("status", list(OPEN_STATUSES))
+            .eq("metadata->live_hello->>bot", "true")
+            .eq("metadata->live_hello->>agent_id", agent_id)
+            .order("updated_at", desc=True).limit(limit)
+            .execute()
+        )
+
+    try:
+        res = await _run_sync(lambda: _q(cols), label="live_bot_chats")
+        return res.data or []
+    except Exception as e:
+        logger.error(f"list_live_bot_chats error: {type(e).__name__}: {e}")
+        return None
+
+
 async def get_conversation_mode(conversation_id: str) -> Optional[str]:
     """Get ONLY the mode of a conversation. Lightweight query for routing check."""
     try:
@@ -1757,6 +1786,28 @@ async def update_conversation(conversation_id: str, payload: dict) -> Optional[d
     except Exception as e:
         logger.error(f"update_conversation error: {e}")
         return None
+
+
+async def update_conversation_if_held(conversation_id: str, payload: dict, agent_id: str) -> str:
+    """update_conversation for an agent's own bot's send (conversations.send_as_agent, must_hold): written only while
+    the chat is still this agent's, in human mode and open, so a chat closed or moved meanwhile is never reopened or
+    changed by it (CodeRabbit #282, round 9). "written"; "moved" when it no longer is (nothing written); "failed"
+    when the database did not answer (logged)."""
+    db = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db.table("conversations").update(payload)
+            .eq("id", conversation_id)
+            .eq("assigned_agent_id", agent_id)
+            .eq("mode", "human")
+            .in_("status", list(OPEN_STATUSES))
+            .execute(),
+            label="conversation_update",
+        )
+    except Exception as e:
+        logger.error(f"[{conversation_id}] a held chat's update failed: {type(e).__name__} {_error_code(e) or e}")
+        return "failed"
+    return "written" if res.data else "moved"
 
 
 async def update_conversation_keeping_receipts(
@@ -7076,3 +7127,62 @@ async def get_active_emails_for_role(role: str) -> list[str]:
     )
     return [r["email"] for r in (res.data or [])
             if isinstance(r, dict) and r.get("email") and r.get("is_active", True)]
+
+
+# ── The visit registry (app/services/visit_registry.py, migration 056) ─────────────────────────────────────────────
+
+
+async def store_site_visits(rows: list[dict]) -> str:
+    """The registry's rows: "stored", "table_missing" (056 not applied: the queue waits in Redis) or "failed".
+
+    One row a visit (UNIQUE visitor_id, started_at; ON CONFLICT DO NOTHING): a visit stored twice, by a retry after a
+    disconnect or by the two schedulers of a deploy, is still one row, so the retry this call gets is safe. The log
+    names the database's code, never a row (a row carries the visitor's address)."""
+    if not rows:
+        return "stored"
+    db_client = get_client()
+    try:
+        await _run_sync(
+            lambda: db_client.table("site_visits")
+            .upsert(rows, on_conflict="visitor_id,started_at", ignore_duplicates=True)
+            .execute(),
+            idempotent=True,
+            label="visit_registry",
+        )
+        return "stored"
+    except Exception as e:
+        code = _error_code(e)
+        if code in _SCHEMA_MISSING_CODES:
+            logger.warning(f"[visit-registry] site_visits is not there yet (056 not applied): {type(e).__name__} {code}")
+            return "table_missing"
+        logger.error(f"[visit-registry] {len(rows)} visits not stored: {type(e).__name__} {code or 'no code'}")
+        return "failed"
+
+
+async def first_chat_of_visit(visitor_id: str, since_iso: str, until_iso: str) -> Optional[dict]:
+    """The first chat this visitor began within one visit's window, {"id", "created_at"}: {} when there is none, None
+    when the database could not say (the caller keeps the visit for its next run).
+
+    One visit's window, one row: the visit takes the first chat it began, so a single bounded read is the whole
+    answer, with no page that can run past a limit and no guard that turns the answer into none (CodeRabbit #282,
+    round 7, second look: the batch's lookup read every page up to a guard, and past the guard the visits went
+    without their chat)."""
+    db_client = get_client()
+    try:
+        res = await _run_sync(
+            lambda: db_client.table("conversations")
+            .select("id, created_at")
+            .eq("visitor_id", visitor_id)
+            .gte("created_at", since_iso)
+            .lte("created_at", until_iso)
+            .order("created_at")
+            .order("id")
+            .limit(1)
+            .execute(),
+            label="visit_registry",
+        )
+    except Exception as e:
+        logger.warning(f"[visit-registry] a visit's chat not read: {type(e).__name__} {_error_code(e) or e}")
+        return None
+    rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("created_at")]
+    return rows[0] if rows else {}

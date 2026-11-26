@@ -18,6 +18,11 @@ export interface LiveConfig {
   later?: boolean
   /** The owner's agent-first test (agentTest.ts): this visitor's side, on/off answers alike while it runs. */
   test?: 'agent' | 'alex'
+  /** The visit registry (visits.ts): bbc-live takes this page's snapshots, with `url` and `pass`, whether or not the
+   *  live list is on for this visitor (`enabled`). */
+  visits?: boolean
+  /** The country the API's edge saw (two letters), for the registry. */
+  country?: string
 }
 
 export interface LiveHello {
@@ -53,7 +58,15 @@ export interface Beat {
   alex_card?: 'shown' | 'dismissed' | 'engaged'
   alex_card_s?: number
   alex_trigger?: string
+  /** The browser's time zone ("Australia/Sydney"): the panel names a group by it (Australia and New Zealand). */
+  tz?: string
+  /** This browser was on the site before this visit (visitCount.ts); left out when it wasn't. */
+  returning?: true
 }
+
+/** A time zone's shape (IANA: "Area/City", "Area/Region/City", "UTC"), as bbc-live checks it again (http.go
+ *  zoneShape). */
+const TIME_ZONE = /^[A-Za-z][A-Za-z_]{0,19}(?:\/[A-Za-z0-9_+-]{1,30}){0,2}$/
 
 /** What a beat says of Alex's card (agentTest.ts alexCard, with the seconds since it showed). */
 export interface BeatAlexCard {
@@ -65,7 +78,7 @@ export interface BeatAlexCard {
 /** bbc-live keeps a card shown at most a day ago (internal/live/http.go AlexCardOldest). */
 export const ALEX_CARD_OLDEST_S = 86_400
 // The moments that show Alex's card (triggers.ts OpeningTrigger; bbc-live's alexTriggers): repeated, no imports here.
-export const ALEX_TRIGGERS: readonly string[] = ['kayak', 'ads', 'quote', 'reader', 'exit', 'note']
+export const ALEX_TRIGGERS: readonly string[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note']
 
 /** siteSignals.ts PAGE_TYPES, here because this file imports nothing but types (tests/live.test.mjs pins them). */
 export const BEAT_PAGE_TYPES: readonly string[] = [
@@ -89,11 +102,15 @@ export function readConfig(raw: unknown): LiveConfig {
   const side: LiveConfig['test'] = r.test === 'agent' || r.test === 'alex' ? r.test : undefined
   const test = side ? { test: side } : {}
   if (r.later === true) return { enabled: false, later: true, ...test }
-  if (r.enabled !== true || typeof r.url !== 'string' || !/^https?:\/\/[^\s/]+/.test(r.url)) return { enabled: false, ...test }
-  if (typeof r.pass !== 'string' || !PASS.test(r.pass)) return { enabled: false, ...test }
+  const url = typeof r.url === 'string' && /^https?:\/\/[^\s/]+/.test(r.url) ? r.url.replace(/\/+$/, '') : null
+  const pass = typeof r.pass === 'string' && PASS.test(r.pass) ? r.pass : null
+  // The registry rides on the same place and pass; it can be on with the list off (`enabled: false`).
+  const country = typeof r.country === 'string' && /^[A-Z]{2}$/.test(r.country) ? { country: r.country } : {}
+  const visits = r.visits === true && url && pass ? { visits: true, ...country } : null
+  if (r.enabled !== true || !url || !pass) return visits ? { enabled: false, url: url!, pass: pass!, ...visits, ...test } : { enabled: false, ...test }
   const n = (v: unknown, d: number) => (typeof v === 'number' && v >= 1 && v <= 600 ? v : d)
-  return { enabled: true, url: r.url.replace(/\/+$/, ''), after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
-    hello: r.hello === true, pass: r.pass, ...test }
+  return { enabled: true, url, after_s: n(r.after_s, AFTER_S), beat_s: n(r.beat_s, BEAT_S),
+    hello: r.hello === true, pass, ...(visits ?? {}), ...test }
 }
 
 /** A kept pass worth showing the API again: the shape only (the API checks the rest). */
@@ -142,6 +159,9 @@ export function beatBody(o: {
   alexAt?: number | null
   /** What came of Alex's card on this visit; "On the site now" lists the visitors it didn't start a chat with. */
   alexCard?: BeatAlexCard | null
+  /** The browser's time zone, and whether it came before this visit (visitCount.ts): the panel's groups. */
+  tz?: string | null
+  returning?: boolean
 }): Beat {
   const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
   const t = o.trip
@@ -172,6 +192,8 @@ export function beatBody(o: {
     b.alex_card_s = Math.max(0, Math.floor(c.secondsAgo))
     if (ALEX_TRIGGERS.includes(c.trigger)) b.alex_trigger = c.trigger
   }
+  if (o.tz && o.tz.length <= 64 && TIME_ZONE.test(o.tz)) b.tz = o.tz
+  if (o.returning === true) b.returning = true
   return b
 }
 
@@ -223,4 +245,11 @@ export function nextPollDelay(status: number | 'error', failures: number): numbe
  *  only be refused again. */
 export function lastBeatAgain(status: number | 'error'): boolean {
   return status === 'error' || status === 202 || status >= 500
+}
+
+/** The config a page keeps, for the visitor it was asked for only: after a form for someone else changed the
+ *  visitor id, the last one's pass must not carry the new visitor's snapshots to the old visit (CodeRabbit #282,
+ *  round 3). Null until it is asked for the new id. */
+export function configFor<T>(kept: { cfg: T; visitorId: string } | null, visitorId: string | null): T | null {
+  return kept && visitorId && kept.visitorId === visitorId ? kept.cfg : null
 }

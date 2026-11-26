@@ -166,6 +166,26 @@ def _blind_view(conv: dict) -> dict:
     return out
 
 
+# The replay of the visit sits with where the client came from in the panel's "Where they came from" fold.
+_SOURCE_ONLY_KEYS = ("posthog_session_id",)
+
+
+def _without_sources(row: dict) -> dict:
+    """The row as an agent gets it, after Take as well: without where the client came from (the ad, the
+    campaign, the Google search, the pages, the replay of the visit). The owner, 25 Nov 2026: an agent can't
+    open "Where they came from"; the panel shows it locked, and the data doesn't come either. A supervisor's
+    rows come without it already (mask_visitor_row). `site` stays: it is the brand the agent answers for."""
+    meta = row.get("metadata")
+    if not isinstance(meta, dict):
+        return row
+    from app.security.pii import strip_marketing_metadata
+
+    clean = strip_marketing_metadata(meta)
+    for k in _SOURCE_ONLY_KEYS:
+        clean.pop(k, None)
+    return {**row, "metadata": clean}
+
+
 @router.get("/conversations")
 async def list_conversations(
     tunnel: Optional[str] = Query(None, pattern="^(sales|support)$"),
@@ -292,6 +312,10 @@ async def list_conversations(
             # The rows below are masked for a supervisor: what they hide is then found only whole.
             masked_search=user.get("role") == "supervisor",
         )
+        # Until when Take waits for Alex to get the contact (contact_hold), read before any field is masked below.
+        from app.services import contact_hold
+        for c in rows:
+            c["contact_hold_until"] = contact_hold.until_iso(c, has_contact=bool(c.get("has_contact")))
         if handled_by == "human":
             rows = [c for c in rows if c.get("agent_state") == "active"]
         elif handled_by == "fallback":
@@ -314,6 +338,7 @@ async def list_conversations(
             # none of the client's words, until the chat is theirs.
             blind = user.get("role") in db._OPERATOR_ROLES
             if blind:
+                rows = [_without_sources(c) for c in rows]
                 for c in rows:
                     if not _known_to(c, user.get("id")):
                         c.pop("route", None)
@@ -392,6 +417,10 @@ def _list_filters(user: dict, *, date_from: Optional[str], date_to: Optional[str
         except ValueError as e:
             raise HTTPException(status_code=400, detail="Unknown agent") from e
         f["agent"] = agent
+    # Where the chats came from is not an agent's (the owner, 25 Nov 2026): a list narrowed to Kayak would name the
+    # source of every chat in it (CodeRabbit #282, round 3). Their panel never sends it; an old link is ignored.
+    if user.get("role") in db._OPERATOR_ROLES:
+        source = None
     for key, value in (("source", source), ("route_from", route_from), ("route_to", route_to), ("crm", crm)):
         if value:
             f[key] = value
@@ -708,7 +737,10 @@ async def get_conversation(
 
     # Whether the client left any contact, said before the row is masked or blinded: "Left 3 min ago ·
     # no contact" (ADR-6c) is a fact about the chat, never the contact itself. Same rule as the list's.
-    conv = {**conv, "has_contact": _has_contact(conv)}
+    # And until when Take waits for Alex to get it (contact_hold): the panel's countdown, the claim's own rule.
+    from app.services import contact_hold
+    _has = _has_contact(conv)
+    conv = {**conv, "has_contact": _has, "contact_hold_until": contact_hold.until_iso(conv, has_contact=_has)}
 
     # Phase 2: supervisor/PM see message content ONLY for their own team's
     # conversations; otherwise metadata-only (messages blanked). Fail closed.
@@ -724,6 +756,10 @@ async def get_conversation(
     if user.get("role") == "supervisor":
         from app.security.pii import mask_visitor_row
         conv = mask_visitor_row(dict(conv))
+
+    # Nor does an agent get where the client came from, on any chat (the owner, 25 Nov 2026).
+    if user.get("role") in db._OPERATOR_ROLES:
+        conv = _without_sources(conv)
 
     # An agent on a chat waiting for a person: who and how long, nothing the
     # client said or where they fly, until they take it.
@@ -793,6 +829,23 @@ async def send_agent_message(
     user: dict = Depends(get_current_user),
 ):
     """Agent sends a message in a conversation. Auto-sets mode to 'human'."""
+    return await send_as_agent(conversation_id, body, user)
+
+
+async def _still_held(conversation_id: str, user_id: str) -> bool:
+    """The chat is still this agent's, in human mode and open, read now (a chat that can't be read is not)."""
+    now = await db.get_conversation_simple(conversation_id)
+    return bool(now) and now.get("mode") == "human" and now.get("assigned_agent_id") == user_id \
+        and now.get("status") in db.OPEN_STATUSES
+
+
+async def send_as_agent(conversation_id: str, body: AgentMessageBody, user: dict, *, must_hold: bool = False):
+    """The agent's send. `must_hold`: only in a chat that is the sender's now, in human mode and open (an agent's own
+    bot, app.services.live_bot): any other is refused with 409 before anything is written, and never claimed, no
+    manual handoff (CodeRabbit #282, rounds 7 and 8). Its writes after an await are checked again (round 9): the chat
+    is read again just before each message is stored, its status changes only by a write conditional on the chat
+    still being the agent's and open, and its metadata only by merging its own keys. The panel's send claims a chat
+    it doesn't hold, as before."""
     # SECURITY: role from DB, not JWT. Only hands-on roles may speak as agent.
     _sender_db = await db.get_user_by_id(user.get("id"))
     _role_db = (_sender_db or {}).get("role") or ""
@@ -811,6 +864,10 @@ async def send_agent_message(
         conv.get("mode") == "human"
         and conv.get("assigned_agent_id") == _user_id
     )
+
+    # Open too: a chat the agent closed after the bot's check keeps its owner and mode (CodeRabbit #282, round 8).
+    if must_hold and (not _already_mine or conv.get("status") not in db.OPEN_STATUSES):
+        raise HTTPException(status_code=409, detail="The chat is no longer yours.")
 
     # F1 FIX: perform_handoff ONLY when this is a NEW assignment (admin
     # jumping into an AI conv, or takeover). Re-calling it per message
@@ -834,6 +891,8 @@ async def send_agent_message(
         and conv.get("assigned_agent_id") == _user_id
     )
     if _was_announce_pending:
+        if must_hold and not await _still_held(conversation_id, _user_id):
+            raise HTTPException(status_code=409, detail="The chat is no longer yours.")
         from config.settings import settings as _s
         _agent_name = (_sender_db or {}).get("name") or user.get("name") or "A specialist"
         _announce_row = await add_message(
@@ -854,6 +913,9 @@ async def send_agent_message(
         "agent_name": (_sender_db or {}).get("name") or "Consultant",
         "agent_avatar_url": (_sender_db or {}).get("avatar_url"),
     }
+    # The bot's answer: the chat read again just before it is stored (a close or a move during the awaits above).
+    if must_hold and not await _still_held(conversation_id, _user_id):
+        raise HTTPException(status_code=409, detail="The chat is no longer yours.")
     msg = await add_message(
         conversation_id=conversation_id, role="agent", content=clean_content,
         live_extra=identity,
@@ -881,7 +943,7 @@ async def send_agent_message(
             from datetime import datetime, timezone
             _assigned = datetime.fromisoformat(_at.replace("Z", "+00:00"))
             _rs = int((datetime.now(timezone.utc) - _assigned).total_seconds())
-        except (ValueError, TypeError):
+        except (ValueError, TypeError):  # noqa: silent — an unreadable agent_assigned_at logs the first response without its seconds
             pass
         _fire_and_forget(
             log_activity(
@@ -897,17 +959,20 @@ async def send_agent_message(
     #   - needs_agent → active: the human the client waited for is HERE
     _engage_update: dict = {}
     _meta_changed = False
-    if _conv_meta.get("engaged_agent_id") != _user_id:
-        _conv_meta["engaged_agent_id"] = _user_id
-        _meta_changed = True
-    if _conv_meta.pop("announce_pending", None) is not None:
-        _meta_changed = True
-    if _meta_changed:
-        _engage_update["metadata"] = _conv_meta
-    if conv.get("status") == "needs_agent":
-        _engage_update["status"] = "active"
-    if _engage_update:
-        await db.update_conversation(conversation_id, _engage_update)
+    if must_hold:
+        await _engage_held(conversation_id, _user_id, conv, _conv_meta)
+    else:
+        if _conv_meta.get("engaged_agent_id") != _user_id:
+            _conv_meta["engaged_agent_id"] = _user_id
+            _meta_changed = True
+        if _conv_meta.pop("announce_pending", None) is not None:
+            _meta_changed = True
+        if _meta_changed:
+            _engage_update["metadata"] = _conv_meta
+        if conv.get("status") == "needs_agent":
+            _engage_update["status"] = "active"
+        if _engage_update:
+            await db.update_conversation(conversation_id, _engage_update)
 
     if msg:
         # The panel's answer carries the same identity as the live copy.
@@ -928,6 +993,27 @@ async def send_agent_message(
             follow_up = {k: task.get(k) for k in ("id", "title", "kind", "due_at", "due_kind", "message_id")}
 
     return {"success": True, "data": msg, "follow_up": follow_up}
+
+
+async def _engage_held(conversation_id: str, user_id: str, conv: dict, meta: dict) -> None:
+    """The bot's engagement, after its answer is stored (CodeRabbit #282, round 9): needs_agent becomes active only
+    while the chat is still the agent's and open (a chat closed meanwhile is never reopened), and the engagement keys
+    are merged, never the metadata read before (which would undo what another request wrote meanwhile)."""
+    from app.services.live_bot import BOT_HEALTH
+
+    if conv.get("status") == "needs_agent":
+        outcome = await db.update_conversation_if_held(conversation_id, {"status": "active"}, user_id)
+        if outcome == "moved":
+            BOT_HEALTH["moved_while_sending"] += 1
+            logger.warning(f"[{conversation_id}] the bot's answer was stored as the chat closed or moved: not reopened")
+            return
+    keys: dict = {}
+    if meta.get("engaged_agent_id") != user_id:
+        keys["engaged_agent_id"] = user_id
+    if meta.get("announce_pending") is not None:
+        keys["announce_pending"] = None
+    if keys and await _still_held(conversation_id, user_id):
+        await db.patch_conversation_presence(conversation_id, keys)
 
 
 class AgentTypingBody(BaseModel):
@@ -1032,6 +1118,19 @@ async def claim_conversation(
             "winner": (_owner or {}).get("name") or "another agent",
             "conversation_id": conversation_id,
         })
+    # Alex is still getting the client's contact (app.services.contact_hold, 25 Nov): the take waits for it, for a
+    # client who asks for a person, or for the hold to run out. The panel counts down from the same `hold_until`.
+    from app.services import contact_hold
+    _has = _has_contact(conv)
+    _hold = contact_hold.hold_until(conv, has_contact=_has)
+    if _hold is not None:
+        contact_hold.count_refused()
+        raise HTTPException(status_code=409, detail={
+            "detail": "contact_hold",
+            "retry_after": contact_hold.seconds_left(_hold),
+            "hold_until": _hold.isoformat(),
+            "conversation_id": conversation_id,
+        })
     # The database decides. Exactly one UPDATE matches; the losers get nothing.
     _claim = await db.claim_conversation_if_unassigned(conversation_id, _me)
     if not _claim.get("won"):
@@ -1078,9 +1177,10 @@ async def claim_conversation(
     CLAIM_HEALTH["won"] += 1
     CLAIM_HEALTH["last_at"] = datetime.now(timezone.utc).isoformat()
     _age = _claim.get("queued_age_seconds")
+    # The agent's wait starts when the take was allowed: a chat held for its contact is not theirs to answer sooner.
     await log_activity(
         db, _me, conversation_id, "claim_won",
-        response_seconds=int(_age) if _age is not None else None,
+        response_seconds=contact_hold.wait_after_hold(_age, conv, has_contact=_has),
     )
     # Reset loop guards — agent chose this conv actively.
     # Single metadata write via perform_handoff (reads + merges + writes).

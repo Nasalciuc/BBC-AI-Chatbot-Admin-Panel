@@ -377,6 +377,9 @@ _BUTTON_TAPS = frozenset({
     "sí, envíenme tarifas", "cambiar detalles", "tengo una pregunta", "quiero una cotización",
     "envíenme las tarifas por correo", "oui, envoyez-moi les tarifs", "modifier", "j'ai une question",
     "obtenir un devis", "envoyez-moi les tarifs par e-mail",
+    # The yes that names where the fares go (card_words.yes_label, 25 Nov).
+    "yes, email me the fares", "yes, text me the fares", "sí, envíenme las tarifas por correo",
+    "sí, envíenme las tarifas por sms", "oui, envoyez-moi les tarifs par e-mail", "oui, envoyez-moi les tarifs par sms",
     "text message", "sms", "whatsapp", "i'll wait here", "espero aquí", "j'attends ici",
 })
 _NO_QUESTION_WORDS = frozenset("""

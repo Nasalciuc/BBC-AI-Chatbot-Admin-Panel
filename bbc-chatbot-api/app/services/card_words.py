@@ -48,22 +48,34 @@ _CARD_CHANNEL: dict[str, dict[str, str]] = {
     "email": {"en": "Email me fares", "es": "Tarifas por correo", "fr": "Tarifs par e-mail"},
 }
 
+# The card's yes says where the fares go when its answer opens a field (25 Nov, the owner: "100 de procente"). On
+# 24-25 Nov 19 of the 24 card chats lost without a contact had tapped "Yes, send me fares" and left at the email
+# question that came with it, most within 30 s: the button promised fares and the answer asked for something. Where
+# the answer asks the client to choose (no field), the yes stays as it was.
+_YES: dict[str, dict[str, str]] = {
+    "send": {"en": "Yes, send me fares", "es": "Sí, envíenme tarifas", "fr": "Oui, envoyez-moi les tarifs"},
+    "email": {"en": "Yes, email me the fares", "es": "Sí, envíenme las tarifas por correo",
+              "fr": "Oui, envoyez-moi les tarifs par e-mail"},
+    "sms": {"en": "Yes, text me the fares", "es": "Sí, envíenme las tarifas por SMS",
+            "fr": "Oui, envoyez-moi les tarifs par SMS"},
+}
+
 _CONFIRM: dict[str, dict[str, str]] = {
     "en": {
-        "fares": ("Got it, {line}. An agent will check live fares for exactly this trip and write to you. "
-                  "Where should they write: by text or by email?"),
+        "fares": ("Got it, {line}. Private fares aren't published, so an agent checks them for exactly this trip and "
+                  "writes to you. Where should they write: by text or by email?"),
         "beat": ("Got it, {line}. An agent will check if they can beat the price you saw, and write to you. "
                  "Where should they write: by text or by email?"),
     },
     "es": {
-        "fares": ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y le escribirá. "
-                  "¿Dónde le escribe: SMS o correo?"),
+        "fares": ("Perfecto: {line}. Las tarifas privadas no se publican, así que un agente las consulta para "
+                  "exactamente este viaje y le escribe. ¿Dónde le escribe: SMS o correo?"),
         "beat": ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá. "
                  "¿Dónde le escribe: SMS o correo?"),
     },
     "fr": {
-        "fares": ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous écrira. "
-                  "Où doit-il vous écrire : SMS ou e-mail ?"),
+        "fares": ("Parfait : {line}. Les tarifs privés ne sont pas publiés, alors un agent les vérifie pour exactement "
+                  "ce voyage et vous écrit. Où doit-il vous écrire : SMS ou e-mail ?"),
         "beat": ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
                  "et vous écrira. Où doit-il vous écrire : SMS ou e-mail ?"),
     },
@@ -74,30 +86,30 @@ _CONFIRM: dict[str, dict[str, str]] = {
 # buttons, shown when the client goes back from the field).
 _CONFIRM_FIELD: dict[str, dict[tuple[str, str], str]] = {
     "en": {
-        ("fares", "sms"): ("Got it, {line}. An agent will check live fares for exactly this trip and text them to you. "
-                           "What's your mobile number?"),
-        ("fares", "email"): ("Got it, {line}. An agent will check live fares for exactly this trip and email them to "
-                             "you. What's your email address?"),
+        ("fares", "sms"): ("Got it, {line}. Private fares aren't published, so an agent checks them for exactly this "
+                           "trip and texts them to you. What's your mobile number?"),
+        ("fares", "email"): ("Got it, {line}. Private fares aren't published, so an agent checks them for exactly this "
+                             "trip and emails them to you. What's your email address?"),
         ("beat", "sms"): ("Got it, {line}. An agent will check if they can beat the price you saw, and text you. "
                           "What's your mobile number?"),
         ("beat", "email"): ("Got it, {line}. An agent will check if they can beat the price you saw, and email you. "
                             "What's your email address?"),
     },
     "es": {
-        ("fares", "sms"): ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y se las "
-                           "enviará por SMS. ¿Cuál es su número de móvil?"),
-        ("fares", "email"): ("Perfecto: {line}. Un agente consultará tarifas reales para exactamente este viaje y se "
-                             "las enviará por correo. ¿Cuál es su correo?"),
+        ("fares", "sms"): ("Perfecto: {line}. Las tarifas privadas no se publican, así que un agente las consulta para "
+                           "exactamente este viaje y se las envía por SMS. ¿Cuál es su número de móvil?"),
+        ("fares", "email"): ("Perfecto: {line}. Las tarifas privadas no se publican, así que un agente las consulta "
+                             "para exactamente este viaje y se las envía por correo. ¿Cuál es su correo?"),
         ("beat", "sms"): ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá por "
                           "SMS. ¿Cuál es su número de móvil?"),
         ("beat", "email"): ("Perfecto: {line}. Un agente revisará si puede mejorar el precio que vio y le escribirá "
                             "por correo. ¿Cuál es su correo?"),
     },
     "fr": {
-        ("fares", "sms"): ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous "
-                           "les enverra par SMS. Quel est votre numéro de mobile ?"),
-        ("fares", "email"): ("Parfait : {line}. Un agent vérifiera les tarifs réels pour exactement ce voyage et vous "
-                             "les enverra par e-mail. Quelle est votre adresse e-mail ?"),
+        ("fares", "sms"): ("Parfait : {line}. Les tarifs privés ne sont pas publiés, alors un agent les vérifie pour "
+                           "exactement ce voyage et vous les envoie par SMS. Quel est votre numéro de mobile ?"),
+        ("fares", "email"): ("Parfait : {line}. Les tarifs privés ne sont pas publiés, alors un agent les vérifie pour "
+                             "exactement ce voyage et vous les envoie par e-mail. Quelle est votre adresse e-mail ?"),
         ("beat", "sms"): ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
                           "et vous écrira par SMS. Quel est votre numéro de mobile ?"),
         ("beat", "email"): ("Parfait : {line}. Un agent vérifiera s'il peut faire mieux que le prix que vous avez vu, "
@@ -111,21 +123,22 @@ _CONFIRM_FIELD: dict[str, dict[tuple[str, str], str]] = {
 # contact.
 _CONTACT_FIRST: dict[str, dict[str, str]] = {
     "en": {
-        "sms": "Sure. An agent will check live fares for your trip and text them to you. What's your mobile number?",
-        "email": ("Sure. An agent will check live fares for your trip and email them to you. "
-                  "What's your email address?"),
+        "sms": ("Sure. Private fares aren't published, so an agent checks them for your trip and texts them to you. "
+                "What's your mobile number?"),
+        "email": ("Sure. Private fares aren't published, so an agent checks them for your trip and emails them to "
+                  "you. What's your email address?"),
     },
     "es": {
-        "sms": ("Claro. Un agente consultará tarifas reales para su viaje y se las enviará por SMS. "
-                "¿Cuál es su número de móvil?"),
-        "email": ("Claro. Un agente consultará tarifas reales para su viaje y se las enviará por correo. "
-                  "¿Cuál es su correo?"),
+        "sms": ("Claro. Las tarifas privadas no se publican, así que un agente las consulta para su viaje y se las "
+                "envía por SMS. ¿Cuál es su número de móvil?"),
+        "email": ("Claro. Las tarifas privadas no se publican, así que un agente las consulta para su viaje y se las "
+                  "envía por correo. ¿Cuál es su correo?"),
     },
     "fr": {
-        "sms": ("Bien sûr. Un agent vérifiera les tarifs réels pour votre voyage et vous les enverra par SMS. "
-                "Quel est votre numéro de mobile ?"),
-        "email": ("Bien sûr. Un agent vérifiera les tarifs réels pour votre voyage et vous les enverra par e-mail. "
-                  "Quelle est votre adresse e-mail ?"),
+        "sms": ("Bien sûr. Les tarifs privés ne sont pas publiés, alors un agent les vérifie pour votre voyage et "
+                "vous les envoie par SMS. Quel est votre numéro de mobile ?"),
+        "email": ("Bien sûr. Les tarifs privés ne sont pas publiés, alors un agent les vérifie pour votre voyage et "
+                  "vous les envoie par e-mail. Quelle est votre adresse e-mail ?"),
     },
 }
 
@@ -179,6 +192,17 @@ _BEFORE_YOU_GO: dict[str, tuple[str, str]] = {
            "SMS ou e-mail ?",
            "Avant de partir : où un agent doit-il vous envoyer les tarifs : SMS ou e-mail ?"),
 }
+# The same ask in a chat an agent has written in and the client left unanswered (lever 6, 25 Nov): the agent is
+# already there, so "your agent", never "an agent".
+_BEFORE_YOU_GO_AGENT: dict[str, tuple[str, str]] = {
+    "en": ("Before you go, your agent can send you the fares for {line}. Where should they write: by text or by email?",
+           "Before you go, where should your agent send you the fares: by text or by email?"),
+    "es": ("Antes de irse: su agente puede enviarle las tarifas para {line}. ¿Dónde le escribe: SMS o correo?",
+           "Antes de irse: ¿dónde le envía su agente las tarifas: SMS o correo?"),
+    "fr": ("Avant de partir : votre agent peut vous envoyer les tarifs pour {line}. Où doit-il vous écrire : "
+           "SMS ou e-mail ?",
+           "Avant de partir : où votre agent doit-il vous envoyer les tarifs : SMS ou e-mail ?"),
+}
 
 
 def _lang(lang: Optional[str]) -> str:
@@ -188,6 +212,12 @@ def _lang(lang: Optional[str]) -> str:
 def button(kind: str, lang: Optional[str] = None) -> dict:
     """{"kind", "label"} for one of KINDS."""
     return {"kind": kind, "label": _BUTTONS[kind][_lang(lang)]}
+
+
+def yes_label(lang: Optional[str], field: Optional[str]) -> str:
+    """The card's yes: where the fares go when its answer opens `field` ("Yes, email me the fares"), else the yes
+    as it was ("Yes, send me fares": the answer asks where to write, or the model answers)."""
+    return _YES[field if field in CHANNELS else "send"][_lang(lang)]
 
 
 def card_channel(kind: str, lang: Optional[str] = None) -> dict:
@@ -269,9 +299,9 @@ def wait_answer(lang: Optional[str], agent_online: bool) -> tuple[str, list[dict
     return busy, [button("sms", lang), button("email", lang)]
 
 
-def before_you_go(line: Optional[str], lang: Optional[str] = None) -> tuple[str, list[dict]]:
-    """B1: the one message for a client with no contact who is leaving."""
-    with_line, without = _BEFORE_YOU_GO[_lang(lang)]
+def before_you_go(line: Optional[str], lang: Optional[str] = None, agent: bool = False) -> tuple[str, list[dict]]:
+    """B1: the one message for a client with no contact who is leaving; `agent`: in a chat an agent wrote in."""
+    with_line, without = (_BEFORE_YOU_GO_AGENT if agent else _BEFORE_YOU_GO)[_lang(lang)]
     text = with_line.format(line=line) if line else without
     return text, [button("sms", lang), button("email", lang)]
 
@@ -289,6 +319,32 @@ _GOODBYE_NO_CONTACT: dict[str, str] = {
 def goodbye_without_contact(lang: Optional[str] = None) -> str:
     """The goodbye that promises nothing and asks nothing, for a client with no contact on file."""
     return _GOODBYE_NO_CONTACT[_lang(lang)]
+
+
+# A channel's contact the server cannot read (25 Nov: an email typed with stars, which the widget's field let through,
+# was answered "Email's captured" by the model while nothing was kept): asked again, the field one tap away.
+_UNREADABLE: dict[str, dict[str, str]] = {
+    "en": {
+        "email": "I couldn't read that email address. Could you check it and send it again?",
+        "sms": "I couldn't read that number. Could you check it, with the country code, and send it again?",
+    },
+    "es": {
+        "email": "No pude leer ese correo. ¿Puede revisarlo y enviarlo de nuevo?",
+        "sms": "No pude leer ese número. ¿Puede revisarlo, con el código de país, y enviarlo de nuevo?",
+    },
+    "fr": {
+        "email": "Je n'ai pas pu lire cette adresse e-mail. Pouvez-vous la vérifier et la renvoyer ?",
+        "sms": "Je n'ai pas pu lire ce numéro. Pouvez-vous le vérifier, avec l'indicatif du pays, et le renvoyer ?",
+    },
+}
+
+
+def contact_unreadable(kind: str, lang: Optional[str] = None) -> tuple[str, list[dict]]:
+    """The answer to a channel whose contact could not be read: that channel asked again (a number for SMS and the
+    WhatsApp of a cached widget), its button first, the other one after it."""
+    channel = "email" if kind == "email" else "sms"
+    other = "sms" if channel == "email" else "email"
+    return _UNREADABLE[_lang(lang)][channel], [button(channel, lang), button(other, lang)]
 
 
 def row_buttons(lang: Optional[str] = None) -> list[dict]:

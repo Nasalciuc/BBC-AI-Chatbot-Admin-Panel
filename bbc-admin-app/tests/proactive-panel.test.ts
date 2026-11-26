@@ -8,7 +8,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CARD_NO_CONTACT, CARD_ONLY, cardNoContact, openedByText, pageTripText, replayUrl } from '../src/features/chats/view.ts'
+import {
+  CARD_NO_CONTACT, CARD_ONLY, SOURCES_RESTRICTED, canSeeSources, cardNoContact, openedByText, pageTripText, replayUrl,
+  siteName, whereRows,
+} from '../src/features/chats/view.ts'
 import { unownedNote } from '../src/features/tasks/view.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -21,6 +24,7 @@ const NOW = new Date('2026-11-16T10:00:00Z')
 test('why the chat opened by itself', () => {
   assert.equal(openedByText({ proactive_trigger: 'kayak' }, NOW), 'By itself: the client came from Kayak')
   assert.equal(openedByText({ proactive_trigger: 'ads' }, NOW), 'By itself: the client came from a Google or Bing ad')
+  assert.equal(openedByText({ proactive_trigger: 'social' }, NOW), 'By itself: the client came from a Facebook or Instagram ad')
   assert.equal(openedByText({ proactive_trigger: 'quote' }, NOW), 'By itself: the client pressed “Get free quote” and stopped')
   assert.equal(openedByText({ proactive_trigger: 'reader' }, NOW), 'By itself: the client read the page for a while')
   assert.equal(openedByText({ proactive_trigger: 'exit' }, NOW), 'By itself: the client was about to leave')
@@ -77,8 +81,8 @@ test('the replay link: only for an id, under an https base from the build', () =
   assert.equal(replayUrl({ posthog_session_id: id }, 'https://user:pw@eu.posthog.example/replay/'), '')
 })
 
-test('the details panel: opened, from the page, replay — the replay never for supervisors', () => {
-  assert.match(panel, /const replay = p\.isSupervisor \? '' : replayUrl\(conv\.metadata, REPLAY_BASE\)/)
+test('the details panel: opened, from the page, replay — the replay never for agents or supervisors', () => {
+  assert.match(panel, /const replay = p\.canSeeSources \? replayUrl\(conv\.metadata, REPLAY_BASE\) : ''/)
   // The address comes from the build, not from the code (bbc-admin-app/CLAUDE.md: never hardcode URLs).
   assert.match(panel, /const REPLAY_BASE = import\.meta\.env\.VITE_POSTHOG_REPLAY_URL as string \| undefined/)
   assert.doesNotMatch(readFileSync(join(root, 'src/features/chats/view.ts'), 'utf-8'), /posthog\.com/)
@@ -124,4 +128,65 @@ test('a card chat with no contact says so on its row, once (owner, 22 Nov)', () 
   const named = list.split('\n').find((l) => l.includes('aria-label={`Conversation ')) ?? ''
   assert.ok(named.includes("${cardOnly ? `, ${cardOnly}` : ''}"), named)
   assert.match(list, /title=\{CARD_NO_CONTACT_TITLE\}/)
+})
+
+// ── Where the client came from is not an agent's (the owner, 25 Nov 2026) ──────────────────────────────────
+
+test('who opens "Where they came from": not agents, not supervisors', () => {
+  for (const role of ['sales', 'support', 'supervisor', undefined, '']) assert.equal(canSeeSources(role), false, String(role))
+  // Rule 5: every other role keeps it as it was.
+  for (const role of ['owner', 'admin', 'dev', 'qa', 'project_manager']) assert.equal(canSeeSources(role), true, role)
+  assert.equal(SOURCES_RESTRICTED, 'Not for your role: where the client came from is marketing data')
+})
+
+test('an agent reads why the card chat has no name, without the source', () => {
+  const at = { proactive_at: NOW.toISOString() }
+  for (const trigger of ['kayak', 'ads', 'social']) {
+    assert.equal(openedByText({ proactive_trigger: trigger }, NOW, { sources: false }), 'By itself: Skye’s card, no form')
+    assert.match(openedByText({ proactive_trigger: trigger, ...at }, NOW, { sources: false }), /^By itself: Skye’s card, no form · \d{2}:\d{2}$/)
+  }
+  // What the client did is no source: the same words for everyone.
+  assert.equal(openedByText({ proactive_trigger: 'quote' }, NOW, { sources: false }), 'By itself: the client pressed “Get free quote” and stopped')
+  assert.equal(openedByText({ proactive_trigger: 'exit' }, NOW, { sources: false }), 'By itself: the client was about to leave')
+  assert.equal(openedByText({ proactive_trigger: 'note' }, NOW, { sources: false }), 'No form: the client tapped the note beside the button')
+  assert.equal(openedByText({}, NOW, { sources: false }), '')
+  // Rule 5: a reader who sees sources reads them, as before.
+  assert.equal(openedByText({ proactive_trigger: 'kayak' }, NOW, { sources: true }), 'By itself: the client came from Kayak')
+})
+
+test('the site is the brand: kept for the agent, in "This chat"', () => {
+  assert.equal(siteName({ site: 'bbc' }), 'buybusinessclass.com')
+  assert.equal(siteName({ site: ' bct ' }), 'businessclass-tickets.com')
+  assert.equal(siteName({ site: 'other.example' }), 'other.example')
+  assert.equal(siteName({ site: 3 }), '')
+  assert.equal(siteName(undefined), '')
+  assert.deepEqual(whereRows({ site: 'bct' }).map((r) => [r.label, r.value]), [['Site', 'businessclass-tickets.com']])
+  assert.match(panel, /const site = p\.canSeeSources \? '' : siteName\(conv\.metadata\)/)
+  assert.match(panel, /\.\.\.\(site \? \[\{ label: 'Site', value: site \}\] : \[\]\),/)
+  assert.match(panel, /const opened = openedByText\(conv\.metadata, now, \{ sources: p\.canSeeSources \}\)/)
+})
+
+test('the fold and the list filter are locked for them: shown, disabled, a lock and the reason', () => {
+  // The fold: the button is disabled, with the reason as its title and in its name; nothing opens.
+  // Shown to them whatever their rows hold: the rows come without the sources, so the list of them is empty
+  // (CodeRabbit #282, round 3).
+  assert.match(panel, /\{p\.canSeeSources \? \(where\.length > 0 && \(/)
+  const locked = panel.slice(panel.indexOf('{p.canSeeSources ? (where.length > 0 && ('))
+  assert.ok(locked.length > 0)
+  const lockedFold = locked.slice(locked.indexOf(') : ('), locked.indexOf('</section>'))
+  assert.match(lockedFold, /disabled\s+title=\{SOURCES_RESTRICTED\}/)
+  assert.match(lockedFold, /aria-label=\{`Where \$\{named \? first : 'they'\} came from \(\$\{SOURCES_RESTRICTED\.toLowerCase\(\)\}\)`\}/)
+  assert.match(lockedFold, /<Lock aria-hidden='true'/)
+  assert.doesNotMatch(lockedFold, /<Rows|onClick|onToggle/)
+  const detail = readFileSync(join(root, 'src/features/chats/detail.tsx'), 'utf-8')
+  assert.match(detail, /canSeeSources=\{canSeeSources\(role\)\}/)
+  // The list's "Came from": chips that can't be pressed, "Anywhere" the one on; the working chips only for the rest.
+  const list = readFileSync(join(root, 'src/features/chats/index.tsx'), 'utf-8')
+  const row = list.slice(list.indexOf('{canSeeSources(role) ? ('), list.indexOf("<span className='text-xs text-k-555555'>Trip (airport codes)</span>"))
+  assert.match(row, /onClick=\{\(\) => setFilter\('source', k\)\}/)
+  const lockedRow = row.slice(row.indexOf(') : ('))
+  assert.match(lockedRow, /title=\{SOURCES_RESTRICTED\}/)
+  assert.match(lockedRow, /type='button' disabled aria-label=\{`\$\{label\} \(\$\{SOURCES_RESTRICTED\.toLowerCase\(\)\}\)`\}/)
+  assert.match(lockedRow, /chipCls\(label === 'Anywhere'\)/)
+  assert.doesNotMatch(lockedRow, /setFilter/)
 })

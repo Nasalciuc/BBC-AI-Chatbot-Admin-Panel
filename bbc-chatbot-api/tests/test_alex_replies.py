@@ -311,6 +311,9 @@ class TestAClosingQuestionWithAnEmoji:
 class TestTheKnowledgeBaseSearch:
     @pytest.mark.parametrize("message", [
         "Yes, send me fares", "Get a fare quote",
+        # The yes that names where the fares go (card_words.yes_label, 25 Nov), in the card's three languages.
+        "Yes, email me the fares", "Yes, text me the fares", "Sí, envíenme las tarifas por correo",
+        "Sí, envíenme las tarifas por SMS", "Oui, envoyez-moi les tarifs par e-mail", "Oui, envoyez-moi les tarifs par SMS",
         "Yes, check fares", "Check fares", "Change details", "I have a question", "Not now",
         "ok", "Okay!", "Text", "Yes please", "Thank you!", "no", "Email", "sounds good", "",
     ])

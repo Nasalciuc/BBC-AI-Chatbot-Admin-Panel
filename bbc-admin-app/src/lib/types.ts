@@ -67,6 +67,9 @@ export interface Conversation {
   /** Whether the client left an e-mail, a phone or a number to check — said even where the contact
    *  itself is masked or blind ("Left 3 min ago · no contact", ADR-6c). List rows and the detail. */
   has_contact?: boolean
+  /** Until when Take waits while the AI gets the client's phone or email (the server's contact hold,
+   *  25 Nov 2026): ISO time, null when the chat may be taken now. List rows and the detail. */
+  contact_hold_until?: string | null
   /** Country of the client's phone number (detail payload). */
   visitor_phone_country?: string | null
 }
@@ -907,6 +910,9 @@ export type AgentSseEvent =
   /** The chat started waiting for a person and isn't yours (blind take):
    *  the server closes the stream right after this frame. */
   | { event: 'blind' }
+  /** The client's name, e-mail or phone just landed on the chat (lead_service._tell_the_panel): the fields'
+   *  names only, never their values. The chat is read again. */
+  | { event: 'contact'; fields: string[] }
   | SseMessageRow   // plain message row (agent / system / ai)
 
 // ── Learning loop (PR-8) ──────────────────────────────────────
@@ -956,6 +962,10 @@ export function parseAgentSseEvent(raw: unknown): AgentSseEvent | null {
   const r = raw as Record<string, unknown>
   const ev = r.event
   if (ev === 'blind') return { event: 'blind' }
+  if (ev === 'contact') {
+    const fields = Array.isArray(r.fields) ? r.fields.filter((f): f is string => typeof f === 'string') : []
+    return { event: 'contact', fields }
+  }
   if (ev === 'typing') return { event: 'typing', is_typing: Boolean(r.is_typing), text: String(r.text ?? '') }
   if (ev === 'presence') return { ...(r as object), event: 'presence' } as AgentSseEvent
   if (ev === 'stream_chunk') return { event: 'stream_chunk', delta: String(r.delta ?? '') }
@@ -1239,6 +1249,22 @@ export interface LiveVisitor {
   alex_card_s?: number
   /** The moment that showed it (kayak, ads, quote, reader, exit; note: the visitor opened the chat themselves). */
   alex_trigger?: string
+  /** The browser's time zone ("Australia/Sydney"), when the widget said it. */
+  tz?: string
+  /** The browser was on the site before this visit (the widget's visitCount.ts); absent when it wasn't. */
+  returning?: boolean
+}
+
+/** The agent's own bot key (bbc-chatbot-api app/services/live_bot.py): whether one works now, and until when. */
+export interface LiveBotKey {
+  active: boolean
+  expires_at: string | null
+}
+
+/** A key just made: the only time it is shown. The one before stops working. */
+export interface LiveBotKeyMade {
+  key: string
+  expires_at: string
 }
 
 export interface LiveListResponse {

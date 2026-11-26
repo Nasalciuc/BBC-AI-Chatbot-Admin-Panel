@@ -385,7 +385,8 @@ class TestClaimEndpoint:
 
         src = inspect.getsource(capi.claim_conversation)
         assert '"claim_won"' in src
-        assert "response_seconds=int(_age)" in src
+        # The line's age, without the contact hold the take had to wait out (test_contact_hold.TestTake).
+        assert "response_seconds=contact_hold.wait_after_hold(_age, conv" in src
 
     def test_health_exposes_claims_in_both_payloads(self):
         import pathlib

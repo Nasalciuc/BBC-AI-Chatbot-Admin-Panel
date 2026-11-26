@@ -226,22 +226,28 @@ export async function fetchProactiveOffer(
 }
 
 /** B1 (ADR-6d): the one message for a contactless client who is leaving, once, from the server — which says
- *  whether it applies (no contact, no agent's word yet, never said). `keepalive`: the page may be going. */
+ *  whether it applies (no contact, never said; after an agent, only with the agent's message unanswered).
+ *  `keepalive`: the page may be going. `why`: how the client left (beforeYouGo.ts Leaving); the server's reason
+ *  for not saying it comes back as `why` too (beforeYouGo.ts NOT_YET). */
 export interface BeforeYouGo {
   show: boolean
+  why?: string
   message?: string
   buttons?: ChatButton[]
   id?: string
   created_at?: string
 }
 
-export async function askBeforeYouGo(apiUrl: string, convId: string, keepalive = false): Promise<BeforeYouGo | null> {
+export async function askBeforeYouGo(
+  apiUrl: string, convId: string, keepalive = false, why?: string,
+): Promise<BeforeYouGo | null> {
   try {
-    const res = await apiFetch(`${apiUrl}/api/chat/session/${convId}/before-you-go`, { method: 'POST', keepalive })
+    const q = why ? `?why=${encodeURIComponent(why)}` : ''
+    const res = await apiFetch(`${apiUrl}/api/chat/session/${convId}/before-you-go${q}`, { method: 'POST', keepalive })
     if (!res.ok) return null
     const data = await res.json()
     if (!data || data.show !== true || typeof data.message !== 'string' || typeof data.id !== 'string') {
-      return { show: false }
+      return typeof data?.why === 'string' ? { show: false, why: data.why.slice(0, 32) } : { show: false }
     }
     return {
       show: true, message: data.message, buttons: readButtons(data.buttons), id: data.id,

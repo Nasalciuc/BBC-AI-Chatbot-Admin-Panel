@@ -126,7 +126,22 @@ export function tripFromTitle(h1: string): TripPayload | null {
   if ((m = s.match(/^(business|first) class flights from (.+)$/i))) {
     return compact({ source: 'route_page', origin_name: city(m[2]), cabin: m[1].toLowerCase() })
   }
+  // The Meta ads' pages (/lp/asia: "Business class to Asia", 25 Nov): the region is the card's place. Only words that
+  // read as a name: a tagline ("Business class to Europe for less") names no place, and the card asks without one.
+  if ((m = s.match(/^(business|first) class to (?:the )?(.+)$/i)) && readsAsPlace(m[2])) {
+    return compact({ source: 'route_page', destination_name: city(m[2]), cabin: m[1].toLowerCase() })
+  }
   return null
+}
+
+const PLACE_JOINERS = new Set(['of', 'the', 'and', 'de', 'del', 'la'])
+
+/** "Asia", "the Middle East", "South-East Asia", "Isle of Man": at most four words, each with a capital but the
+ *  joining ones. */
+function readsAsPlace(s: string): boolean {
+  const words = s.trim().split(/[\s-]+/).filter(Boolean)
+  return words.length > 0 && words.length <= 4
+    && words.every(w => PLACE_JOINERS.has(w.toLowerCase()) || /^\p{Lu}/u.test(w))
 }
 
 /** A trip the site handed over as fields (bbc-signals.astro: `window.bbcPage.trip`, or the detail of a

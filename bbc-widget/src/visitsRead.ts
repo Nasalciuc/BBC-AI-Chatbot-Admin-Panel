@@ -1,0 +1,395 @@
+/**
+ * The visit registry, the widget's pure part (contracts/live.md "The visit registry"; the network part is
+ * visits.ts). What a page's snapshot says: the page, where the visitor came from, the screen, the trip as codes and
+ * dates, the widget's events on the page as short words, the site's steps, the card and what came of it. Never what
+ * the visitor typed, a name, an e-mail or a phone: bbc-live drops anything outside these shapes again.
+ *
+ * No imports but types, so the tests run it in node (tests/visits.test.mjs).
+ */
+
+import type { TripPayload } from './tripContext'
+
+/** The events a page keeps (bbc-live keeps as many: VisitEvents). */
+export const MAX_EVENTS = 40
+/** The site's steps a page sends (bbc-live keeps as many: VisitSteps). */
+export const MAX_STEPS = 30
+
+/** The widget's events the registry keeps, as a short word and the properties that qualify it, in order. Anything
+ *  not listed is not kept. */
+export const VISIT_EVENTS: Readonly<Record<string, readonly string[]>> = {
+  proactive_eligible: ['moment', 'trigger', 'arm'],
+  proactive_shown: ['card', 'trigger', 'surface'],
+  proactive_dismissed: ['card_no', 'how'],
+  proactive_engaged: ['card_yes', 'reply'],
+  proactive_pill_shown: ['pill', 'channel'],
+  proactive_pill_opened: ['pill_open'],
+  proactive_pill_closed: ['pill_close'],
+  proactive_popup_held: ['popup_held'],
+  proactive_note_unanswered: ['note_unanswered'],
+  proactive_quote_unrecognized: ['quote_unrecognized'],
+  live_hello_shown: ['hello', 'where'],
+  live_hello_replied: ['hello_yes', 'where'],
+  live_hello_dismissed: ['hello_no', 'where'],
+  chat_tunnel_selected: ['chat_open', 'tunnel', 'via'],
+  chat_quick_reply_selected: ['chat_reply'],
+  chat_message_sent: ['chat_msg'],
+  chat_message_send_failed: ['chat_msg_failed'],
+  chat_channel_opened: ['channel_open', 'channel'],
+  chat_channel_given: ['contact', 'channel'],
+  contact_form_submitted: ['form_sent', 'tunnel'],
+  call_initiated: ['call', 'entry_point'],
+  chat_closed: ['chat_close'],
+  chat_before_you_go: ['before_you_go'],
+  widget_large_view: ['large_view'],
+}
+
+const WORD = /^[a-z0-9_]{1,24}$/
+
+/** One event as the registry keeps it: "card:kayak:card", "contact:sms", "chat_msg". Qualifiers are words from the
+ *  widget's own lists, never a value someone typed: one that isn't a word ends the token there. Null for an event
+ *  the registry doesn't keep. */
+export function eventToken(event: string, props: Record<string, unknown> | undefined): string | null {
+  const spec = VISIT_EVENTS[event]
+  if (!spec) return null
+  const [word, ...keys] = spec
+  const parts = [word]
+  for (const k of keys.slice(0, 2)) {
+    const v = props?.[k]
+    const s = typeof v === 'string' ? v.toLowerCase() : typeof v === 'boolean' ? String(v) : ''
+    if (!WORD.test(s)) break
+    parts.push(s)
+  }
+  return parts.join(':')
+}
+
+/** The page's events with one more: the same one again counts ("chat_msg*3"), at most MAX_EVENTS. */
+export function addEvent(list: readonly string[], token: string): string[] {
+  const out = [...list]
+  const last = out[out.length - 1]
+  if (last) {
+    const [name, n] = last.split('*')
+    if (name === token) {
+      out[out.length - 1] = `${token}*${Math.min((Number(n) || 1) + 1, 999)}`
+      return out
+    }
+  }
+  if (out.length < MAX_EVENTS) out.push(token)
+  return out
+}
+
+export type CardState = 'shown' | 'dismissed' | 'engaged'
+
+/** The card of this visit as the registry tells it (kept for the visit's pages: visits.ts, sessionStorage). */
+export interface VisitCard {
+  trigger: string
+  variant: string
+  surface: string
+  state: CardState
+  /** ms since the epoch, by this browser's clock: the snapshot sends how long ago, bbc-live keeps its own time. */
+  at: number
+  answer?: string
+  answeredAt?: number
+  /** The opening's own time (proactive.ts `shownAt`, the events' `opening_at`): only its answers are the card's. */
+  openingAt?: number
+  /** When a snapshot that carried the card left, once bbc-live answered it (2xx): the card is then the visit's
+   *  that snapshot joined. Never sent: bbc-live keeps its own times. */
+  confirmedAt?: number
+}
+
+// Every moment the widget shows a card for: `social` is the Meta ads' card (CodeRabbit #282, round 3).
+const TRIGGERS = new Set(['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'note'])
+const SURFACES = new Set(['card', 'panel', 'row'])
+/** How far an answer's own count of seconds may put its opening from the card's time and still be that opening,
+ *  for an answer that names no opening: the count is rounded to a second. */
+const SAME_OPENING_MS = 2_000
+
+/** The card after an event: the first card of the visit is the card; its answer only moves forward (an answer
+ *  stays an answer, whatever is closed afterwards), and only its own answer counts: a note that opened later and
+ *  was closed or answered is not what came of the card (CodeRabbit #282, round 3). Null stays null until a card
+ *  shows. */
+export function cardAfter(card: VisitCard | null, event: string, props: Record<string, unknown> | undefined,
+  nowMs: number): VisitCard | null {
+  const s = (k: string) => (typeof props?.[k] === 'string' ? (props[k] as string) : '')
+  const n = (k: string) => (typeof props?.[k] === 'number' && Number.isFinite(props[k]) ? (props[k] as number) : null)
+  if (event === 'proactive_shown') {
+    if (card || !TRIGGERS.has(s('trigger'))) return card
+    const shown: VisitCard = { trigger: s('trigger'),
+      variant: WORD.test(s('variant').toLowerCase()) ? s('variant').toLowerCase() : '',
+      surface: SURFACES.has(s('surface')) ? s('surface') : '', state: 'shown', at: nowMs }
+    const openingAt = n('opening_at')
+    if (openingAt !== null && openingAt > 0) shown.openingAt = openingAt
+    return shown
+  }
+  if (!card || card.state === 'engaged' || s('trigger') !== card.trigger) return card
+  // The card's own opening, not a later one of the same moment (a note closed, then a second note answered, even a
+  // second later; CodeRabbit #282, round 3): the opening the answer names is the card's. An answer or a card that
+  // names none: the seconds the answer counts since its opening showed put that opening at the card's time. An
+  // answer that counts none either is the card's, as before.
+  const openingAt = n('opening_at')
+  if (card.openingAt !== undefined && openingAt !== null) {
+    if (openingAt !== card.openingAt) return card
+  } else {
+    const since = n(event === 'proactive_engaged' ? 'seconds_to_reply' : 'seconds_visible')
+    if (since !== null && Math.abs(nowMs - since * 1000 - card.at) > SAME_OPENING_MS) return card
+  }
+  if (event === 'proactive_engaged') {
+    return { ...card, state: 'engaged', answer: WORD.test(s('reply')) ? s('reply') : '', answeredAt: nowMs }
+  }
+  if (event === 'proactive_dismissed' && card.state === 'shown') {
+    return { ...card, state: 'dismissed', answer: WORD.test(s('how')) ? s('how') : '', answeredAt: nowMs }
+  }
+  return card
+}
+
+/** A kept card read back, or null when it isn't one. */
+export function readVisitCard(raw: string | null): VisitCard | null {
+  let v: unknown = null
+  try { v = raw ? JSON.parse(raw) : null } catch { return null }
+  if (!v || typeof v !== 'object') return null
+  const c = v as Record<string, unknown>
+  if (c.state !== 'shown' && c.state !== 'dismissed' && c.state !== 'engaged') return null
+  if (typeof c.trigger !== 'string' || !TRIGGERS.has(c.trigger)) return null
+  if (typeof c.at !== 'number' || !Number.isFinite(c.at) || c.at <= 0) return null
+  const card: VisitCard = { trigger: c.trigger, variant: typeof c.variant === 'string' ? c.variant : '',
+    surface: typeof c.surface === 'string' ? c.surface : '', state: c.state, at: c.at }
+  if (typeof c.answer === 'string') card.answer = c.answer
+  if (typeof c.answeredAt === 'number' && Number.isFinite(c.answeredAt)) card.answeredAt = c.answeredAt
+  if (typeof c.openingAt === 'number' && Number.isFinite(c.openingAt) && c.openingAt > 0) card.openingAt = c.openingAt
+  if (typeof c.confirmedAt === 'number' && Number.isFinite(c.confirmedAt) && c.confirmedAt > 0) {
+    card.confirmedAt = c.confirmedAt
+  }
+  return card
+}
+
+/** bbc-live closes a visit after this long with no snapshot. */
+export const REGISTRY_QUIET_MS = 30 * 60_000
+/** The browser measures the quiet half hour by when its snapshots left, bbc-live by when they arrived: a slow
+ *  request moves the two apart. The browser counts a visit as over 2 minutes early, so a card it keeps is never one
+ *  bbc-live already ended; one it drops early only stops being re-sent (CodeRabbit #282, round 3). */
+export const QUIET_MARGIN_MS = 2 * 60_000
+const QUIET_SAFE_MS = REGISTRY_QUIET_MS - QUIET_MARGIN_MS
+
+/** What this browser knows of the registry's visit, from the snapshots bbc-live answered (any tab; localStorage):
+ *  `last`, when the last one left; `before`, when the last one before the current visit left (0 for none): the
+ *  visit began after a quiet half hour that ended then. A beacon is never answered, so it never counts. */
+export interface SentMark { last: number; before: number }
+
+/** A kept mark read back; nothing heard of yet when it isn't one. */
+export function readSentMark(raw: string | null): SentMark {
+  let v: unknown = null
+  try { v = raw ? JSON.parse(raw) : null } catch { /* none */ }
+  const m = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>
+  const ms = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : 0)
+  return { last: ms(m.last), before: ms(m.before) }
+}
+
+/** The mark once bbc-live took a snapshot that left at `sentAt`: one that left after a quiet half hour began a
+ *  new visit; one that left before the last one taken (answered late) changes nothing. */
+export function afterSent(mark: SentMark, sentAt: number): SentMark {
+  if (sentAt <= mark.last) return mark
+  if (mark.last && sentAt - mark.last >= QUIET_SAFE_MS) return { last: sentAt, before: mark.last }
+  return { last: sentAt, before: mark.before }
+}
+
+/** Whether a card still belongs to the registry's visit (CodeRabbit #282, round 3). Not the browser's count of
+ *  visits: the live list's beats keep that going after the snapshots stopped. Only what bbc-live answered counts:
+ *  - a card a snapshot carried and bbc-live answered is that visit's: kept while no answered snapshot began a new
+ *    visit after it, and the visit has not gone quiet since the last answered one;
+ *  - a card no answered snapshot carried yet (a beacon is never answered, and may never arrive) is the card of the
+ *    visit it showed in, by the answered snapshots alone (round 5). It goes with a visit a newer one began after (the
+ *    newer visit's first snapshot may come from another tab), and with the last answered visit once that one went
+ *    quiet. Shown after that visit went quiet, it belongs to the visit its next snapshot begins. Either way it lives
+ *    at most the quiet half hour after it showed. If bbc-live did get it, dropping it only stops it being re-sent:
+ *    bbc-live keeps a visit's card, and a snapshot without one changes nothing. */
+export function cardStillOn(card: VisitCard, mark: SentMark, nowMs: number): boolean {
+  if (card.confirmedAt !== undefined) return card.confirmedAt > mark.before && nowMs - mark.last < QUIET_SAFE_MS
+  // Shown while the visit before the current one was on: that visit's.
+  if (mark.before && card.at - mark.before < QUIET_SAFE_MS) return false
+  // Shown while the last answered visit was on: gone with it once it went quiet.
+  if (mark.last && card.at - mark.last < QUIET_SAFE_MS && nowMs - mark.last >= QUIET_SAFE_MS) return false
+  return nowMs - card.at < QUIET_SAFE_MS
+}
+
+/** The card once bbc-live answered a snapshot that left at `sentAt` carrying `carried`: the same card (shown at the
+ *  same time, the same moment) is confirmed from that snapshot on; any other card, or one already confirmed, stays
+ *  as it is. */
+export function cardConfirmed(card: VisitCard | null, carried: VisitCard | null, sentAt: number): VisitCard | null {
+  if (!card || !carried || card.confirmedAt !== undefined) return card
+  if (card.at !== carried.at || card.trigger !== carried.trigger) return card
+  return { ...card, confirmedAt: sentAt }
+}
+
+/** The card kept for this tab, when the registry's visit it belongs to goes on; null otherwise. */
+export function keptCardFor(raw: string | null, mark: SentMark, nowMs: number): VisitCard | null {
+  const card = readVisitCard(raw)
+  return card && cardStillOn(card, mark, nowMs) ? card : null
+}
+
+/** What keptCardFor reads back. */
+export function cardToKeep(card: VisitCard): string {
+  return JSON.stringify(card)
+}
+
+/** The page's one waiting snapshot (visits.ts): asked for again, it replaces the one waiting; sent now, the one
+ *  waiting goes with it; stopped, nothing waits (the teardown cancels what an event scheduled; CodeRabbit #282,
+ *  round 3). The timers come in for the tests. */
+export function snapshotTimer(run: () => void, set: (fn: () => void, ms: number) => unknown = setTimeout,
+  clear: (t: unknown) => void = (t) => clearTimeout(t as ReturnType<typeof setTimeout>)): {
+  soon: (ms: number) => void; now: () => void; cancel: () => void; waiting: () => boolean
+} {
+  let pending: unknown = null
+  const cancel = () => {
+    if (pending === null) return
+    clear(pending)
+    pending = null
+  }
+  return {
+    soon: (ms) => {
+      cancel()
+      pending = set(() => { pending = null; run() }, ms)
+    },
+    now: () => { cancel(); run() },
+    cancel,
+    waiting: () => pending !== null,
+  }
+}
+
+/** How long the registry waits to ask for the page's config again after an answer "for now" or none at all: 30 s,
+ *  twice as long each time after, at most 5 minutes (the live list's wait). */
+export function configRetryMs(tries: number): number {
+  return Math.min(5 * 60_000, 30_000 * 2 ** Math.max(0, Math.floor(tries)))
+}
+
+/** The registry's start (visits.ts): the page's config, asked until it says on or off. On (`visits`): `on` runs,
+ *  once. An answer "for now" (`later`) or none at all: asked again (configRetryMs). Off: nothing more. Cancelled:
+ *  nothing more, not even for an answer on its way (CodeRabbit #282, round 4). The timers come in for the tests. */
+export function whenRegistryOn(ask: () => Promise<{ visits?: boolean; later?: boolean }>, on: () => void,
+  set: (fn: () => void, ms: number) => unknown = setTimeout,
+  clear: (t: unknown) => void = (t) => clearTimeout(t as ReturnType<typeof setTimeout>)): { cancel: () => void } {
+  let cancelled = false
+  let timer: unknown = null
+  let tries = 0
+  const again = () => {
+    if (cancelled) return
+    timer = set(() => { timer = null; go() }, configRetryMs(tries++))
+  }
+  const go = () => {
+    if (cancelled) return
+    let answer: Promise<{ visits?: boolean; later?: boolean }>
+    try { answer = ask() } catch { again(); return }
+    answer.then((cfg) => {
+      if (cancelled) return
+      if (cfg.later) again()
+      else if (cfg.visits) on()
+    }, again)
+  }
+  go()
+  return {
+    cancel: () => {
+      cancelled = true
+      if (timer !== null) clear(timer)
+      timer = null
+    },
+  }
+}
+
+const COMPARISON = new Set(['kayak', 'skyscanner', 'momondo', 'kiwi', 'cheapflights', 'expedia'])
+const PAID = new Set(['cpc', 'ppc', 'paid', 'paidsearch', 'paid_search', 'paidsocial', 'paid_social', 'cpm'])
+const SEARCH = /(^|\.)(google|bing|yahoo|duckduckgo|ecosia|yandex|baidu|brave)\.[a-z.]+$/
+const META = new Set(['facebook', 'fb', 'instagram', 'ig', 'meta'])
+
+/** The host of an address, lowercase, or ''. */
+export function hostOf(url: string | undefined): string {
+  if (!url) return ''
+  try { return new URL(url).hostname.toLowerCase() } catch { return '' }
+}
+
+/** Where the visitor came from, one word: a comparison site, an ad (Google, Meta, Bing, another), a search engine,
+ *  another site, or nothing (direct). `utm` as utm.ts getUtm keeps it: with marketing consent off it names no
+ *  source, and the visit reads as direct or by its referrer only. */
+export function channelOf(utm: Record<string, string | undefined>, referrer: string, siteHost: string): string {
+  const src = (utm.utm_source || '').trim().toLowerCase()
+  const medium = (utm.utm_medium || '').trim().toLowerCase()
+  if (COMPARISON.has(src) || utm.kayak_click_id || utm.kclid || utm.skyscanner_click_id) return 'kayak'
+  if (utm.gclid || (src.startsWith('google') && PAID.has(medium))) return 'google'
+  if (utm.fbclid || META.has(src)) return 'meta'
+  if (utm.msclkid || ((src === 'bing' || src === 'microsoft') && PAID.has(medium))) return 'bing'
+  if (PAID.has(medium)) return 'ads'
+  const ref = hostOf(referrer)
+  const own = siteHost.toLowerCase().replace(/^www\./, '')
+  if (!ref || (own && (ref === own || ref.endsWith('.' + own)))) return src ? 'other' : 'direct'
+  return SEARCH.test(ref) ? 'search' : 'referral'
+}
+
+/** The highest snapshot number bbc-live takes (a page sends far fewer). */
+export const MAX_SEQ = 10_000
+
+/** A snapshot's body (POST /v1/visit). Only what bbc-live keeps; it checks all of it again. */
+export function visitBody(o: {
+  pageId: string; path: string; pageType?: string | null; pageMs: number; seenMs: number
+  trip: TripPayload | null; utm: Record<string, string | undefined>; referrer: string; siteHost: string
+  phone: boolean; site: string; lang?: string; tz?: string; country?: string; phSession?: string
+  events: readonly string[]; steps: string; card: VisitCard | null; hasChat: boolean; conversationId?: string | null
+  nowMs: number; pass?: string
+  /** The snapshot's number on its page, 1 and up: bbc-live keeps a page's newest by it (a fetch and the last beacon
+   *  can cross on the way, in the same second; CodeRabbit #282, round 3). */
+  seq?: number
+}): Record<string, unknown> {
+  const path = (o.path || '/').split(/[?#]/)[0].slice(0, 120) || '/'
+  const t = o.trip
+  const code = (v?: string) => (v && /^[A-Z]{3}$/.test(v.toUpperCase()) ? v.toUpperCase() : undefined)
+  const day = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined)
+  const secs = (ms: number) => Math.max(0, Math.min(86_400, Math.floor(ms / 1000)))
+  const src = (o.utm.utm_source || '').trim().toLowerCase()
+  const b: Record<string, unknown> = {
+    page_id: o.pageId, page: path.startsWith('/') ? path : '/', page_s: secs(o.pageMs), seen_s: secs(o.seenMs),
+    source: COMPARISON.has(src) || o.utm.kayak_click_id || o.utm.kclid || o.utm.skyscanner_click_id ? 'kayak'
+      : o.utm.gclid || o.utm.msclkid || o.utm.fbclid || PAID.has((o.utm.utm_medium || '').trim().toLowerCase()) ? 'ads'
+        : 'site',
+    channel: channelOf(o.utm, o.referrer, o.siteHost),
+    device: o.phone ? 'phone' : 'computer', site: o.site, has_chat: o.hasChat,
+    events: o.events.slice(0, MAX_EVENTS).join(';'), steps: o.steps,
+  }
+  if (o.pageType) b.page_type = o.pageType
+  if (o.seq && Number.isInteger(o.seq) && o.seq >= 1) b.seq = Math.min(o.seq, MAX_SEQ)
+  for (const k of ['utm_source', 'utm_medium', 'utm_campaign'] as const) {
+    const v = (o.utm[k] || '').trim()
+    if (v && !v.includes('@') && v.length <= 80) b[k] = v
+  }
+  const ref = hostOf(o.referrer)
+  if (ref) b.referrer = ref
+  if (t) {
+    const pax = (t.adults || 0) + (t.children || 0) + (t.infants || 0)
+    const from = code(t.origin_code), to = code(t.destination_code), depart = day(t.depart_date), ret = day(t.return_date)
+    if (from) b.from = from
+    if (to) b.to = to
+    if (depart) b.depart = depart
+    if (ret) b.return = ret
+    if (t.cabin) b.cabin = t.cabin
+    if (pax >= 1 && pax <= 9) b.pax = pax
+  }
+  if (o.lang) b.lang = o.lang
+  if (o.tz) b.tz = o.tz
+  if (o.country && /^[A-Z]{2}$/.test(o.country)) b.country = o.country
+  if (o.phSession) b.ph_session = o.phSession
+  if (o.conversationId && /^[0-9a-f-]{36}$/.test(o.conversationId)) b.conversation_id = o.conversationId
+  const c = o.card
+  if (c) {
+    const card: Record<string, unknown> = { trigger: c.trigger, variant: c.variant, surface: c.surface, state: c.state,
+      s: secs(o.nowMs - c.at) }
+    if (c.state !== 'shown' && c.answeredAt) {
+      card.answer = c.answer || ''
+      card.answer_s = secs(o.nowMs - c.answeredAt)
+    }
+    b.card = card
+  }
+  if (o.pass) b.pass = o.pass
+  return b
+}
+
+/** A random page id (bbc-live: 6 to 32 letters, digits, - or _). */
+export function newPageId(rand: () => number = Math.random): string {
+  let id = 'p'
+  while (id.length < 14) id += Math.floor(rand() * 36).toString(36)
+  return id
+}

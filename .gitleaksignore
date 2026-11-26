@@ -49,8 +49,17 @@ f71f63a1df229c5d77d43830b07a0fa4995684b9:bbc-chatbot-api/tests/test_db_transport
 # test (#273); the key is "value" now, so the line matches that one commit only
 c0fdaf1606aaf78b41c54f2f53f3d5af42d9a12b:bbc-widget/tests/live.test.mjs:generic-api-key:59
 
+# bbc-chatbot-api/tests/test_contact_hold.py: a made-up, JWT-shaped SUPABASE_KEY
+# for the settings the claim tests import ({"alg":"HS256","typ":"JWT"}, payload
+# {"role":"x"}, signature the word "sig"), checked by hand (lever 2, 25 Nov)
+92c39a7ab0fcecf48dda6d296f9436ba8960e74b:bbc-chatbot-api/tests/test_contact_hold.py:generic-api-key:17
+
 # tests/test_crm_leads_api.py, tests/test_crm_leads_api_sweep.py: the same made-up
 # SUPABASE_KEY placeholder, in the first version of the CRM button's tests (#280);
 # both files now build it at run time, so each line matches that one commit only
 bb13c7621140bc5579832bd7d0ca88643b97c164:bbc-chatbot-api/tests/test_crm_leads_api.py:generic-api-key:15
 5cfb4474cac7c4a61518c5ccd9609d32dce6db45:bbc-chatbot-api/tests/test_crm_leads_api_sweep.py:generic-api-key:12
+
+# bbc-chatbot-api/tests/test_live_bot.py: a made-up jwt_secret for the bot keys' tests, in the first version of
+# the agent's-bot tests (#287); the file now builds it at run time, so the line below matches that one commit only
+5fd6a666ecabb3d36e776fbf3f30c1001c380c55:bbc-chatbot-api/tests/test_live_bot.py:generic-api-key:40
