@@ -227,7 +227,9 @@ What the API does with an event:
   process's: an event's place among its person's, each take (`msgr:inbox:last`), a send's mark, the gateway's right,
   and a kept event's age. Processes whose clocks disagree, however far, still tell which came first: a later event
   is never taken for an earlier one, a take after a send began, or after the gateway's right, is never missed, and
-  how long a mark or a right has stood is told alike by all.
+  how long a mark or a right has stood is told alike by all. Two takes of the person's that read the same
+  microsecond still have an order: the one whose take ran first comes first, the other a microsecond after it, so
+  two events never each answer the other first.
 
 ## The API → the gateway
 
