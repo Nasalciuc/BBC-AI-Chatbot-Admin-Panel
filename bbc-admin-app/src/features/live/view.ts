@@ -106,6 +106,10 @@ export function sourceLabel(source: string): string {
  *  `bot:<agent id>`, for the hello's 15 minutes. The bot's hellos never count in the three an agent holds. */
 export const BOT_HOLDER = 'bot:'
 
+/** The "Your bot" card on this page. Hidden for now (the owner, 26 Nov 2026: "ascunde asta repede de pe frontend"): the
+ *  key's routes and the bot's API stay as they are; true shows the card again to whoever may say hello. */
+export const BOT_CARD_SHOWN = false
+
 /** The day an agent's bot key works until ("Feb 23, 2027"); '' for none. */
 export function keyDay(iso: string | null | undefined): string {
   const at = iso ? new Date(iso) : null
