@@ -899,10 +899,10 @@ async def test_a_chats_rows_go_out_in_order(redis):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("held", ["push", "outbox"])
 async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypatch, held):
-    """CodeRabbit #288: the agent's message stored, then its live push slow: a line stored after it, for the same
-    chat, goes out after it (its place in the chat's order is taken as it is stored, before the push). Rule 5: the
-    agent's message held up in its outbox write is not stored yet, so a line stored meanwhile is the earlier one in
-    the chat, and goes first."""
+    """CodeRabbit #288: the agent's message stored, then its live push slow: a line saved meanwhile for the same chat
+    goes out after it, and reaches the live stream after it (the push is part of the row's save, in the chat's order:
+    the line's save waits for it). Rule 5: the agent's message held up in its outbox write is not stored yet, so a
+    line stored meanwhile is the earlier one in the chat, and goes first, on both."""
     import asyncio
 
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
@@ -914,11 +914,13 @@ async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypa
 
     gate, holding = asyncio.Event(), asyncio.Event()
     real_hset = redis.hset
+    pushed: list = []
 
     async def push(conversation_id, row):
         if held == "push" and row["role"] == "agent":
             holding.set()
             await gate.wait()
+        pushed.append(row["content"])
 
     async def outbox_held(*a, **kw):
         if held == "outbox" and not holding.is_set():
@@ -934,9 +936,12 @@ async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypa
             monkeypatch.setattr(redis, "hset", outbox_held)
             agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
             await asyncio.wait_for(holding.wait(), 1)
-            await add_message(CONV, "system", "Ana shared the itinerary")
+            line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+            for _ in range(5):
+                await asyncio.sleep(0)  # every chance to go on
             gate.set()
-            await agent
+            await asyncio.wait_for(agent, 1)
+            await asyncio.wait_for(line, 1)
             await mc.drain(CONV)
             await asyncio.sleep(0)
             await mc.drain(CONV)
@@ -944,6 +949,7 @@ async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypa
         c.stop()
     stored = [r["content"] for r in c.rows]
     assert order == stored, "out in the order stored"
+    assert pushed == stored, "on the live stream in the order stored"
     assert stored == (["Hi, I'm Ana.", "Ana shared the itinerary"] if held == "push"
                       else ["Ana shared the itinerary", "Hi, I'm Ana."])
 
@@ -1340,6 +1346,78 @@ async def test_a_cancelled_agents_message_is_saved_as_if_its_request_had_not_bee
         assert notes == ([mc.NOT_SENT_OTHER] if insert == "retry_answer_lost" else []) and out["told"] == len(notes)
     assert not await redis.hgetall(mc.OUTBOX)
     assert agent["n"] == 2 and inserts["n"] == 3 + len(notes), "asked again once, under its id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_then", ["cancelled", "waited"])
+async def test_an_agents_message_reaches_the_live_stream_once_in_the_chats_order_whatever_its_request(redis,
+                                                                                                    request_then):
+    """CodeRabbit #288, the real db.add_message: an agent's message (their name riding the live copy) whose request is
+    cancelled while its insert is on its way, the row stored all the same. Its save goes on and publishes the row to
+    the live stream itself, once, with the agent's name, before the chat's next row is published. Rule 5: a request
+    that waits, the same: once each, in order, never a second copy."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+
+    def insert_row(payload):
+        def execute():
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert_row
+    landed, answer = asyncio.Event(), asyncio.Event()
+
+    async def run_sync(fn, **kw):
+        out = fn()  # the database has it
+        if out.data[0]["role"] == "agent" and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    pushed: list = []
+
+    async def push(conversation_id, row):
+        pushed.append((row["content"], row.get("agent_name")))
+
+    gw = Gateway([])
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+            patch("app.realtime.manager.manager.push", new=push):
+        from app.services.conversation_service import add_message
+
+        first = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana.", live_extra={"agent_name": "Ana"}))
+        await asyncio.wait_for(landed.wait(), 1)
+        if request_then == "cancelled":
+            first.cancel()  # the request goes, its row's insert on its way
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(first, 1)  # at once
+        line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert pushed == [] and not line.done(), "nothing published before the agent's row is stored"
+        answer.set()
+        if request_then == "waited":
+            assert (await asyncio.wait_for(first, 1))["content"] == "Hi, I'm Ana."
+        await asyncio.wait_for(line, 1)
+        await asyncio.wait_for(mc.saved(), 1)
+        await mc.drain(CONV)
+        await asyncio.sleep(0)
+        await mc.drain(CONV)
+    assert pushed == [("Hi, I'm Ana.", "Ana"), ("Ana shared the itinerary", None)], "once each, in the chat's order"
+    assert gw.sent == ["Hi, I'm Ana.", "Ana shared the itinerary"]
 
 
 @pytest.mark.asyncio

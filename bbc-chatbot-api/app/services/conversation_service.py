@@ -76,22 +76,6 @@ async def add_message(conversation_id: str, role: str, content: str,
             if follow is not None:
                 await follow
 
-    row: Optional[dict] = None
-    if placed:
-        # An agent's message, a "joined" line, a Messenger turn's own rows: stored, placed (or left unsure) and what
-        # its place left to do done, as one piece of work that holds the chat's order to its end. A caller cancelled
-        # meanwhile (a request, a turn, a turn's part stopped by its timeout) only stops waiting for it: its insert
-        # may land all the same, and then takes its place before the chat's next row may go, the retry under its id
-        # and the unsure mark included (never left "waiting"). A turn's row joins the turn's answer while the turn is
-        # on, and nothing once it stopped with no answer (its event is answered again).
-        async def saved_in_order() -> Optional[dict]:
-            stored = await store()
-            await follow_on()
-            return stored
-
-        row = await messenger_channel.save_in_order(conversation_id, saved_in_order())
-    else:
-        row = await store()  # no place to take: only stored
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live
@@ -101,10 +85,32 @@ async def add_message(conversation_id: str, role: str, content: str,
     # reply before the widget's typewriter finishes. Both consumers dedupe by
     # id and keep the FIRST copy, so a later push of the same row adds
     # nothing: what the client must see goes on this one (`live_extra`).
-    if row and role in ("user", "agent", "system"):
+    async def publish(stored: Optional[dict]) -> None:
+        if not stored or role not in ("user", "agent", "system"):
+            return
         try:
             from app.realtime.manager import manager
-            await manager.push(conversation_id, {**row, **live_extra} if live_extra else row)
+            await manager.push(conversation_id, {**stored, **live_extra} if live_extra else stored)
         except Exception as e:  # noqa: silent — the message is SAVED; a failed fan-out must never fail the save
             logger.warning(f"[sse] push after add_message failed conv={conversation_id}: {e}")
+
+    row: Optional[dict] = None
+    if placed:
+        # An agent's message, a "joined" line, a Messenger turn's own rows: stored, placed (or left unsure), what its
+        # place left to do done, and published, as one piece of work that holds the chat's order to its end. A caller
+        # cancelled meanwhile (a request, a turn, a turn's part stopped by its timeout) only stops waiting for it: its
+        # insert may land all the same, and then takes its place before the chat's next row may go, the retry under
+        # its id and the unsure mark included (never left "waiting"), and reaches the live stream once, before the
+        # chat's next row does. A turn's row joins the turn's answer while the turn is on, and nothing once it stopped
+        # with no answer (its event is answered again).
+        async def saved_in_order() -> Optional[dict]:
+            stored = await store()
+            await follow_on()
+            await publish(stored)
+            return stored
+
+        row = await messenger_channel.save_in_order(conversation_id, saved_in_order())
+    else:
+        row = await store()  # no place to take: only stored, and published
+        await publish(row)
     return row
