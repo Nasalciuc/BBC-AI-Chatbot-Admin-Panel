@@ -326,7 +326,12 @@ func (s *Server) handle(ctx context.Context, in meta.Inbound) {
 	if len(answer.Replies) == 0 {
 		return
 	}
-	p, err := s.deliver(ctx, page, in.PSID, answer.Replies, "")
+	// Within SendBudget, as an agent's send: the API reads the right to send these as the gateway's, on its way, for
+	// 90 seconds from when it gave them back (contracts/messenger.md), and a later event of the person's goes on after
+	// that, so the send is over by then, whatever came of it.
+	sendCtx, cancel := context.WithTimeout(ctx, s.Cfg.SendBudget)
+	p, err := s.deliver(sendCtx, page, in.PSID, answer.Replies, "")
+	cancel()
 	s.Health.Replies.Add(int64(p.Whole))
 	if err != nil {
 		kind := s.Health.sendFailed(err)

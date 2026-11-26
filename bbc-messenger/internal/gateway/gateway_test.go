@@ -944,6 +944,36 @@ func TestSendFailuresAreCountedByKindAndOnlyMetasOwnTroubleIsTriedAgain(t *testi
 	}
 }
 
+// The API reads an event's replies as on their way through the gateway for 90 seconds, then as over, and lets a later
+// event of the person's go on: the gateway's send of them keeps to SendBudget, as an agent's does, the wait for the
+// person's other sends and Meta's retries included.
+func TestAnEventsRepliesAreSentWithinTheSendBudget(t *testing.T) {
+	r := newRigWith(t, 1, 4, func(c *Config) {
+		c.SendBudget = 300 * time.Millisecond
+		c.CallTimeout = 50 * time.Millisecond
+		c.Retries = []time.Duration{200 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond}
+	})
+	r.api.answer = func(int, map[string]any) (int, string) { return 200, `{"replies":[{"text":"Hello"}]}` }
+	var sends atomic.Int32
+	r.graph.answer = func(call map[string]any) (int, string) {
+		if _, ok := call["sender_action"]; ok {
+			return 200, `{}`
+		}
+		sends.Add(1)
+		return 500, `{"error":{"message":"oops","code":2}}` // Meta's own trouble: tried again while there is time
+	}
+	start := time.Now()
+	body := batch(pageID, messageEvent("m1", "a", 100, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return r.srv.Health.OutOfTime.Load() == 1 }, "the send's time over")
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("the event's send outlived its budget: %v", took)
+	}
+	if sends.Load() != 2 || r.srv.Health.Replies.Load() != 0 || r.srv.Health.SendFailed.Load() != 1 {
+		t.Errorf("sends %d, %v", sends.Load(), r.srv.Health.snapshot())
+	}
+}
+
 func TestALongReplyGoesAsSeveralWithTheButtonsOnTheLast(t *testing.T) {
 	r := newRig(t, 1, 4)
 	long := strings.Repeat("word ", 900) // 4500 characters
