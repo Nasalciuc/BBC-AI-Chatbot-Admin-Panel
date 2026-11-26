@@ -204,9 +204,14 @@ func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
 
 	// A 500 whose body is Meta's shape but not whole (a field of the wrong type): its code 2 is not believed, and the
 	// call may be with Meta: unknown, never sent again. Rule 5: the same body whole is Meta saying it did not send it.
+	// Longer than what is read, its first part whole JSON (spaces follow it): not the answer, so unknown too; one
+	// that ends at the most read is whole.
+	refusal := `{"error":{"code":2,"message":"Please retry"}}`
 	for body, kind := range map[string]string{
-		`{"error":{"code":2,"message":123}}`:            "unknown",
-		`{"error":{"code":2,"message":"Please retry"}}`: "temporary",
+		`{"error":{"code":2,"message":123}}`:                  "unknown",
+		refusal + strings.Repeat(" ", maxAnswer):              "unknown",
+		refusal + strings.Repeat(" ", maxAnswer-len(refusal)): "temporary",
+		refusal: "temporary",
 	} {
 		half := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -215,7 +220,7 @@ func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
 		_, err = client(half.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
 		half.Close()
 		if KindOf(err) != kind || Retryable(err) != (kind == "temporary") {
-			t.Errorf("500 %s: %v %s %v", body, err, KindOf(err), Retryable(err))
+			t.Errorf("500 %.60q (%d bytes): %v %s %v", body, len(body), err, KindOf(err), Retryable(err))
 		}
 	}
 

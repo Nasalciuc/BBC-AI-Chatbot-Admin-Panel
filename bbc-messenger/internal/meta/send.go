@@ -200,22 +200,29 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 		return err
 	}
 	defer func() { _ = res.Body.Close() }()
-	data, readErr := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	// One byte past the most read tells a body longer than that from one that ends there: the first part of a longer
+	// one can be whole JSON (spaces may follow it), and it is not the answer.
+	data, readErr := io.ReadAll(io.LimitReader(res.Body, maxAnswer+1))
+	whole := readErr == nil && len(data) <= maxAnswer
 	if res.StatusCode/100 == 2 {
 		// Meta took it: an answer cut short or not JSON is still a message sent, never one to send again.
-		if out != nil && readErr == nil {
+		if out != nil && whole {
 			_ = json.Unmarshal(data, out) // the message id is for the logs only
 		}
 		return nil
 	}
 	var e graphError
-	if readErr != nil || json.Unmarshal(data, &e) != nil {
-		// Cut short, or not Meta's error shape whole (a field of the wrong type leaves the others filled): only the
-		// status says what happened, so a code read from it never makes a call one to try again.
+	if !whole || json.Unmarshal(data, &e) != nil {
+		// Cut short, longer than it may be, or not Meta's error shape whole (a field of the wrong type leaves the
+		// others filled): only the status says what happened, so a code read from it never makes a call one to try
+		// again.
 		e = graphError{}
 	}
 	return &Error{Status: res.StatusCode, Code: e.Error.Code, Subcode: e.Error.Subcode, Message: e.Error.Message}
 }
+
+// maxAnswer is the most of a Send API answer that is read (Meta's are a few hundred bytes).
+const maxAnswer = 64 << 10
 
 // graphError is the Send API's error body.
 type graphError struct {
