@@ -200,8 +200,11 @@ What the API does with an event:
   `msgr:inbox:last:<visitor id>`: never Meta's time, which two events can share). One taken since, its replies maybe
   out already: never sent after them (`late_dropped`), nothing waiting on it. A putting back Redis ran and lost the
   answer of leaves the event in the inbox under the new mark, with nothing sent: its process holds the new mark beside
-  the old one, reads the mark at its next minute, and sends the replies then, once (another process reads the new
-  mark as on its way meanwhile); one that did not run is tried again from the old mark.
+  the old one and reads the mark at its next minute. The new one there, it sends the replies late from it, once,
+  through the same check as from the old one: never after an event of the person's taken since (its process may
+  have been cut off again meanwhile, and another one let the event go and answered a later one). Another process
+  reads the new mark as on its way while its process lives; a putting back that did not run is tried again from the
+  old mark.
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -252,8 +255,9 @@ the live push, even when the request that stored it was cancelled meanwhile. A r
 message, a "joined" line, a Messenger turn's own rows) is saved as one piece of work that holds the chat's order to
 its end: the insert, its retry under the same id (a row stored with its answer lost comes back, stored before), the
 `unsure` mark when its save is still not known (the recovery minute looks its row up while the process lives:
-stored, its agent is told it was not sent), and what its place leaves to do (its delivery crossed out, its agent
-told). A caller cancelled meanwhile (a request, a turn, a turn's own part stopped by its timeout) only stops waiting
+stored, its agent is told it was not sent), what its place leaves to do (its delivery crossed out, its agent told),
+and its copy on the live stream (once, before the chat's next row's, with what the panel shows of its agent). A
+caller cancelled meanwhile (a request, a turn, a turn's own part stopped by its timeout) only stops waiting
 for it, at once: never the save, whose insert may land all the same, and the chat's next row waits for the save,
 never for a caller. A turn's rows join the turn's answer while the turn is on (a part stopped by its timeout: the
 turn goes on, and what it stores next waits for that save, so its answer keeps the order stored); a row stored once
