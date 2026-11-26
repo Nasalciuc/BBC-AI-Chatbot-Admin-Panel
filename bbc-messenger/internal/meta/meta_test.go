@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -303,6 +306,113 @@ func TestACallIsSentAgainOnlyWhenNoneOfItsTriesCanBeWithMeta(t *testing.T) {
 			if errors.As(err, &ue) != c.unconfirmed || Retryable(err) == c.unconfirmed ||
 				(KindOf(err) == "unknown") != c.unconfirmed {
 				t.Errorf("%v: %s, tried again %v", err, KindOf(err), Retryable(err))
+			}
+		})
+	}
+}
+
+// h2Peer is a server that speaks HTTP/2 with prior knowledge (no TLS: frames written by hand, as the stdlib has no
+// HTTP/2 server that answers a stream with PROTOCOL_ERROR). It takes each request whole, then answers it: "reset"
+// resets its stream with PROTOCOL_ERROR, as a peer may once it carried the request out; "ok" answers 200. It counts
+// the requests begun (each a HEADERS frame from the client).
+func h2Peer(t *testing.T, answer string) (string, *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var begun atomic.Int32
+	var mu sync.Mutex
+	var conns []net.Conn
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	frame := func(w io.Writer, typ, flags byte, stream uint32, payload []byte) error {
+		h := []byte{byte(len(payload) >> 16), byte(len(payload) >> 8), byte(len(payload)), typ, flags, 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(h[5:], stream)
+		_, err := w.Write(append(h, payload...))
+		return err
+	}
+	serve := func(c net.Conn) {
+		preface := make([]byte, len("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))
+		if _, err := io.ReadFull(c, preface); err != nil || frame(c, 0x4, 0, 0, nil) != nil { // SETTINGS: none
+			return
+		}
+		h := make([]byte, 9)
+		for {
+			if _, err := io.ReadFull(c, h); err != nil {
+				return
+			}
+			payload := make([]byte, int(h[0])<<16|int(h[1])<<8|int(h[2]))
+			if _, err := io.ReadFull(c, payload); err != nil {
+				return
+			}
+			typ, flags, stream := h[3], h[4], binary.BigEndian.Uint32(h[5:])&0x7fffffff
+			var err error
+			switch {
+			case typ == 0x4 && flags&0x1 == 0: // the client's SETTINGS, acknowledged
+				err = frame(c, 0x4, 0x1, 0, nil)
+			case typ == 0x6 && flags&0x1 == 0: // PING
+				err = frame(c, 0x6, 0x1, 0, payload)
+			case typ == 0x1: // HEADERS: a request begins
+				begun.Add(1)
+			}
+			if err == nil && (typ == 0x1 || typ == 0x0) && flags&0x1 != 0 { // END_STREAM: the request is whole
+				if answer == "reset" {
+					err = frame(c, 0x3, 0, stream, []byte{0, 0, 0, 0x1}) // RST_STREAM(PROTOCOL_ERROR)
+				} else {
+					err = frame(c, 0x1, 0x5, stream, []byte{0x88}) // HEADERS ":status: 200", END_HEADERS|END_STREAM
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			go serve(c)
+		}
+	}()
+	return "http://" + ln.Addr().String(), &begun
+}
+
+func TestACallAPeerResetWithAProtocolErrorIsNeverSentAgain(t *testing.T) {
+	var p http.Protocols
+	p.SetUnencryptedHTTP2(true) // HTTP/2 with prior knowledge, as Meta's edge speaks it over TLS
+	for answer, want := range map[string]string{"reset": "unknown", "ok": ""} {
+		t.Run(answer, func(t *testing.T) {
+			url, begun := h2Peer(t, answer)
+			tr := &http.Transport{Protocols: &p}
+			defer tr.CloseIdleConnections()
+			cl := &Client{HTTP: &http.Client{Transport: tr}, Base: url, Version: "v26.0"}
+			// Go's transport would begin it again at once on a new stream; the deadline ends its backoff before any
+			// try after that, so a second one shows within it.
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			_, err := cl.Send(ctx, "tok", "PSID-1", Reply{Text: "Hi"}, "")
+			var ue *Unconfirmed
+			if want == "unknown" && (!errors.As(err, &ue) || KindOf(err) != "unknown" || Retryable(err)) {
+				t.Errorf("reset once Meta had it whole: %v %s %v", err, KindOf(err), Retryable(err))
+			}
+			// Rule 5: answered, it is a message sent.
+			if want == "" && err != nil {
+				t.Errorf("answered 200: %v", err)
+			}
+			if n := begun.Load(); n != 1 {
+				t.Errorf("begun %d times", n)
 			}
 		})
 	}

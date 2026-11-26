@@ -161,12 +161,12 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	if err != nil {
 		return err
 	}
-	// Whether Meta may have the whole request. The transport may try one call more than once (again, on a new
-	// connection, after a try it knows Meta did not take: nothing written, a stream refused), each try's write goes
-	// on apart from Do, and Do can return (a deadline, a cancel, a connection lost) before a try's end is told, which
-	// can then come after the next try began (HTTP/1 and HTTP/2 both): the tries are counted, never paired. Only
-	// two things say Meta does not have it: no try ever had a connection, or each one that did was told its write
-	// failed and none that it wrote.
+	// Whether Meta may have the whole request. The transport never sends a call again once any of it went out
+	// (GetBody, below), but it may begin one again after a try that sent nothing of it (a connection found unusable
+	// first), each try's write goes on apart from Do, and Do can return (a deadline, a cancel, a connection lost)
+	// before a try's end is told, which can then come after the next try began (HTTP/1 and HTTP/2 both): the tries
+	// are counted, never paired. Only two things say Meta does not have it: no try ever had a connection, or each one
+	// that did was told its write failed and none that it wrote.
 	var conns, wrote, writesFailed atomic.Int32
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GotConn: func(httptrace.GotConnInfo) { conns.Add(1) },
@@ -183,6 +183,12 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	if err != nil {
 		return err
 	}
+	// A body the transport can read again (GetBody, set for a bytes.Reader) lets it send the call again on its own
+	// before Do returns: HTTP/2 does after a stream the peer reset with PROTOCOL_ERROR (golang/go#47635), which never
+	// says Meta did not carry it out (RFC 9113 8.7 says that of REFUSED_STREAM and GOAWAY alone), and the Send API takes
+	// no key that would make a second send the same message. Without it, a call whose body was read is sent once:
+	// what to do after is this package's to say (Unconfirmed, Retryable).
+	req.GetBody = nil
 	req.Header.Set("Content-Type", "application/json")
 	// The token in a header, never in the address: an address ends up in logs.
 	req.Header.Set("Authorization", "Bearer "+token)
