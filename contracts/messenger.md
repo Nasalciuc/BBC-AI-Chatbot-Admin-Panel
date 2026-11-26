@@ -180,9 +180,10 @@ What the API does with an event:
   answered by that turn, gets no count written back, which would stay with no expiry; a turn that ran keeps its try,
   its answer kept or not: one Redis did not take is held by its process, written at its next minute and sent then
   without a try)
-  (`recover_given_up`, logged without its words). The limit: an event given up in the moment between a later event of
-  its person's reading it, to answer it first, and claiming it still gets that turn. Its replies go out if the
-  gateway is reached then, never later: the event is given up, and counted so, as if that turn had not run. Redis down: not kept (`not_kept`), the gateway's tries only. The
+  (`recover_given_up`, logged without its words). An event given up in the moment between a later event of its
+  person's reading it, to answer it first, and claiming it never gets that turn: at its own step it reads as gone from
+  the inbox, the later one found kept, so the later one waits (409) with nothing sent and, delivered again, goes on;
+  the event stays given up, counted. Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
   that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send).
