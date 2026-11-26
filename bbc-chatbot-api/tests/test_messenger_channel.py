@@ -4199,6 +4199,57 @@ async def test_a_take_redis_may_have_run_waits_for_a_delivery_made_again(chat, r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("redis_at_b", ["answering", "away"])
+async def test_a_take_another_process_may_have_run_is_looked_up_through_a_cooldown_of_its_own(chat, redis,
+                                                                                             monkeypatch, redis_at_b):
+    """CodeRabbit #288: process A runs the take of the person's second message and loses Redis's answer (the second
+    waits, 409). The delivery made again reaches process B, which never heard of it, while B cools down (another
+    call's failure, process wide) and Redis answers: B looks in Redis all the same, the second keeps its place from
+    A's take, and the first is answered and sent before it. Every take looks in Redis through its process's cooldown,
+    so which process gets the delivery changes nothing while Redis answers. Rule 5: Redis away from B too, no process
+    can look in the inbox, and the second is answered at once as one not kept (not_kept), as any event is then."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    second = event(mid="m2", text="Second", timestamp=200)
+    real_eval = redis.eval
+
+    async def answer_lost(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.TAKE_LUA:
+            raise ConnectionError("Connection reset by peer")  # it ran: its answer lost
+        return out
+
+    async def away():
+        raise ConnectionError("Connection refused")
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(mc, "BOOT", "process-a")
+        monkeypatch.setattr(redis, "eval", answer_lost)
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(second)
+        assert "m2" in redis.kv[mc.INBOX] and "m2" in mc._TAKE_UNSURE, "its take ran, and A knows it may have"
+        monkeypatch.setattr(redis, "eval", real_eval)
+        monkeypatch.setattr(mc, "BOOT", "process-b")
+        mc._TAKE_UNSURE.clear()  # B never heard of it
+        redis_client.set_client_for_tests(redis)
+        redis_client.redis_failed("another call", ConnectionError("reset by peer"))  # B's own cooldown
+        assert redis_client.get_redis() is None, "B cooling down"
+        if redis_at_b == "away":
+            monkeypatch.setattr(redis, "time", away)
+            out = await mc.handle(second)  # the gateway's, again, at B
+            assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
+            assert mc.MESSENGER_HEALTH["not_kept"] == 1
+            return
+        out = await mc.handle(second)  # the gateway's, again, at B
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert [(r["role"], r["content"]) for r in chat.rows] == [
+        ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
+    assert not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
 async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_recovery(chat, redis):
     """A cooldown begun during the turn (another call's failure, process wide, while Redis answers): the event's mark
     and its place in the inbox are written all the same, so the recovery finds nothing left and never sends the person

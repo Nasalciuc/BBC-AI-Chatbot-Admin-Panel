@@ -1451,10 +1451,11 @@ return 1
 """
 
 # Events whose take Redis may have run with its answer lost (TAKE_LUA: in the inbox, or not), each with when that was
-# met (time.monotonic): their next delivery looks in Redis even while it cools down, so one is never answered past an
-# earlier event of its person's as an event Redis never kept. One whose next delivery still finds Redis away waits for it
-# TAKE_UNSURE_WAIT_S, then is answered as one Redis never took (not_kept); one never delivered again is let go of after
-# TAKE_UNSURE_S (the gateway delivers an event again for an hour at most).
+# met (time.monotonic). Every take looks in Redis even while its process cools down (another call's failure), so a
+# delivery made again, here or at another process, finds the take that ran while Redis answers. One whose delivery
+# made again finds Redis away from this process waits for it TAKE_UNSURE_WAIT_S, then is answered as one Redis never
+# took (not_kept), as any event is while no process can look in the inbox; one never delivered again is let go of
+# after TAKE_UNSURE_S (the gateway delivers an event again for an hour at most).
 _TAKE_UNSURE: dict[str, float] = {}
 TAKE_UNSURE_WAIT_S = 30.0
 TAKE_UNSURE_S = 3600.0
@@ -1490,13 +1491,14 @@ return 1
 async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     """The event in the inbox until it is answered, and among its person's there, by when it was first taken (in the
     order the takes ran, TAKE_LUA): True once it is there; False when Redis could not take it before anything was
-    written (counted: one that fails then is not answered later). A take Redis may have run with its answer lost
-    raises StillAnswering (take_unsure): the gateway delivers the event again in a moment, and that delivery looks in
-    Redis even while it cools down (_TAKE_UNSURE), so the event is never answered past an earlier one of its person's
-    as one not kept. With `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
+    written (counted: one that fails then is not answered later). It looks in Redis even while this process cools
+    down (another call's failure, process wide, while Redis may answer): only Redis failing this take sends the event
+    the way of one not kept. A take Redis may have run with its answer lost raises StillAnswering (take_unsure): the
+    gateway delivers the event again in a moment, and that delivery, at this process or another, finds the take that
+    ran while Redis answers, so the event is never answered past an earlier one of its person's as one not kept. With
+    `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
     k = event.key()
-    unsure = client is None and k in _TAKE_UNSURE
-    r = client if client is not None else get_redis(even_cooling_down=unsure)
+    r = client if client is not None else get_redis(even_cooling_down=True)
     if r is None:
         MESSENGER_HEALTH["not_kept"] += 1
         return False
