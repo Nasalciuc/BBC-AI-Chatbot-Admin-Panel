@@ -2025,6 +2025,52 @@ async def test_an_agents_message_whose_going_to_the_gateway_is_written_as_the_ch
 
 
 @pytest.mark.asyncio
+async def test_an_agents_message_skipped_as_the_channel_goes_off_and_not_crossed_out_never_reads_as_maybe_sent(
+        redis, monkeypatch):
+    """CodeRabbit #288: as above, and Redis fails the cross-out of the entry: it was written down as off first, so the
+    next process's minute, this one stopped, crosses it out without a note, never telling the agent their message may
+    have gone out when no call was made. Rule 5: an entry left "sending" by a stopped process is still told as maybe
+    out (test_a_note_the_shutdown_could_not_wait_for_is_written_by_the_next_process)."""
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    real_hset, real_hdel = redis.hset, redis.hdel
+    once = {"off": True, "hdel": True}
+
+    async def off_while_marked(key, field=None, value=None, mapping=None):
+        if once["off"] and key == mc.OUTBOX and '"sending"' in str(value):
+            once["off"] = False
+            monkeypatch.setenv("MESSENGER_CHANNEL", "false")
+        return await real_hset(key, field, value, mapping=mapping)
+
+    async def hdel_refused(key, *fields):
+        if once["hdel"] and key == mc.OUTBOX:
+            once["hdel"] = False
+            raise ConnectionError("Connection reset by peer")
+        return await real_hdel(key, *fields)
+
+    monkeypatch.setattr(redis, "hset", off_while_marked)
+    monkeypatch.setattr(redis, "hdel", hdel_refused)
+    c = Chat().start()
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            await add_message(CONV, "agent", "Written as the channel went off")
+            await mc.drain(CONV)
+            assert gw.sent == [] and len(await redis.hgetall(mc.OUTBOX)) == 1, "its cross-out refused"
+            stopped = mc.BOOT
+            monkeypatch.setattr(mc, "BOOT", "the-next-process")
+            redis.kv.pop(f"msgr:alive:{stopped}", None)
+            redis_client.set_client_for_tests(redis)  # Redis answering again, its cooldown over
+            monkeypatch.setenv("MESSENGER_CHANNEL", "true")
+            out = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    assert out["told"] == 0 and not await redis.hgetall(mc.OUTBOX) and gw.sent == []
+    assert not [r for r in c.rows if r["role"] == "system"], "no note: no call was made"
+
+
+@pytest.mark.asyncio
 async def test_a_shutdown_waits_a_little_then_tells_each_agent_what_did_not_go_out(redis):
     import asyncio
 

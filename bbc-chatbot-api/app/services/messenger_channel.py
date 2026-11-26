@@ -584,6 +584,9 @@ async def _deliver(conversation_id: str, role: str, row: dict, state: dict) -> N
         # the chat's previous one, and it is crossed out, never read later as a send that may have reached the person.
         MESSENGER_HEALTH["off_skipped"] += 1
         state["note"] = ""  # its end known: a stop now tells nothing
+        # Written down as off first: a cross-out Redis refuses leaves it reading as off, never as a send that may have
+        # reached the person, and a recovery minute crosses it out without a note, this process alive or not.
+        await _mark_entry(entry, conversation_id, "off")
         await _cross_out(entry)
         return
     state["sending"] = True
@@ -695,7 +698,8 @@ async def unsure(entry: Optional[str], conversation_id: str, row_id: str) -> Non
 
 async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, note: Optional[str] = None,
                       row: Optional[str] = None) -> bool:
-    """Where a written-down delivery is: "sending" (with the gateway: maybe out from now on), "untold" (its note,
+    """Where a written-down delivery is: "sending" (with the gateway: maybe out from now on), "off" (the channel went
+    off before its call: nothing went out, crossed out without a note), "untold" (its note,
     kept here, not saved: the recovery minute saves it), "unsure" (its row stored or not, not known: the minute looks
     it up). True once written; False when it could not be (no entry, Redis gone or failing: logged)."""
     r = get_redis(even_cooling_down=True) if entry is not None else None
@@ -2711,6 +2715,11 @@ async def _tell_left(r, until: float) -> int:
             except (ValueError, KeyError, TypeError) as e:
                 MESSENGER_HEALTH["outbox_given_up"] += 1
                 logger.error(f"[messenger] a written-down delivery not readable ({type(e).__name__}): given up")
+                await r.hdel(OUTBOX, entry)
+                continue
+            if state == "off":
+                # An agent's message the channel went off for before its call, its cross-out refused then: nothing
+                # went out, so it is crossed out now, without a note.
                 await r.hdel(OUTBOX, entry)
                 continue
             if state not in ("untold", "unsure"):
