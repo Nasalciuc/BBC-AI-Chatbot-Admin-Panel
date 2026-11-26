@@ -390,6 +390,16 @@ async def drain_all(budget_s: float = DRAIN_S) -> dict:
 
 async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, role: str, row: dict,
                          entry: Optional[str] = None) -> None:
+    """A row on its way out, a link in its chat's chain (_LAST): it ends only after the chat's previous one, whatever
+    came of it (nothing to send, its chat not read, a break), so the chat's next row, which waits for this one only,
+    never goes before the previous one. A shutdown that stops it waits for nothing (no delivery starts after it)."""
+    await _deliver_one(prev, conversation_id, role, row, entry)
+    if prev is not None:
+        await asyncio.gather(prev, return_exceptions=True)
+
+
+async def _deliver_one(prev: Optional[asyncio.Task], conversation_id: str, role: str, row: dict,
+                       entry: Optional[str] = None) -> None:
     # Where it goes (once known: a site chat's row goes nowhere), for an agent's its entry in the outbox (written down
     # before this started), and how the send ended once it did ("note": "" sent, else what the agent is told): what a
     # stop tells the agent depends on them.

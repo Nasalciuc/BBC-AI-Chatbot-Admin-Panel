@@ -964,6 +964,62 @@ async def test_a_chats_rows_are_stored_one_at_a_time_however_long_an_inserts_ans
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("between", ["unread", "nowhere", "found"])
+async def test_a_row_with_nothing_to_send_keeps_the_next_one_behind_the_one_before(redis, monkeypatch, between):
+    """CodeRabbit #288: the agent's first message is with the gateway when their second one's chat cannot be read
+    (kept for the minute, unsure), or reads as going nowhere: the second ends at once, yet the third, stored after it,
+    still waits for the first (a row ends only after the chat's previous one), so it never reaches the person before
+    it. Rule 5: the second found going to the chat goes out between them, in the order stored."""
+    import asyncio
+
+    target = {"page_id": PAGE, "psid": PSID}
+    reads = {"n": 0}
+
+    async def where(conversation_id, role):
+        reads["n"] += 1
+        if reads["n"] == 2 and between == "unread":
+            raise mc.TargetUnread(conversation_id)
+        if reads["n"] == 2 and between == "nowhere":
+            return None
+        return target
+
+    sent: list = []
+    first_out, go_on = asyncio.Event(), asyncio.Event()
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if messages[0]["text"] == "First":
+            first_out.set()
+            await go_on.wait()
+        return {"sent": 1}
+
+    monkeypatch.setattr(mc, "_target", where)
+    c = Chat().start()
+    try:
+        with patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            await add_message(CONV, "agent", "First")
+            await asyncio.wait_for(first_out.wait(), 1)
+            await add_message(CONV, "agent", "Second")
+            for _ in range(10):
+                await asyncio.sleep(0)  # the second looked up, its entry written: done with, or waiting
+            await add_message(CONV, "agent", "Third")
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert sent == ["First"], "nothing passes the first while it is with the gateway"
+            go_on.set()
+            await mc.drain(CONV)
+            await asyncio.sleep(0)
+            await mc.drain(CONV)
+    finally:
+        c.stop()
+    assert sent == (["First", "Second", "Third"] if between == "found" else ["First", "Third"])
+    left = [json.loads(v)["state"] for v in (await redis.hgetall(mc.OUTBOX)).values()]
+    assert left == (["unsure"] if between == "unread" else []), "the unread one is kept for the minute"
+
+
+@pytest.mark.asyncio
 async def test_an_agents_message_finds_its_thread_when_redis_forgot_it(redis):
     conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
     gw = Gateway([])
