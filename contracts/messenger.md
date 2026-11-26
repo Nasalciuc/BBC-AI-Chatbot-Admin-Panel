@@ -218,6 +218,11 @@ What the API does with an event:
   mark and its place in the inbox say is written through a cooldown too, so the recovery never answers it a second
   time. The recovery goes oldest first, and a person whose event still waits has their later ones wait that minute,
   untried.
+- **One clock.** Every time the inbox keeps and compares is read from Redis's own clock (`TIME`), never from a
+  process's: an event's place among its person's, each take (`msgr:inbox:last`), a send's mark, the gateway's right,
+  and a kept event's age. Processes whose clocks disagree, however far, still tell which came first: a later event
+  is never taken for an earlier one, a take after a send began, or after the gateway's right, is never missed, and
+  how long a mark or a right has stood is told alike by all.
 
 ## The API → the gateway
 
@@ -243,14 +248,17 @@ says how many there were. 401 a call not signed by the API, 404 a Page the gatew
 
 The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
-the live push, even when the request that stored it was cancelled meanwhile. Outside a Messenger turn (an agent's
-message, a "joined" line) a row's save is one piece of work that holds the chat's order to its end: the insert, its
-retry under the same id (a row stored with its answer lost comes back, stored before), the `unsure` mark when its
-save is still not known (the recovery minute looks its row up while the process lives: stored, its agent is told it
-was not sent), and what its place leaves to do (its delivery crossed out, its agent told). A request cancelled
-meanwhile only stops waiting for it, at once: never the save, whose insert may land all the same, and the chat's next
-row waits for the save, never for a request. A turn's rows join the turn's answer, a row stored while a cancel waits
-included. An agent's "joined" line and their message never cross, however long an insert's answer takes); each
+the live push, even when the request that stored it was cancelled meanwhile. A row with a place to take (an agent's
+message, a "joined" line, a Messenger turn's own rows) is saved as one piece of work that holds the chat's order to
+its end: the insert, its retry under the same id (a row stored with its answer lost comes back, stored before), the
+`unsure` mark when its save is still not known (the recovery minute looks its row up while the process lives:
+stored, its agent is told it was not sent), and what its place leaves to do (its delivery crossed out, its agent
+told). A caller cancelled meanwhile (a request, a turn, a turn's own part stopped by its timeout) only stops waiting
+for it, at once: never the save, whose insert may land all the same, and the chat's next row waits for the save,
+never for a caller. A turn's rows join the turn's answer while the turn is on (a part stopped by its timeout: the
+turn goes on, and what it stores next waits for that save, so its answer keeps the order stored); a row stored once
+its turn stopped with no answer joins nothing and is never sent on its own (`turn_rows_left`): its event is answered
+again. An agent's "joined" line and their message never cross, however long an insert's answer takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
@@ -352,7 +360,7 @@ the queues without time.
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
 `turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
 `saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
-`claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `bad_signature`,
+`claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `turn_rows_left`, `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
 `target_unread`, `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
