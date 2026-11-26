@@ -1208,10 +1208,13 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     is renewed, cleared and answered only while it still holds that token, so a turn whose claim ran out never
     clears or answers over the delivery or pass that took the event since ("" with no Redis: nothing written).
     ("pending", {}) while it is being answered, ("done", {"replies", "by"}) after: also for an answer this process
-    holds (Redis did not take it as its turn ended, _UNKEPT), written now, never a second turn. With Redis down an
-    event is answered without its mark (counted); with `client` given (a person's earlier event, answered for a later
-    one that is kept, or the recovery's event), Redis failing raises: never answered without its mark."""
-    r = client if client is not None else get_redis()
+    holds (Redis did not take it as its turn ended, _UNKEPT), written now, never a second turn. It looks in Redis
+    even while this process cools down (another call's failure, process wide, while Redis may answer), as the take
+    does (_keep_event): a delivery made again is never given a second turn of an event answered, or being answered,
+    while Redis answers. Only Redis failing this claim answers an event without its mark (counted); with `client`
+    given (a person's earlier event, answered for a later one that is kept, or the recovery's event), Redis failing
+    raises: never answered without its mark."""
+    r = client if client is not None else get_redis(even_cooling_down=True)
     if key in _UNKEPT:
         state, held = await _held_answer(r, key, raising=client is not None)
         if state != "claim":

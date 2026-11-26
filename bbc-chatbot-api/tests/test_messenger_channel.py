@@ -4274,6 +4274,41 @@ async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("before", ["answered", "being_answered", "redis_away"])
+async def test_a_delivery_made_again_in_a_cooldown_looks_up_its_claim_before_any_turn(chat, redis, before):
+    """CodeRabbit #288: a delivery made again while its process cools down (another call's failure, process wide) and
+    Redis answers looks up the event's claim all the same, before any turn, as its take does: the event answered
+    already gets the same replies, no second turn, and is never taken into the inbox again; one being answered
+    elsewhere waits (409), no second turn. Rule 5: Redis failing the claim itself, the event is answered without its
+    mark (no_dedupe), as before."""
+    _turns(chat)
+    first: dict = {}
+    if before == "answered":
+        first = await mc.handle(event())
+        assert not redis.kv[mc.INBOX] and len(chat.requests) == 1
+    elif before == "being_answered":
+        redis.kv["msgr:event:m1"] = "pending:another-delivery"
+    redis_client.redis_failed("another call", ConnectionError("reset by peer"))
+    assert redis_client.get_redis() is None, "the cooldown is on"
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        if before == "redis_away":
+            redis.down = True
+            out = await mc.handle(event())
+            assert [r["text"] for r in out["replies"]] == ["About: Hi, two seats to Istanbul in December?"]
+            assert mc.MESSENGER_HEALTH["no_dedupe"] == 1 and mc.MESSENGER_HEALTH["not_kept"] == 1
+            return
+        if before == "being_answered":
+            with pytest.raises(mc.StillAnswering):
+                await mc.handle(event())
+            assert not chat.requests and "m1" not in (redis.kv.get(mc.INBOX) or {})
+            return
+        out = await mc.handle(event())  # delivered again
+    assert out["replies"] == first["replies"] and len(chat.requests) == 1, "no second turn"
+    assert not redis.kv[mc.INBOX] and gw.sent == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("then", ["cooling", "down"])
 async def test_a_cooldown_begun_during_a_recovery_pass_never_answers_its_event_again(chat, redis, monkeypatch, then):
     """CodeRabbit #288: the first recovery's send never reached the gateway (its replies kept). In the next pass,
