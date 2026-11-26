@@ -921,9 +921,10 @@ _UNSENT: dict[str, str] = {}
 
 async def _send_state(r, k: str) -> str:
     """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun, or known to have sent
-    nothing), "on_its_way" (begun lately: its process may still be at it; or long ago by another process still
-    alive, which may know that nothing went out), "begun" (begun and never over: its process stopped in it, or this
-    one, which is not at it), "done" (over, and the event not taken out of the inbox after). Redis failing raises."""
+    nothing), "on_its_way" (begun lately: its process may still be at it; or before that by another process still
+    alive, which may know that nothing went out, for as long as its minutes could still clear it: ALIVE_S), "begun"
+    (begun and never over: its process stopped in it, or this one, which is not at it), "done" (over, and the event
+    not taken out of the inbox after). Redis failing raises."""
     raw = await r.get(_sending_key(k))
     if raw is None or raw == "done":
         _UNSENT.pop(k, None)
@@ -939,10 +940,13 @@ async def _send_state(r, k: str) -> str:
         since = float(head)
     except ValueError as e:
         logger.warning(f"[messenger] a send's mark not readable, taken for one begun long ago: {e}")
-    if time.time() - since < SENDING_S:
+    age = time.time() - since
+    if age < SENDING_S:
         return "on_its_way"
-    if owner and owner != BOOT and await r.exists(f"msgr:alive:{owner}"):
-        return "on_its_way"  # its process lives: it clears the mark, or knows the send is over
+    if owner and owner != BOOT and age < SENDING_S + ALIVE_S and await r.exists(f"msgr:alive:{owner}"):
+        # Its process lives, and may know that nothing went out: its next minute clears the mark (_clear_unsent).
+        # Alive past that, it reached Redis meanwhile (its alive mark says so) and left the mark: not one it knows.
+        return "on_its_way"
     return "begun"
 
 

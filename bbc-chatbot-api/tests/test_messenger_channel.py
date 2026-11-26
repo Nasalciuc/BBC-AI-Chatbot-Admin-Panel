@@ -1524,14 +1524,15 @@ def _blink_send_marks(redis, monkeypatch) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("owner", ["alive", "gone"])
+@pytest.mark.parametrize("owner", ["alive", "gone", "stale"])
 async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the_same_redis(chat, redis, monkeypatch,
                                                                                             owner):
     """CodeRabbit #288: two API processes on one Redis. Process A's send never reached the gateway and its mark could
     not be cleared (Redis failing): process B, meeting the mark past SENDING_S while A is alive, waits; A's next minute
     clears it, the lock held by B or not, and the same replies go, once, with no second turn. Rule 5: A gone before it
     could, what it knew went with it: B takes the mark for a send begun, maybe out, never sent again (counted), as an
-    outcome the gateway may have had is (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again)."""
+    outcome the gateway may have had is (test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again); and
+    so does B for a mark of A's older than A's minutes could have left it (SENDING_S + ALIVE_S), A alive or not."""
     await _fail_once(chat, redis)
     _turns(chat)
     reply = "About: Hi, two seats to Istanbul in December?"
@@ -1551,8 +1552,11 @@ async def test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the
         monkeypatch.setattr(mc, "SENDING_S", -1.0)  # however long it waited: past SENDING_S
         a_knows = mc._UNSENT.copy()
         become("process-b", type(mc._UNSENT)())
-        if owner == "gone":
-            redis.kv.pop("msgr:alive:process-a")
+        if owner in ("gone", "stale"):
+            if owner == "gone":
+                redis.kv.pop("msgr:alive:process-a")
+            else:
+                monkeypatch.setattr(mc, "SENDING_S", -1.0 - mc.ALIVE_S)
             out = await mc.run_messenger_recover()
             assert out["answered"] == 1 and mc.MESSENGER_HEALTH["recover_unsure"] == 1
             assert gw.sent == [reply] and not redis.kv[mc.INBOX] and len(chat.requests) == 2
