@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -59,7 +61,7 @@ func (e *Error) Error() string {
 //	unavailable    the person can't be reached (blocked the Page, deleted their account, …)
 //	thread_owned   another app (the Page Inbox) owns the thread now (conversation routing)
 //	token          the Page's token is wrong or expired: nothing goes out until it is replaced
-//	rate           too many calls: later
+//	rate           too many calls (a Graph code, or HTTP 429 alone): later
 //	temporary      Meta's own trouble (5xx, code 1 or 2): later
 //	other          anything else
 func (e *Error) Kind() string {
@@ -72,7 +74,7 @@ func (e *Error) Kind() string {
 		return "thread_owned"
 	case e.Code == 190:
 		return "token"
-	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040:
+	case e.Code == 4 || e.Code == 613 || e.Subcode == 2534040 || e.Status == http.StatusTooManyRequests:
 		return "rate"
 	case e.Status >= 500 || e.Code == 1 || e.Code == 2:
 		return "temporary"
@@ -86,8 +88,23 @@ func (e *Error) Retry() bool {
 	return k == "rate" || k == "temporary"
 }
 
-// KindOf is the kind of any error a call returned: a network failure is temporary.
+// Unconfirmed is a call whose answer never came after Meta had the whole request (the connection dropped, the
+// wait ran out): the message may be with the person. It is never sent again (the Send API takes no key that would
+// make a second send the same message), and the sender is told it is not confirmed (kind "unknown").
+type Unconfirmed struct{ Err error }
+
+func (e *Unconfirmed) Error() string {
+	return "send api: no answer once the request was out: " + e.Err.Error()
+}
+func (e *Unconfirmed) Unwrap() error { return e.Err }
+
+// KindOf is the kind of any error a call returned: "unknown" for one Meta may have carried out, "temporary" for a
+// network failure before the request went out.
 func KindOf(err error) string {
+	var ue *Unconfirmed
+	if errors.As(err, &ue) {
+		return "unknown"
+	}
 	var se *Error
 	if errors.As(err, &se) {
 		return se.Kind()
@@ -95,8 +112,13 @@ func KindOf(err error) string {
 	return "temporary"
 }
 
-// Retryable is whether any error a call returned may pass on a later try.
+// Retryable is whether any error a call returned may pass on a later try without sending twice: a refusal Meta
+// may get over, or a failure before the request went out. Never an Unconfirmed one.
 func Retryable(err error) bool {
+	var ue *Unconfirmed
+	if errors.As(err, &ue) {
+		return false
+	}
 	var se *Error
 	if errors.As(err, &se) {
 		return se.Retry()
@@ -132,6 +154,15 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	if err != nil {
 		return err
 	}
+	// Whether Meta has had the whole request: a failure after that may still be a message sent.
+	var wrote atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wrote.Store(true)
+			}
+		},
+	})
 	url := strings.TrimRight(c.Base, "/") + "/" + c.Version + "/me/messages"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
@@ -142,30 +173,31 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := c.HTTP.Do(req)
 	if err != nil {
+		if wrote.Load() {
+			return &Unconfirmed{Err: err}
+		}
 		return err
 	}
 	defer func() { _ = res.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
-	if err != nil {
-		return err
-	}
-	if res.StatusCode/100 != 2 {
-		var e struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-				Subcode int    `json:"error_subcode"`
-			} `json:"error"`
+	data, readErr := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if res.StatusCode/100 == 2 {
+		// Meta took it: an answer cut short or not JSON is still a message sent, never one to send again.
+		if out != nil && readErr == nil {
+			_ = json.Unmarshal(data, out) // the message id is for the logs only
 		}
+		return nil
+	}
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+			Subcode int    `json:"error_subcode"`
+		} `json:"error"`
+	}
+	if readErr == nil {
 		_ = json.Unmarshal(data, &e) // a body that is not Meta's error shape leaves only the status
-		return &Error{Status: res.StatusCode, Code: e.Error.Code, Subcode: e.Error.Subcode, Message: e.Error.Message}
 	}
-	if out != nil {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("send api: an answer that is not JSON: %w", err)
-		}
-	}
-	return nil
+	return &Error{Status: res.StatusCode, Code: e.Error.Code, Subcode: e.Error.Subcode, Message: e.Error.Message}
 }
 
 // Split cuts a text into messages of at most MaxText characters, at a paragraph, a line, a sentence or a space when

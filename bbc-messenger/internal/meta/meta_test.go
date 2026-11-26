@@ -1,12 +1,19 @@
 package meta
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -124,11 +131,69 @@ func TestErrorKinds(t *testing.T) {
 		{Error{Status: 500}, "temporary", true},
 		{Error{Status: 400, Code: 2}, "temporary", true},
 		{Error{Status: 400, Code: 100}, "other", false},
+		// HTTP 429 with no Graph code (an empty body): a rate refusal all the same.
+		{Error{Status: 429}, "rate", true},
+		// Rule 5: a structured refusal keeps its own kind whatever the status.
+		{Error{Status: 429, Code: 10, Subcode: 2018278}, "window_closed", false},
 	}
 	for _, c := range cases {
 		if c.e.Kind() != c.kind || c.e.Retry() != c.retry {
 			t.Errorf("%+v: %s %v", c.e, c.e.Kind(), c.e.Retry())
 		}
+	}
+}
+
+func client(url string) *Client {
+	return &Client{HTTP: &http.Client{Timeout: 2 * time.Second}, Base: url, Version: "v26.0"}
+}
+
+func TestASendWhoseAnswerNeverCameIsNeverSentAgain(t *testing.T) {
+	var calls atomic.Int32
+	// Meta has the whole request, then the connection drops before its answer: it may be with the person.
+	dropped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = io.ReadAll(r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer dropped.Close()
+	_, err := client(dropped.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+	var ue *Unconfirmed
+	if !errors.As(err, &ue) || KindOf(err) != "unknown" || Retryable(err) {
+		t.Errorf("unconfirmed, never tried again: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+	if calls.Load() != 1 {
+		t.Errorf("sent %d times", calls.Load())
+	}
+
+	// Rule 5: nothing reached Meta (no one listens there): a network failure, tried again.
+	gone := httptest.NewServer(http.NotFoundHandler())
+	url := gone.URL
+	gone.Close()
+	_, err = client(url).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+	if err == nil || errors.As(err, &ue) || KindOf(err) != "temporary" || !Retryable(err) {
+		t.Errorf("before the request went out: %v %s %v", err, KindOf(err), Retryable(err))
+	}
+
+	// Meta answered 200 with a body that is not JSON: sent, nothing to send again.
+	odd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "not json")
+	}))
+	defer odd.Close()
+	if _, err := client(odd.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, ""); err != nil {
+		t.Errorf("a 200 is a message sent: %v", err)
+	}
+
+	// A 429 with no body: a rate refusal, tried again.
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer busy.Close()
+	_, err = client(busy.URL).Send(context.Background(), "tok", "PSID-1", Reply{Text: "Hi"}, "")
+	if KindOf(err) != "rate" || !Retryable(err) {
+		t.Errorf("429: %v %s %v", err, KindOf(err), Retryable(err))
 	}
 }
 
