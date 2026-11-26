@@ -51,6 +51,7 @@ def fresh(monkeypatch):
     mc._UNSENT.clear()
     mc._ENDED.clear()
     mc._UNKEPT.clear()
+    mc._UNGIVEN.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -64,10 +65,12 @@ def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
     event_key, sending_key = keys
     token, answer, none_given, ex, right, right_ex = args[0], args[1], args[2], int(args[3]), args[4], int(args[5])
     api_to_send = args[6]
+    sending = fake.kv.get(sending_key) if fake._alive(sending_key) else None
+    if sending == right:
+        return 1  # the same delivery's, made again: its right taken by a run whose answer was lost
     held = fake.kv.get(event_key) if fake._alive(event_key) else None
     if held is not None and held != token:
         return 0
-    sending = fake.kv.get(sending_key) if fake._alive(sending_key) else None
     if sending is not None and not sending.startswith("gateway"):
         fake.kv[event_key] = none_given if sending == "done" else api_to_send
         fake._set_expiry(event_key, ex=ex)
@@ -1894,24 +1897,61 @@ async def test_a_gateway_delivery_keeps_an_empty_answer_only_once_the_apis_send_
 
 
 @pytest.mark.asyncio
-async def test_a_delivery_made_again_gets_the_answer_redis_did_not_take_from_its_process(chat, redis, monkeypatch):
-    """CodeRabbit #288, from the gateway: Redis refuses the event's answer as its turn ends (its replies go back all
-    the same: the gateway sends them). A delivery made again, Redis down by then, gets the same replies from the
-    process that holds the answer, with no second turn; its next minute, Redis back, writes it, and the next
-    delivery gets it from Redis. Rule 5: an answer written is given from Redis
-    (test_a_delivery_made_again_gets_the_same_replies_and_no_second_turn)."""
+async def test_a_delivery_whose_giving_redis_did_not_take_waits_and_then_gets_the_replies_once(chat, redis,
+                                                                                             monkeypatch):
+    """CodeRabbit #288, from the gateway: Redis refuses the giving of the event's replies (their right and their
+    answer) as its turn ends. Whether the right is this delivery's is not known (another delivery's, or the API's own
+    send, may hold them), so the gateway gets none (409), the event kept, and a delivery made again while Redis is
+    down waits too, with no second turn. The process's next minute, Redis back, gives them again, the right this
+    delivery's, and the next delivery gets them from Redis. Rule 5: a giving Redis takes goes back at once
+    (test_a_first_message_starts_a_chat_and_takes_the_widgets_turn)."""
     _turns(chat)
     _refuse_answers(redis, monkeypatch)
     reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
-    assert (await mc.handle(event()))["replies"] == reply and "msgr:event:m1" in mc._UNKEPT
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event())
+    assert "msgr:event:m1" in mc._UNGIVEN and "m1" in redis.kv[mc.INBOX], "held, the event kept"
     redis.down = True
-    again = await mc.handle(event())
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event())  # never given from the process: its right may be another's
     redis.down = False
     redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
-    assert again["replies"] == reply and len(chat.requests) == 1, "the same replies, no second turn"
+    assert len(chat.requests) == 1, "no second turn"
     await mc.run_messenger_recover()
-    assert not mc._UNKEPT and json.loads(redis.kv["msgr:event:m1"]) == {"replies": reply, "by": "gateway"}
+    assert not mc._UNKEPT and not mc._UNGIVEN
+    assert json.loads(redis.kv["msgr:event:m1"]) == {"replies": reply, "by": "gateway"}
+    assert redis.kv[f"{mc.INBOX}:sending:m1"].startswith(f"{mc.SENT_BY_GATEWAY}:"), "the right this delivery's"
     assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_giving_redis_made_but_whose_answer_was_lost_goes_back_with_the_next_delivery_once(chat, redis,
+                                                                                                 monkeypatch):
+    """CodeRabbit #288: Redis gives the event's replies to the gateway (their right and answer written) and its answer
+    is lost on the way back: the gateway gets none (409), and the delivery made again gets them, the right found this
+    delivery's (made again, it is the same), with no second turn and nothing lost."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    _turns(chat)
+    real_eval = redis.eval
+    lost = {"on": True}
+
+    async def answer_lost(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.GIVE_TO_GATEWAY_LUA and lost["on"]:
+            lost["on"] = False
+            raise RedisConnectionError("Connection closed by server.")
+        return out
+
+    monkeypatch.setattr(redis, "eval", answer_lost)
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event())
+    right = redis.kv[f"{mc.INBOX}:sending:m1"]
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
+    assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
+    assert redis.kv[f"{mc.INBOX}:sending:m1"] == right and not mc._UNGIVEN and not mc._UNKEPT
+    assert mc.MESSENGER_HEALTH["claim_lost"] == 0
 
 
 @pytest.mark.asyncio
@@ -1940,19 +1980,23 @@ async def test_an_earlier_events_answer_redis_did_not_take_is_never_sent_before_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("redis_then", ["answers", "refuses"])
 async def test_a_shutdown_writes_the_answers_its_process_holds(chat, redis, monkeypatch, redis_then):
-    """CodeRabbit #288: Redis refused an event's answer as its turn ended (held by this process), and the process
-    stops before its next minute: the shutdown writes it, so the next process gives the same replies, with no second
-    turn. Redis still refusing then: it goes with the process, counted (answer_dropped) and logged."""
+    """CodeRabbit #288: Redis refused the giving of an event's replies as its turn ended (held by this process, none
+    given), and the process stops before its next minute: the shutdown gives them, so the next delivery gets the same
+    replies, with no second turn. Redis still refusing then: it goes with the process, counted (answer_dropped) and
+    logged."""
     _turns(chat)
     refuse = _refuse_answers(redis, monkeypatch)
     reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
-    assert (await mc.handle(event()))["replies"] == reply and mc._UNKEPT
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event())
+    assert mc._UNKEPT and mc._UNGIVEN
     refuse["on"] = redis_then == "refuses"
     out = await mc.write_held(0.5)
     if redis_then == "refuses":
         assert out == {"written": 0, "dropped": 1} and mc.MESSENGER_HEALTH["answer_dropped"] == 1
+        assert not mc._UNGIVEN
         return
-    assert out == {"written": 1, "dropped": 0} and not mc._UNKEPT
+    assert out == {"written": 1, "dropped": 0} and not mc._UNKEPT and not mc._UNGIVEN
     assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1, "no second turn"
 
 
@@ -3022,6 +3066,62 @@ async def test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_deliv
         assert (await asyncio.wait_for(first, 1))["replies"] == [], "its claim lost: it gives none"
     assert json.loads(redis.kv["msgr:event:m1"])["replies"] == [{"text": "Answer 2"}], "the second's answer is kept"
     assert mc.MESSENGER_HEALTH["claim_lost"] == (0 if ends == "first_fails" else 1)
+    again = await mc.handle(event())
+    assert [r["text"] for r in again["replies"]] == ["Answer 2"] and calls["n"] == 2, "no third turn"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_claim_ran_out_and_whose_giving_redis_never_answered_gives_none(chat, redis, monkeypatch):
+    """CodeRabbit #288: a delivery's turn (the first) runs past its claim, its renewal failing, and a delivery made
+    again (the second) takes the event and gives its replies back. Then the first's giving gets no answer from Redis:
+    it gives the gateway none (409), never its replies beside the second's, and its giving, made again at its next
+    minute, finds the second's answer and is dropped (claim_lost). Rule 5: a first whose giving Redis answers gives
+    none for its claim lost (test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_delivery_that_took_
+    the_event)."""
+    import asyncio
+
+    from tests.fake_redis import FakeClock
+
+    calls = {"n": 0}
+    first_in, first_go = asyncio.Event(), asyncio.Event()
+
+    async def two_turns(req, add_message):
+        calls["n"] += 1
+        n = calls["n"]
+        if n == 1:
+            first_in.set()
+            await first_go.wait()
+        row = await add_message(req.conversation_id, "ai", f"Answer {n}")
+        return ChatResponse(conversation_id=req.conversation_id, message=row["content"], type="ai", model_used="x")
+
+    chat.answer = two_turns
+    clock = FakeClock()
+    redis.clock = clock
+    real_eval = redis.eval
+    gives = {"n": 0}
+
+    async def flaky(script, numkeys, *keys_and_args):
+        if script == mc.RENEW_LUA and str(keys_and_args[0]).startswith("msgr:event:"):
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        if script == mc.GIVE_TO_GATEWAY_LUA:
+            gives["n"] += 1
+            if gives["n"] == 2:  # the first's, ending after the second's
+                raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", flaky)
+    first = asyncio.create_task(mc.handle(event()))
+    await asyncio.wait_for(first_in.wait(), 1)
+    clock.advance(mc.PENDING_S * 2)  # the first's claim runs out
+    second = await asyncio.wait_for(mc.handle(event()), 1)
+    assert [r["text"] for r in second["replies"]] == ["Answer 2"]
+    first_go.set()
+    with pytest.raises(mc.StillAnswering):
+        await asyncio.wait_for(first, 1)  # none given beside the second's
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    await mc.run_messenger_recover()  # its next minute: its giving made again
+    assert not mc._UNGIVEN and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 1
+    assert json.loads(redis.kv["msgr:event:m1"])["replies"] == [{"text": "Answer 2"}], "the second's answer stands"
     again = await mc.handle(event())
     assert [r["text"] for r in again["replies"]] == ["Answer 2"] and calls["n"] == 2, "no third turn"
 

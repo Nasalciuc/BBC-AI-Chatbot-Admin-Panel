@@ -839,6 +839,11 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
             # of. The gateway gets none.
             MESSENGER_HEALTH["duplicates"] += 1
             return {"replies": []}
+        if kept_now == "unkept":
+            # Redis did not say whether the right to send them is this delivery's: none given (another delivery's,
+            # or the API's own send, may hold them), the event kept. The gateway delivers it again (409), and gets
+            # them once Redis says the right is this one's (_UNGIVEN), or none, another's standing.
+            raise StillAnswering()
     else:
         kept_now = await _remember(key, replies, by, token, client)
     if kept_now == "lost":
@@ -865,13 +870,17 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
 # step, only while the delivery still holds the event's claim (its token, or nothing): 1; 2 when the API's own send of
 # them began first, and the gateway gets none: over ("done"), an answer with none is kept; still on its way, this
 # turn's answer is kept as the API's to send, should that send go nowhere (never an empty one, which would let the
-# event go unsent); 0 when another delivery or pass holds the event, or answered it (nothing written).
+# event go unsent); 0 when another delivery or pass holds the event, or answered it (nothing written). Run again for
+# the same delivery (its right, ARGV[5], found there: a run whose answer was lost took it), 1 again.
 GIVE_TO_GATEWAY_LUA = """
+local s = redis.call('get', KEYS[2])
+if s == ARGV[5] then
+  return 1
+end
 local v = redis.call('get', KEYS[1])
 if v and v ~= ARGV[1] then
   return 0
 end
-local s = redis.call('get', KEYS[2])
 if s and string.sub(s, 1, 7) ~= 'gateway' then
   if s == 'done' then
     redis.call('set', KEYS[1], ARGV[3], 'EX', ARGV[4])
@@ -891,23 +900,22 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
     "kept" (the gateway sends them: a pass of the recovery never sends beside it, and reads the right as on its way
     while the gateway may still be sending them, SENDING_S, then as over); "theirs" (the API's own send of them began
     first: the gateway gets none); "lost" (another delivery or pass took the event while this turn ran: theirs, and
-    this delivery gets none, counted); "unkept" (Redis failing: given all the same, the answer held to write later,
-    _UNKEPT, counted); "no_redis"."""
+    this delivery gets none, counted); "unkept" (Redis failing: whether the right is this delivery's is not known, so
+    the gateway gets none now, and the giving is held to make again, _UNGIVEN, counted); "no_redis"."""
     r = get_redis(even_cooling_down=True)
     if r is None:
         return "no_redis"
     answer = json.dumps({"replies": replies, "by": "gateway"})
+    right = f"{SENT_BY_GATEWAY}:{time.time()}"
     try:
-        given = await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
-                             json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S,
-                             f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S,
-                             json.dumps({"replies": replies, "by": "api"}))
+        given = await _give(r, key, k, replies, token, answer, right)
     except Exception as e:
         redis_failed("messenger inbox", e)
         _UNKEPT[key] = (token, answer)
+        _UNGIVEN[key] = (k, replies, right)
         MESSENGER_HEALTH["answer_unkept"] += 1
-        logger.warning(f"[messenger] a kept event's replies given to the gateway, their right and answer not written "
-                       f"(the answer held to write later): {type(e).__name__}: {e}")
+        logger.warning(f"[messenger] a kept event's replies not given to the gateway, Redis not saying whether their "
+                       f"right is this delivery's (held, given when it does): {type(e).__name__}: {e}")
         return "unkept"
     if not given:
         MESSENGER_HEALTH["claim_lost"] += 1
@@ -915,6 +923,22 @@ async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
                        "the gateway no replies beside theirs")
         return "lost"
     return "theirs" if int(given) == 2 else "kept"
+
+
+async def _give(r, key: str, k: str, replies: list, token: str, answer: str, right: str) -> int:
+    """GIVE_TO_GATEWAY_LUA for one delivery (its token, answer and right): 1, 2 or 0. Redis failing raises."""
+    return int(await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
+                            json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S, right, INBOX_KEEP_S,
+                            json.dumps({"replies": replies, "by": "api"})))
+
+
+# Kept events whose giving to the gateway Redis did not answer (the right and the answer maybe written, maybe not):
+# each with its key, replies and right, beside its answer in _UNKEPT. The gateway got none: one delivery's replies
+# beside another's, or beside the API's own send, could go twice. Made again (GIVE_TO_GATEWAY_LUA, the same right) at
+# the process's next minute, or when the event is delivered again: whatever came of the first, a delivery made again
+# then reads the event's answer from Redis (this one's, the API's, or another's). Never given from here meanwhile:
+# the delivery waits (409).
+_UNGIVEN: dict[str, tuple[str, list, str]] = {}
 
 
 async def _later_kept(event: InboundEvent) -> bool:
@@ -1005,9 +1029,9 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     one that is kept, or the recovery's event), Redis failing raises: never answered without its mark."""
     r = client if client is not None else get_redis()
     if key in _UNKEPT:
-        held = await _held_answer(r, key, raising=client is not None)
-        if held is not None:
-            return "done", held
+        state, held = await _held_answer(r, key, raising=client is not None)
+        if state != "claim":
+            return state, held
     if r is None:
         MESSENGER_HEALTH["no_dedupe"] += 1
         return "new", {"token": ""}
@@ -1085,6 +1109,7 @@ async def _remember(key: str, replies: list, by: str, token: str, client: Any = 
     except Exception as e:
         redis_failed("messenger dedupe", e)
         _UNKEPT[key] = (token, answer)
+        _UNGIVEN.pop(key, None)  # this turn's answer, written as an answer: never an older delivery's giving
         MESSENGER_HEALTH["answer_unkept"] += 1
         logger.warning(f"[messenger] an event's answer not written, held to write later (never a second turn): "
                        f"{type(e).__name__}: {e}")
@@ -1099,12 +1124,20 @@ async def _remember(key: str, replies: list, by: str, token: str, client: Any = 
 
 async def _write_held(r, key: str) -> bool:
     """An answer this process holds (_UNKEPT) written now, in place of its turn's claim or of nothing: True; False when
-    another delivery or pass holds the event since (theirs stands: the held one is dropped, counted). Redis failing
-    raises, and it stays held."""
+    another delivery or pass holds the event since (theirs stands: the held one is dropped, counted). One whose giving
+    to the gateway Redis did not answer (_UNGIVEN) is given again, with the same right, never beside the API's own
+    send of the replies (GIVE_TO_GATEWAY_LUA): True also when that send holds them. Redis failing raises, and it stays
+    held."""
     token, answer = _UNKEPT[key]
-    kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, answer, ANSWERED_S)
+    giving = _UNGIVEN.get(key)
+    if giving is not None:
+        kept: Any = await _give(r, key, giving[0], giving[1], token, answer, giving[2])
+    else:
+        kept = await r.eval(KEEP_ANSWER_LUA, 1, key, token, answer, ANSWERED_S)
     if _UNKEPT.get(key) == (token, answer):
         del _UNKEPT[key]  # only the one written: a newer turn's, held meanwhile, stays
+    if giving is not None and _UNGIVEN.get(key) == giving:
+        del _UNGIVEN[key]
     if not kept:
         MESSENGER_HEALTH["claim_lost"] += 1
         logger.warning("[messenger] an answer held by this process not written: another delivery or pass took the "
@@ -1112,22 +1145,27 @@ async def _write_held(r, key: str) -> bool:
     return bool(kept)
 
 
-async def _held_answer(r, key: str, raising: bool) -> Optional[dict]:
+async def _held_answer(r, key: str, raising: bool) -> tuple[str, dict]:
     """An event whose answer this process holds (_UNKEPT), asked for again (a delivery made again, the recovery, a
-    later event of the person's): the answer, written now, never a second turn; still given from here while Redis
-    fails, unless `raising` (the recovery's and an earlier event's own client: Redis failing raises, as for their
-    mark). None once another delivery or pass is found holding the event: claimed as any event then."""
+    later event of the person's): ("done", the answer), written now, never a second turn; still given from here while
+    Redis fails, unless `raising` (the recovery's and an earlier event's own client: Redis failing raises, as for their
+    mark). ("claim", {}) once another delivery or pass is found holding the event: claimed as any event then. One whose
+    giving to the gateway Redis did not answer (_UNGIVEN) is never given from here: given again first, its event's
+    answer is then read from Redis ("claim"); Redis failing still, ("pending", {}): the delivery waits (409)."""
     answer = _UNKEPT[key][1]
+    giving = key in _UNGIVEN
     if r is not None:
         try:
-            if not await _write_held(r, key):
-                return None
+            if not await _write_held(r, key) or giving:
+                return "claim", {}
         except Exception as e:
             redis_failed("messenger dedupe", e)
             logger.warning(f"[messenger] an answer held by this process still not written: {type(e).__name__}: {e}")
             if raising:
                 raise
-    return json.loads(answer)
+    if giving:
+        return "pending", {}
+    return "done", json.loads(answer)
 
 
 async def _forget(key: str, token: str) -> None:
@@ -1414,6 +1452,7 @@ async def write_held(budget_s: float = NOTES_S) -> dict:
         logger.error(f"[messenger] shutdown: {dropped} answer(s) Redis did not take go with this process: their events "
                      f"may be answered again once their claim runs out")
         _UNKEPT.clear()
+        _UNGIVEN.clear()
     return {"written": written, "dropped": dropped}
 
 
