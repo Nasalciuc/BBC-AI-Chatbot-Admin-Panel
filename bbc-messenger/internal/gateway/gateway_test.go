@@ -508,7 +508,7 @@ func TestPastMostHeldTheWebhookCountsThePeopleItCouldNotHold(t *testing.T) {
 // admitOne is the intake's verdict on a delivery of one event, its queue with room or not, and how many of its
 // person's refused events it found expired.
 func admitOne(in *intake, ev meta.Inbound, now time.Time, room bool) (verdict, int) {
-	out, _ := in.admit([]meta.Inbound{ev}, now, func(meta.Inbound) bool { return room })
+	out, _, _ := in.admit([]meta.Inbound{ev}, now, func(meta.Inbound) bool { return room })
 	return out[0].v, out[0].expired
 }
 
@@ -560,17 +560,74 @@ func TestEveryRefusedEventOfAPersonKeepsItsPlaceWhicheverMetaDeliversFirst(t *te
 		}
 	}
 	// Meta's time sets the place, whichever was refused first: m7 refused after m8 still goes first.
-	if v, _ := admitOne(in, at("m8", 800), t0, false); v != refused {
-		t.Fatalf("m8: %v", v)
-	}
-	if v, _ := admitOne(in, at("m7", 700), t0, true); v != waiting {
-		t.Fatalf("m7: %v", v)
+	for _, ev := range []meta.Inbound{at("m8", 800), at("m7", 700)} {
+		if v, _ := admitOne(in, ev, t0, false); v != refused {
+			t.Fatalf("%s: %v", ev.MID, v)
+		}
 	}
 	if v, _ := admitOne(in, at("m8", 800), t0, true); v != waiting {
 		t.Errorf("m8 before m7: %v", v)
 	}
-	if len(in.held) != 1 || len(in.held[person(at("m7", 0))]) != 2 {
+	if h := in.held[person(at("m7", 0))]; len(in.held) != 1 || h == nil || len(h.q) != 2 {
 		t.Errorf("held: %v", in.held)
+	}
+	for _, ev := range []meta.Inbound{at("m7", 700), at("m8", 800)} {
+		if v, _ := admitOne(in, ev, t0, true); v != taken {
+			t.Fatalf("%s: %v", ev.MID, v)
+		}
+	}
+	// An event from before all of a person's refused ones never waits for them: taken at once; one after still waits.
+	if v, _ := admitOne(in, at("m11", 1100), t0, false); v != refused {
+		t.Fatalf("m11: %v", v)
+	}
+	if v, _ := admitOne(in, at("m10", 1000), t0, true); v != taken {
+		t.Errorf("m10 waited for a later event: %v", v)
+	}
+	if v, _ := admitOne(in, at("m12", 1200), t0, true); v != waiting {
+		t.Errorf("m12 before m11: %v", v)
+	}
+}
+
+func TestAPersonIsWaitedForNoLongerThanHoldForInAllHoweverMetaDeliversAgain(t *testing.T) {
+	in := newIntake(time.Hour, 100, 15*time.Minute)
+	t0 := time.Unix(1_800_000_000, 0)
+	// m3 refused (its queue full), then m2, from before it, refused as well; Meta never delivers m2 again.
+	if v, _ := admitOne(in, at("m3", 300), t0, false); v != refused {
+		t.Fatalf("m3: %v", v)
+	}
+	if v, _ := admitOne(in, at("m2", 200), t0.Add(10*time.Minute), false); v != refused {
+		t.Fatalf("m2: %v", v)
+	}
+	// Meta delivers m3 and m4 again in turn, a minute apart, for an hour, their queue with room: each refusal waits
+	// for an earlier event, and none, however late, makes the person's wait start again.
+	var lastRefused time.Time
+	takenAt := map[string]time.Duration{}
+	expired := 0
+	for minute := 11; minute <= 70; minute++ {
+		ev := at("m3", 300)
+		if minute%2 == 0 {
+			ev = at("m4", 400)
+		}
+		now := t0.Add(time.Duration(minute) * time.Minute)
+		v, n := admitOne(in, ev, now, true)
+		expired += n
+		switch v {
+		case waiting, refused:
+			lastRefused = now
+		case taken:
+			takenAt[ev.MID] = now.Sub(t0)
+		}
+	}
+	if !lastRefused.Before(t0.Add(15 * time.Minute)) {
+		t.Errorf("still refused %v after the first refusal", lastRefused.Sub(t0))
+	}
+	// Taken once each, in their order, as soon as the wait was over; m2 and m4 were in it when it ended (m4 came
+	// again after, and was taken).
+	if takenAt["m3"] != 15*time.Minute || takenAt["m4"] != 16*time.Minute || len(takenAt) != 2 || expired != 2 {
+		t.Errorf("taken %v, %d no longer waited for", takenAt, expired)
+	}
+	if len(in.held) != 0 {
+		t.Errorf("still held: %v", in.held)
 	}
 }
 
@@ -598,14 +655,14 @@ func TestARefusalHoldsItsPeopleBeforeAnyOtherDeliveryIsTaken(t *testing.T) {
 		// While m3 is refused, another delivery, of the same person's m4, tries to get in, with room for it: it
 		// is decided only after the refusal and its holds, never between them.
 		go func() {
-			out, _ := in.admit([]meta.Inbound{inbound(psid, "m4")}, t0, func(meta.Inbound) bool { return true })
+			out, _, _ := in.admit([]meta.Inbound{inbound(psid, "m4")}, t0, func(meta.Inbound) bool { return true })
 			other <- out
 		}()
 		time.Sleep(20 * time.Millisecond)
 		decided = len(other) > 0
 		return false
 	}
-	out, unheld := in.admit([]meta.Inbound{inbound(psid, "m3"), inbound("PSID-8", "q1")}, t0, full)
+	out, unheld, _ := in.admit([]meta.Inbound{inbound(psid, "m3"), inbound("PSID-8", "q1")}, t0, full)
 	if decided {
 		t.Fatal("another delivery was decided in the middle of this one")
 	}
@@ -629,7 +686,7 @@ func TestPastMostHeldARefusedPersonIsNotHeldAndThatIsCounted(t *testing.T) {
 	in := newIntake(time.Hour, 100, time.Minute)
 	in.mostHeld = 1
 	t0 := time.Unix(1_800_000_000, 0)
-	out, unheld := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1"), inbound("PSID-B", "b2")}, t0,
+	out, unheld, _ := in.admit([]meta.Inbound{inbound("PSID-A", "a1"), inbound("PSID-B", "b1"), inbound("PSID-B", "b2")}, t0,
 		func(meta.Inbound) bool { return false })
 	if out[0].v != refused || unheld != 2 {
 		t.Fatalf("a1: %+v, %d not held", out, unheld)
@@ -647,7 +704,7 @@ func TestPastMostHeldARefusedPersonIsNotHeldAndThatIsCounted(t *testing.T) {
 	for i := range mostWaiting + 1 {
 		many = append(many, inbound("PSID-C", fmt.Sprintf("c%d", i)))
 	}
-	if _, unheld := one.admit(many, t0, func(meta.Inbound) bool { return false }); unheld != 1 {
+	if _, unheld, _ := one.admit(many, t0, func(meta.Inbound) bool { return false }); unheld != 1 {
 		t.Errorf("past mostWaiting: %d not held", unheld)
 	}
 }

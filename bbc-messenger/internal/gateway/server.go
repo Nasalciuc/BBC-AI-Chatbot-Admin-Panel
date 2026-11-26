@@ -220,7 +220,12 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	// One step for the whole delivery: what stops it (a full queue, a person waiting) holds the people of the rest
 	// before any other delivery can be taken (contracts/messenger.md).
-	results, unheld := s.intake.admit(ours, now, s.enqueue)
+	results, unheld, expired := s.intake.admit(ours, now, s.enqueue)
+	if expired > 0 {
+		s.Health.HoldExpired.Add(int64(expired))
+		s.Log.Warn("refused events of a delivery's other people never came again: no longer waited for",
+			"expired", expired)
+	}
 	stop, last := taken, meta.Inbound{}
 	for _, a := range results {
 		if a.expired > 0 {
