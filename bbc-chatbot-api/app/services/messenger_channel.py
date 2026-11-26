@@ -9,8 +9,9 @@ the person goes back in the answer to the gateway, which sends it; an agent's me
 else stored outside a turn) goes out through the gateway's POST /v1/send.
 
 An event is kept in Redis (the inbox) from the moment it is taken until it is answered: one whose turn failed is
-answered a few minutes later by run_messenger_recover (the scheduler's minute), whatever became of the gateway's
-own tries, and its replies go out through /v1/send.
+answered before the person's next event, or a few minutes later by run_messenger_recover (the scheduler's minute),
+whatever became of the gateway's own tries, and its replies go out through /v1/send, once: a send the API makes is
+written down before it starts, and one a stopped process left is never made again.
 
 MESSENGER_CHANNEL (app.flags, off at merge), with MESSENGER_GATEWAY_URL and MESSENGER_GATEWAY_SECRET set: off,
 the inbound route answers 503 and nothing goes out.
@@ -72,16 +73,22 @@ RECOVER_TRIES = 60
 RECOVER_BATCH = 20
 RECOVER_LOCK = "msgr:recover:lock"
 RECOVER_LOCK_S = 300
+# A send of an event's replies by the API (the recovery's, or an earlier event's answered before a later one) is
+# written down before it starts (when) and once it is over ("done"): from then on they may be with the person, and
+# they are never sent again. One begun more than SENDING_S ago and not over is taken for a process that stopped in it
+# (a send waits for the gateway GATEWAY_TIMEOUT_S at most).
+SENDING_S = GATEWAY_TIMEOUT_S + 10
 # The ids of the rows an event stores are made from the event's key and the row's part (uuid5 in this namespace):
 # a delivery made again, or the recovery, stores each once, whatever became of an earlier insert.
 ROW_IDS = uuid.UUID("6f1d3c52-8a4e-4b7f-9d2a-5c0e7b13a948")
 # What a shutdown gives the deliveries still on their way (app.main), then the notes of those it stopped.
 DRAIN_S = 8.0
 NOTES_S = 2.0
-# Agents' messages on their way to Messenger, written down from the moment they are handed on until they went out
-# or their agent was told why not (a hash: a field a delivery, its JSON). A process that stops before either leaves
-# them there, and the next one's recovery minute tells each agent what the shutdown would have; a note that could
-# not be saved stays there too (untold), and the minute saves it. Given up after OUTBOX_KEEP_S (counted).
+# Agents' messages on their way to Messenger, written down before they are handed on (whatever the chat: a site
+# chat's is crossed out once looked up) until they went out or their agent was told why not (a hash: a field a
+# delivery, its JSON). A process that stops before either leaves them there, and the next one's recovery minute
+# tells each agent what the shutdown would have; a note that could not be saved stays there too (untold), and the
+# minute saves it. Given up after OUTBOX_KEEP_S (counted).
 OUTBOX = "msgr:outbox"
 OUTBOX_KEEP_S = 2 * 86400
 # This process, as the deliveries it writes down name it, and how long it is taken for alive after it last said so
@@ -130,7 +137,8 @@ MESSENGER_HEALTH: dict[str, int] = {
     "recovered": 0,          # events answered by the recovery, their replies sent
     "recover_waiting": 0,    # recovery tries that failed again: the next minute tries again
     "recover_given_up": 0,   # events still failing after RECOVER_TRIES, or unreadable: given up
-    "answered_first": 0,     # a person's earlier events still in the inbox, answered before their later one
+    "answered_first": 0,     # a person's earlier events still in the inbox, answered and sent before their later one
+    "recover_unsure": 0,     # events whose replies a process was sending when it stopped: maybe out, never sent again
     "bad_signature": 0,      # calls refused: not the gateway's
     "sent": 0,               # messages sent out of a turn (an agent's, mostly)
     "send_failed": 0,        # of those, refused or lost; by why below
@@ -259,8 +267,9 @@ _CLOSING = False
 async def outbound(conversation_id: str, role: str, row: dict) -> None:
     """A row stored for the person in some chat (conversation_service.add_message): in a Messenger turn it joins
     the turn's answer; outside one, a Messenger chat's row goes out through the gateway, after the chat's previous
-    one (an agent's written down until it went out or they were told). Never raises: the row is saved whatever
-    happens here."""
+    one. An agent's is written down first, before it is handed on (whatever the chat: where it goes is looked up
+    after), until it went out or they were told: a stop at any point after leaves it for the next process's minute.
+    Never raises: the row is saved whatever happens here."""
     try:
         turn = _TURN.get()
         if turn is not None and turn.open and turn.conversation_id == conversation_id:
@@ -269,19 +278,31 @@ async def outbound(conversation_id: str, role: str, row: dict) -> None:
         if not enabled():
             return
         if _CLOSING:
-            # The process is going: nothing starts now, and on a Messenger chat the agent is told to send it again.
-            if await _target(conversation_id, role):
-                MESSENGER_HEALTH["cut_at_shutdown"] += 1
-                if role == "agent":
-                    await _tell(await _write_down(conversation_id), conversation_id, NOT_SENT_RESTART)
+            await _not_started(conversation_id, role, None)
+            return
+        entry = await _write_down(conversation_id) if role == "agent" else None
+        if _CLOSING:
+            # The stop came while it was written down: nothing starts now.
+            await _not_started(conversation_id, role, entry)
             return
         prev = _LAST.get(conversation_id)
-        task = asyncio.create_task(_deliver_after(prev, conversation_id, role, row))
+        task = asyncio.create_task(_deliver_after(prev, conversation_id, role, row, entry))
         _LAST[conversation_id] = task
         task.add_done_callback(lambda t, cid=conversation_id: _LAST.pop(cid, None) if _LAST.get(cid) is t else None)
     except Exception as e:
         MESSENGER_HEALTH["send_failed"] += 1
         logger.error(f"[messenger] conv {conversation_id}: a row not handed on: {type(e).__name__}: {e}")
+
+
+async def _not_started(conversation_id: str, role: str, entry: Optional[str]) -> None:
+    """A row the process going did not start (nothing starts once a shutdown began): on a Messenger chat the agent
+    is told to send it again; a site chat's written-down delivery is crossed out."""
+    if await _target(conversation_id, role):
+        MESSENGER_HEALTH["cut_at_shutdown"] += 1
+        if role == "agent":
+            await _tell(entry or await _write_down(conversation_id), conversation_id, NOT_SENT_RESTART)
+        return
+    await _cross_out(entry)
 
 
 async def drain(conversation_id: str) -> None:
@@ -310,17 +331,17 @@ async def drain_all(budget_s: float = DRAIN_S) -> dict:
     return {"left": len(pending)}
 
 
-async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, role: str, row: dict) -> None:
-    # Where it goes (once known: a site chat's row goes nowhere) and, for an agent's, its entry in the outbox: what a
-    # stop tells the agent depends on both.
-    state: dict[str, Any] = {"sending": False, "known": False, "target": None, "entry": None}
+async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, role: str, row: dict,
+                         entry: Optional[str] = None) -> None:
+    # Where it goes (once known: a site chat's row goes nowhere) and, for an agent's, its entry in the outbox (written
+    # down before this started): what a stop tells the agent depends on both.
+    state: dict[str, Any] = {"sending": False, "known": False, "target": None, "entry": entry}
     try:
         state["target"] = await _target(conversation_id, role)
         state["known"] = True
         if not state["target"]:
+            await _cross_out(entry)
             return
-        if role == "agent":
-            state["entry"] = await _write_down(conversation_id)
         if prev is not None:
             await asyncio.gather(prev, return_exceptions=True)
         if not enabled():
@@ -333,12 +354,16 @@ async def _deliver_after(prev: Optional[asyncio.Task], conversation_id: str, rol
     except asyncio.CancelledError:
         # A shutdown that could not wait for it (drain_all): on a Messenger chat its agent is told, as for a send
         # that failed (maybe sent, when it was with the gateway already). Stopped before the note is saved, it stays
-        # written down for the next process.
-        if state["sending"] or state["target"] or (not state["known"] and await _target(conversation_id, role)):
+        # written down for the next process; a site chat's is crossed out.
+        if not state["known"]:
+            state["target"] = await _target(conversation_id, role)
+        if state["sending"] or state["target"]:
             MESSENGER_HEALTH["cut_at_shutdown"] += 1
             if role == "agent":
                 await _tell(state["entry"], conversation_id,
                             NOT_SENT["unknown"] if state["sending"] else NOT_SENT_RESTART)
+        else:
+            await _cross_out(state["entry"])
         raise
     except Exception as e:
         MESSENGER_HEALTH["send_failed"] += 1
@@ -498,6 +523,27 @@ async def _target(conversation_id: str, role: str) -> Optional[dict]:
     return {"page_id": t["page_id"], "psid": t["psid"]}
 
 
+async def _on_messenger(conversation_id: str) -> Optional[bool]:
+    """Whether a chat is on Messenger, as the recovery minute needs it for a delivery a stopped process left: None
+    when it can't be told now (Redis or the chat not read: rule 7), never a guess."""
+    r = get_redis()
+    if r is not None:
+        try:
+            if await r.get(f"msgr:conv:{conversation_id}"):
+                return True
+        except Exception as e:
+            redis_failed("messenger target", e)
+            logger.warning(f"[messenger] conv {conversation_id}: target not read from Redis: {type(e).__name__}: {e}")
+            return None
+    from app.db import supabase as db
+
+    conv = await db.get_conversation_simple(conversation_id)
+    if conv is None:
+        return None
+    meta = conv.get("metadata") or {}
+    return isinstance(meta, dict) and meta.get("chat_channel") == "messenger"
+
+
 async def _keep_target(conversation_id: str, page_id: str, psid: str) -> None:
     r = get_redis()
     if r is None:
@@ -512,9 +558,11 @@ async def _keep_target(conversation_id: str, page_id: str, psid: str) -> None:
 async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str] = None) -> dict:
     """The gateway's POST /v1/send: {"sent": n, "parts": m, "parts_sent": k, "failed": {"kind", …}?} (a long
     message is several on Messenger: parts_sent of them went out). With no answer from the gateway (counted):
-    {"sent": 0, "failed": {"kind": "gateway"}} when the call never reached it or it refused the call (nothing went
-    out), "unknown" when it had the call and its answer never came (a lost connection, the wait over, a proxy's 502
-    or 504, an answer that is not one): what went out is not known, and it is never sent again."""
+    {"sent": 0, "failed": {"kind": "gateway"}} only when the call is known to have gone nowhere (never reached it
+    whole, or turned away with a 3xx or 4xx: the gateway refuses a call before it sends anything, and so does a
+    proxy before it); "unknown" for anything else (a lost connection, the wait over, any 5xx, which the gateway
+    never answers itself and a proxy may answer once the gateway had the call, an answer that is not one): what
+    went out is not known, and it is never sent again."""
     import httpx
     from config.settings import settings
 
@@ -536,10 +584,10 @@ async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str]
                 return out
             logger.error("[messenger] the gateway answered a send with something that is not one")
         else:
-            # The gateway refuses a call before it sends anything (a 4xx; 503 from the way in): nothing went out.
-            # A proxy's 502 or 504 says only that the gateway's answer did not come.
-            kind = "unknown" if res.status_code in (502, 504) else "gateway"
-            logger.error(f"[messenger] the gateway refused a send: {res.status_code}")
+            # Turned away (the gateway's own refusals are a 4xx, before it sends anything): nothing went out. A 5xx
+            # is never the gateway's (whatever it says, a proxy's: maybe after the gateway had it).
+            kind = "gateway" if 300 <= res.status_code < 500 else "unknown"
+            logger.error(f"[messenger] a send answered {res.status_code} ({kind})")
     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteError, httpx.WriteTimeout) as e:
         # Never reached it whole (the gateway reads the whole call before it does anything): nothing went out.
         kind = "gateway"
@@ -584,10 +632,12 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         MESSENGER_HEALTH["duplicates"] += 1
         return {"replies": kept.get("replies") or []}
     in_inbox = await _keep_event(event)
+    replies: list[dict] = []
     try:
-        # Never before an earlier event of theirs still in the inbox (its turn failed): it goes first, now.
-        replies = await _answer_earlier(event, by)
-        replies += await _answer(event)
+        # Never before an earlier event of theirs still in the inbox (its turn failed): it is answered and sent
+        # first, now.
+        await _answer_earlier(event)
+        replies = await _answer(event)
     except StillAnswering:
         await _forget(key)
         raise
@@ -601,17 +651,27 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
     return {"replies": replies}
 
 
-async def _answer_earlier(event: InboundEvent, by: str) -> list[dict]:
+async def _answer_earlier(event: InboundEvent) -> None:
     """The person's events taken before this one and not answered yet (in the inbox: their turn failed), answered
-    now, oldest first, so this one never comes before them: their replies go first, with this one's. One being
-    answered elsewhere, or answered with its replies still the recovery's to send: this one waits (StillAnswering:
-    the gateway tries again in a moment). One that fails again: this one fails too, and waits in the inbox behind
-    it."""
-    out: list[dict] = []
+    now, oldest first, and their replies sent through the gateway before this one's turn (as the recovery sends
+    them), so this one never comes before them and none of theirs is lost if this one fails. One being answered
+    elsewhere, or answered with its replies still to send (the gateway could not be reached, or a send is on its way):
+    this one waits (StillAnswering: the gateway tries again in a moment). One that fails again: this one fails too,
+    and waits in the inbox behind it."""
+    r = get_redis()
+    if r is None:
+        return
     for k in await _earlier_kept(event):
         earlier = await _kept_event(k)
         if earlier is None:
             continue  # unreadable: the recovery gives it up
+        sending = await _send_state(r, k)
+        if sending == "on_its_way":
+            MESSENGER_HEALTH["still_answering"] += 1
+            raise StillAnswering()  # its replies are being sent: this one comes after them
+        if sending != "none":
+            await _send_ended(k, _who(earlier), sending)
+            continue
         key = f"msgr:event:{k}"
         state, kept = await _claim(key)
         if state == "pending":
@@ -628,11 +688,14 @@ async def _answer_earlier(event: InboundEvent, by: str) -> list[dict]:
         except Exception:
             await _forget(key)
             raise
-        await _remember(key, replies, by)
-        await _release_event(k, _who(earlier))
         MESSENGER_HEALTH["answered_first"] += 1
-        out += replies
-    return out
+        if replies:
+            # Written down before its answer is kept as the API's to send: the recovery never sends it beside this.
+            await _begin_send(r, k)
+        await _remember(key, replies, "api")
+        if replies and not await _send_kept(r, earlier, k, replies):
+            raise StillAnswering()  # never reached the gateway: kept, the recovery sends it, and this one waits
+        await _release_event(k, _who(earlier))
 
 
 async def _claim(key: str) -> tuple[str, dict]:
@@ -728,11 +791,66 @@ async def _release_event(k: str, who: Optional[str] = None) -> None:
         pipe.zrem(INBOX, k)
         if who:
             pipe.zrem(who, k)
-        pipe.delete(f"{INBOX}:{k}", f"{INBOX}:tries:{k}")
+        pipe.delete(f"{INBOX}:{k}", f"{INBOX}:tries:{k}", _sending_key(k))
         await pipe.execute()
     except Exception as e:
         redis_failed("messenger inbox", e)
         logger.warning(f"[messenger] an answered event not taken out of the inbox: {type(e).__name__}: {e}")
+
+
+def _sending_key(k: str) -> str:
+    return f"{INBOX}:sending:{k}"
+
+
+async def _send_state(r, k: str) -> str:
+    """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun), "on_its_way" (begun
+    lately: its process may still be at it), "begun" (begun and never over: its process stopped in it), "done" (over,
+    and the event not taken out of the inbox after). Redis failing raises."""
+    raw = await r.get(_sending_key(k))
+    if raw is None:
+        return "none"
+    if raw == "done":
+        return "done"
+    since = 0.0  # unreadable: taken for one begun long ago
+    try:
+        since = float(raw)
+    except ValueError as e:
+        logger.warning(f"[messenger] a send's mark not readable, taken for one begun long ago: {e}")
+    return "on_its_way" if time.time() - since < SENDING_S else "begun"
+
+
+async def _begin_send(r, k: str) -> None:
+    """A send of a kept event's replies written down before it starts: from now on they are never sent again."""
+    await r.set(_sending_key(k), str(time.time()), ex=INBOX_KEEP_S)
+
+
+async def _send_kept(r, event: InboundEvent, k: str, replies: list[dict]) -> bool:
+    """A kept event's replies sent through the gateway, the send written down already (_begin_send). True once the
+    event is done with: they went out, or may have, or Meta refused them (counted, never sent again); False when the
+    call never reached the gateway (nothing went out: the mark is cleared, and they go again later)."""
+    result = await send(event.page_id, event.psid, replies)
+    failed = result.get("failed") or {}
+    kind = str(failed.get("kind") or "")
+    if failed and kind == "gateway":
+        await r.delete(_sending_key(k))
+        return False
+    await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
+    if failed:
+        MESSENGER_HEALTH["send_failed"] += 1
+        if kind == "unknown":
+            MESSENGER_HEALTH["unconfirmed"] += 1
+        logger.warning(f"[messenger] a kept event's replies not sent ({kind or 'no kind'})")
+    return True
+
+
+async def _send_ended(k: str, who: Optional[str], sending: str) -> None:
+    """A kept event whose replies a send has had ("done", or "begun" by a process that stopped in it): never sent
+    again, out of the inbox. One begun and never over may be with the person, or not (counted)."""
+    if sending == "begun":
+        MESSENGER_HEALTH["recover_unsure"] += 1
+        logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with "
+                       "the person, never sent again")
+    await _release_event(k, who)
 
 
 async def _earlier_kept(event: InboundEvent) -> list[str]:
@@ -1090,8 +1208,9 @@ async def run_messenger_recover() -> dict:
 
 async def _tell_left(r) -> int:
     """The agents' messages written down that no live process is on (theirs stopped: its alive mark is gone), and
-    the notes not saved (untold): each agent told now, once (the note's id is the delivery's). How many were told.
-    One whose note still is not saved after OUTBOX_KEEP_S, or unreadable, is given up (counted)."""
+    the notes not saved (untold): each agent told now, once (the note's id is the delivery's), when the chat is on
+    Messenger (one left before that was looked up is looked up now). How many were told. One whose note still is not
+    saved after OUTBOX_KEEP_S, or whose chat could not be read by then, or unreadable, is given up (counted)."""
     told = 0
     try:
         entries = await r.hgetall(OUTBOX)
@@ -1110,6 +1229,20 @@ async def _tell_left(r) -> int:
                     alive[boot] = boot == BOOT or bool(await r.exists(f"msgr:alive:{boot}"))
                 if alive[boot]:
                     continue  # on its way in a live process
+            if state == "waiting":
+                # Written down before where it goes was looked up: a site chat's says nothing; a chat not read now
+                # is looked at again next minute (given up after OUTBOX_KEEP_S).
+                on = await _on_messenger(cid)
+                if on is False:
+                    await r.hdel(OUTBOX, entry)
+                    continue
+                if on is None:
+                    if time.time() - at > OUTBOX_KEEP_S:
+                        await r.hdel(OUTBOX, entry)
+                        MESSENGER_HEALTH["outbox_given_up"] += 1
+                        logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat could not be read "
+                                     f"for {OUTBOX_KEEP_S // 3600} h: given up")
+                    continue
             note = d.get("note") or (NOT_SENT["unknown"] if state == "sending" else NOT_SENT_RESTART)
             if await _tell_agent(cid, str(note), _note_id(entry)):
                 await r.hdel(OUTBOX, entry)
@@ -1127,8 +1260,9 @@ async def _tell_left(r) -> int:
 
 
 async def _recover_one(r, k: str, waiting: set[str]) -> str:
-    """One kept event: "answered" (its replies sent, or none to send), "waiting" (the next minute tries again;
-    its person's later events wait behind it, `waiting`), or "given_up"."""
+    """One kept event: "answered" (its replies sent, or none to send, or a send of them had before: never made
+    again), "waiting" (the next minute tries again; its person's later events wait behind it, `waiting`), or
+    "given_up"."""
     raw = await r.get(f"{INBOX}:{k}")
     event: Optional[InboundEvent] = None
     if raw:
@@ -1139,6 +1273,17 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
     who = _who(event) if event is not None else None
     if who is not None and who in waiting:
         return "waiting"  # behind an earlier one of theirs this minute
+    # Its replies sent already (the inbox not cleared after), or being sent, or left half sent by a process that
+    # stopped: never sent again.
+    sending = await _send_state(r, k)
+    if sending == "on_its_way":
+        MESSENGER_HEALTH["recover_waiting"] += 1
+        if who is not None:
+            waiting.add(who)
+        return "waiting"
+    if sending != "none":
+        await _send_ended(k, who, sending)
+        return "answered"
     tries = await r.incr(f"{INBOX}:tries:{k}")
     await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
     if event is None or tries > RECOVER_TRIES:
@@ -1164,18 +1309,13 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         return "waiting"
     replies = out.get("replies") or []
     if replies:
-        result = await send(event.page_id, event.psid, replies)
-        failed = result.get("failed") or {}
-        if failed.get("kind") == "gateway":
+        await _begin_send(r, k)
+        if not await _send_kept(r, event, k, replies):
             # Never reached the gateway: kept as answered, the next minute sends the same replies, without a second
             # turn (and the person's later events wait for them).
             MESSENGER_HEALTH["recover_waiting"] += 1
             waiting.add(who)
             return "waiting"
-        if failed:
-            # Refused, or maybe out ("unknown": never sent again, the gateway may have delivered it).
-            MESSENGER_HEALTH["send_failed"] += 1
-            logger.warning(f"[messenger] a recovered event's replies not sent ({failed.get('kind') or 'no kind'})")
     await _release_event(k, who)
     MESSENGER_HEALTH["recovered"] += 1
     return "answered"

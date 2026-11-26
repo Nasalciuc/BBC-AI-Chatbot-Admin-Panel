@@ -7,6 +7,7 @@ the person's chat, the same turn a widget message takes, what goes back to the g
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -684,9 +685,14 @@ async def test_an_agents_message_that_did_not_go_out_tells_the_agent(redis, answ
     (lambda request: (_ for _ in ()).throw(__import__("httpx").RemoteProtocolError("gone", request=request)), "unknown"),
     (lambda request: __import__("httpx").Response(504, text="upstream timed out"), "unknown"),
     (lambda request: __import__("httpx").Response(200, text="not json"), "unknown"),
-    # Rule 5: it never had the call, or refused it before sending anything: not sent.
+    # Any 5xx is a proxy's (the gateway never answers one): it may have come once the gateway had the call.
+    (lambda request: __import__("httpx").Response(500, text="internal error"), "unknown"),
+    (lambda request: __import__("httpx").Response(503, text="upstream connect error or disconnect/reset"), "unknown"),
+    # Rule 5: it never had the call, or it was turned away before anything was sent: not sent.
     (lambda request: (_ for _ in ()).throw(__import__("httpx").ConnectError("refused", request=request)), "gateway"),
     (lambda request: __import__("httpx").Response(401, text="unauthorized"), "gateway"),
+    (lambda request: __import__("httpx").Response(404, text="unknown page"), "gateway"),
+    (lambda request: __import__("httpx").Response(308, headers={"location": "https://elsewhere.test"}), "gateway"),
 ])
 async def test_the_gateways_silence_once_it_had_the_call_is_unknown(monkeypatch, answer, kind):
     import httpx
@@ -765,6 +771,7 @@ async def test_a_widget_chat_sends_nothing_anywhere(redis, monkeypatch):
     finally:
         c.stop()
     assert gw.sent == [] and mc.MESSENGER_HEALTH["sent"] == 0
+    assert not redis.kv.get(mc.OUTBOX), "the agent's message, written down first, crossed out once looked up"
 
 
 @pytest.mark.asyncio
@@ -903,6 +910,59 @@ async def test_a_note_the_shutdown_could_not_wait_for_is_written_by_the_next_pro
 
 
 @pytest.mark.asyncio
+async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_next_process(redis, monkeypatch):
+    """CodeRabbit #288: the outbox's write held up when the shutdown begins, then the note to the agent too slow:
+    the message is written down before anything a stop can cut, nothing goes out, and the next process's minute
+    tells the agent, once."""
+    import asyncio
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    gate = asyncio.Event()
+    real_hset = redis.hset
+
+    async def held_up(*a, **kw):
+        await gate.wait()
+        return await real_hset(*a, **kw)
+
+    c = Chat().start()
+    real = c.add_message
+
+    async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
+        if role == "system":
+            await asyncio.sleep(30)
+        return await real(conversation_id, role, content, model_used, cost, message_id=message_id)
+
+    gw = Gateway([])
+    try:
+        with patch("app.db.supabase.add_message", new=notes_hang), patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            monkeypatch.setattr(redis, "hset", held_up)
+            saving = asyncio.create_task(add_message(CONV, "agent", "Written while the server stops"))
+            await asyncio.sleep(0.01)
+            assert (await mc.drain_all(0.05)) == {"left": 0}, "nothing was handed on yet"
+            gate.set()
+            await asyncio.sleep(0.01)
+            # Written down; nothing started after (the stop had begun), and the agent's note hangs: the process goes.
+            assert len(redis.kv[mc.OUTBOX]) == 1 and gw.sent == [] and not saving.done()
+            saving.cancel()
+            await asyncio.sleep(0)
+            monkeypatch.setattr(redis, "hset", real_hset)
+        assert not [r for r in c.rows if r["role"] == "system"]
+        stopped = mc.BOOT
+        monkeypatch.setattr(mc, "BOOT", "the-next-process")
+        monkeypatch.setattr(mc, "_CLOSING", False)
+        redis.kv.pop(f"msgr:alive:{stopped}")
+        out = await mc.run_messenger_recover()
+        again = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    notes = [r["content"] for r in c.rows if r["role"] == "system"]
+    assert out["told"] == 1 and again["told"] == 0 and notes == [mc.NOT_SENT_RESTART] and gw.sent == []
+    assert not redis.kv[mc.OUTBOX] and mc.MESSENGER_HEALTH["cut_at_shutdown"] == 1
+
+
+@pytest.mark.asyncio
 async def test_an_agents_note_that_could_not_be_saved_is_saved_by_the_next_minute(redis):
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     c = Chat().start()
@@ -934,24 +994,32 @@ async def test_what_is_left_written_down_is_told_once_and_what_cannot_be_is_give
         return json.dumps({"cid": CONV, "state": "waiting", "at": time.time(), **d})
 
     redis.kv["msgr:alive:alive-one"] = "1"
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     redis.kv[mc.OUTBOX] = {
         "e-alive": entry(boot="alive-one"),
         "e-gone": entry(boot="gone-one"),
         "e-told": entry(boot="gone-one", state="sending"),
         "e-bad": "not json",
         "e-old": entry(boot="gone-one", state="untold", note="An old note", at=time.time() - mc.OUTBOX_KEEP_S - 1),
+        # Left before where it went was looked up: a site chat's says nothing; one whose chat can't be read now is
+        # looked at again next minute, and given up after OUTBOX_KEEP_S.
+        "e-site": entry(boot="gone-one", cid="site-chat"),
+        "e-unread": entry(boot="gone-one", cid="unread-chat"),
+        "e-unread-old": entry(boot="gone-one", cid="unread-chat", at=time.time() - mc.OUTBOX_KEEP_S - 1),
     }
+    chats = {"site-chat": {"id": "site-chat", "metadata": {"site": "bbc"}}}
     c = Chat().start()
     c.rows.append({"id": mc._note_id("e-told"), "conversation_id": CONV, "role": "system",
                    "content": mc.NOT_SENT["unknown"], "created_at": now_iso()})
     c.saves["system"] = ["", "", "fail"]
     try:
-        out = await mc.run_messenger_recover()
+        with patch("app.db.supabase.get_conversation_simple", new=AsyncMock(side_effect=lambda cid: chats.get(cid))):
+            out = await mc.run_messenger_recover()
     finally:
         c.stop()
-    assert set(redis.kv[mc.OUTBOX]) == {"e-alive"}
+    assert set(redis.kv[mc.OUTBOX]) == {"e-alive", "e-unread"}
     assert [r["content"] for r in c.rows if r["role"] == "system"] == [mc.NOT_SENT["unknown"], mc.NOT_SENT_RESTART]
-    assert out["told"] == 2 and mc.MESSENGER_HEALTH["outbox_given_up"] == 2
+    assert out["told"] == 2 and mc.MESSENGER_HEALTH["outbox_given_up"] == 3
 
 
 # ── the events whose turn failed ──────────────────────────────────
@@ -1049,20 +1117,23 @@ def _turns(chat, fail_first: int = 0):
 @pytest.mark.asyncio
 async def test_a_later_message_never_comes_before_an_earlier_one_whose_turn_failed(chat, redis):
     """The person's first message failed (kept in the inbox, CodeRabbit #288); their second, from the gateway, has
-    the first answered before it, now: both answers go back in order, and nothing is left for the recovery."""
+    the first answered and its replies sent before its own turn: in order, each once, nothing left for the
+    recovery."""
     _turns(chat, fail_first=1)
     with pytest.raises(mc.EventFailed):
         await mc.handle(event(mid="m1", text="First"))
-    out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
-    assert [r["text"] for r in out["replies"]] == ["About: First", "About: Second"]
-    assert [(r["role"], r["content"]) for r in chat.rows] == [
-        ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
-    assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["answered_first"] == 1
-    # The recovery finds nothing to do; a delivery made again of either gets nothing new.
-    with patch.object(mc, "send", new=Gateway([])) as gw:
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"]
+        assert [(r["role"], r["content"]) for r in chat.rows] == [
+            ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
+        assert not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["answered_first"] == 1
+        # The recovery finds nothing to do; a delivery made again of either gets nothing new.
         assert (await mc.run_messenger_recover())["answered"] == 0
-    assert gw.sent == [] and (await mc.handle(event(mid="m2", text="Second", timestamp=200)))["replies"] == out[
-        "replies"]
+        assert (await mc.handle(event(mid="m2", text="Second", timestamp=200)))["replies"] == out["replies"]
+        assert (await mc.handle(event(mid="m1", text="First")))["replies"] == []
+    assert gw.sent == ["About: First"]
     # Rule 5: another person's message does not wait for this person's.
     assert (await mc.handle(event(mid="q1", psid="PSID-8", text="Hello")))["replies"] == [{"text": "About: Hello"}]
 
@@ -1081,10 +1152,64 @@ async def test_a_later_message_waits_while_an_earlier_one_is_still_being_answere
     redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "About: First"}], "by": "api"})
     with pytest.raises(mc.StillAnswering):
         await mc.handle(event(mid="m2", text="Second", timestamp=200))
-    # Sent and out of the inbox: m2 goes on.
-    await mc._release_event("m1", mc._who(event(mid="m1")))
-    assert [r["text"] for r in (await mc.handle(event(mid="m2", text="Second", timestamp=200)))["replies"]] == [
-        "About: Second"]
+    # Their send on its way (begun a moment ago): m2 still waits.
+    redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time())
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    # A send a stopped process began long ago: maybe out, never sent again; m1 leaves the inbox, and m2 goes on.
+    redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time() - mc.SENDING_S - 1)
+    with patch.object(mc, "send", new=Gateway([])) as gw:
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
+    assert mc.MESSENGER_HEALTH["recover_unsure"] == 1 and "m1" not in redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_answer_is_sent_even_when_the_later_turn_then_fails(chat, redis):
+    """CodeRabbit #288: m1 answered on m2's delivery, then m2's own turn fails. m1's replies went out before m2's
+    turn, once, and are never lost with m2's failure; m2, delivered again, gets its own."""
+    calls = {"n": 0}
+
+    async def turn(req, add_message):
+        calls["n"] += 1
+        if calls["n"] in (1, 3):  # m1's first try, then m2's first
+            raise RuntimeError("database away")
+        await add_message(req.conversation_id, "user", req.message)
+        row = await add_message(req.conversation_id, "ai", f"About: {req.message}")
+        return ChatResponse(conversation_id=req.conversation_id, message=row["content"], type="ai", model_used="x")
+
+    chat.answer = turn
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.EventFailed) as failed:
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert failed.value.kept and gw.sent == ["About: First"] and set(redis.kv[mc.INBOX]) == {"m2"}
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert (await mc.run_messenger_recover())["answered"] == 0
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == ["About: First"]
+    assert calls["n"] == 4 and not redis.kv[mc.INBOX], "m1's turn once, never again for m2's sake"
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_answer_the_gateway_could_not_take_goes_with_the_recovery_and_the_later_waits(chat, redis):
+    """Rule 5: m1's replies never reached the gateway (nothing went out): kept as the recovery's to send, m2 waits
+    behind them; the recovery sends them without a second turn, then m2 goes on."""
+    calls = _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    with patch.object(mc, "send", new=gw):
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert set(redis.kv[mc.INBOX]) == {"m1", "m2"} and f"{mc.INBOX}:sending:m1" not in redis.kv
+        redis.kv[mc.INBOX]["m1"] -= mc.RECOVER_AFTER_S + 1
+        assert (await mc.run_messenger_recover())["answered"] == 1
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    # The first call never reached the gateway; the recovery's did.
+    assert gw.sent == ["About: First", "About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"]
+    assert calls["n"] == 3 and not redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio
@@ -1119,6 +1244,46 @@ async def test_a_recovered_answer_the_gateway_may_have_sent_is_never_sent_again(
         assert (await mc.run_messenger_recover())["answered"] == 1
         assert (await mc.run_messenger_recover())["state"] == "empty"
     assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+async def test_recovered_replies_sent_and_left_in_the_inbox_are_never_sent_again(chat, redis, monkeypatch):
+    """CodeRabbit #288: the replies sent, then the inbox not cleared (the process stopped right after, or Redis
+    failed): the next minute takes the event out of the inbox and sends nothing."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    real = mc._release_event
+    tries = {"n": 0}
+
+    async def not_cleared_once(k, who=None):
+        tries["n"] += 1
+        if tries["n"] > 1:
+            await real(k, who)
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        monkeypatch.setattr(mc, "_release_event", not_cleared_once)
+        assert (await mc.run_messenger_recover())["answered"] == 1
+        assert "m1" in redis.kv[mc.INBOX] and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+        assert (await mc.run_messenger_recover())["answered"] == 1
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and not redis.kv[mc.INBOX]
+    assert mc.MESSENGER_HEALTH["recover_unsure"] == 0 and f"{mc.INBOX}:sending:m1" not in redis.kv
+
+
+@pytest.mark.asyncio
+async def test_replies_a_stopped_process_was_sending_are_never_sent_again(chat, redis):
+    """A process stopped in the middle of the send (begun, never over): maybe with the person, never sent again
+    (counted). Rule 5: begun a moment ago, its process may still be at it: waits, still in the inbox."""
+    await _fail_once(chat, redis)
+    redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "Sorry for the wait!"}], "by": "api"})
+    redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time() - 5)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        assert (await mc.run_messenger_recover())["waiting"] == 1 and "m1" in redis.kv[mc.INBOX]
+        redis.kv[f"{mc.INBOX}:sending:m1"] = str(time.time() - mc.SENDING_S - 1)
+        assert (await mc.run_messenger_recover())["answered"] == 1
+    assert gw.sent == [] and not redis.kv[mc.INBOX] and mc.MESSENGER_HEALTH["recover_unsure"] == 1
+    assert len(chat.requests) == 1, "no second turn"
 
 
 @pytest.mark.asyncio
