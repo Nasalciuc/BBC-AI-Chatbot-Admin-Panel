@@ -1,4 +1,5 @@
 """Conversation service — business logic for conversations."""
+import contextlib
 import logging
 import uuid
 from typing import Optional, Any
@@ -47,7 +48,8 @@ async def add_message(conversation_id: str, role: str, content: str,
     # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
     # from the Page's inbox, a note for the agent). Nothing here while the channel is off. The row's place in the
     # chat's order is taken the moment it is stored (db.add_message calls back before it awaits anything else, the
-    # activity clocks included), so a chat's rows go out in the order they were stored, whatever is slow after.
+    # activity clocks included), and a chat's rows are stored one at a time in this process (in_order): they go out
+    # in the order they were stored, however long an insert's answer, or what follows it, takes.
     follows: list = []
 
     def hand_on(stored: dict) -> None:
@@ -57,14 +59,16 @@ async def add_message(conversation_id: str, role: str, content: str,
     kw: dict = {"message_id": message_id} if message_id else {}
     if outbound and role in ("ai", "agent", "system") and channel_on:
         kw["on_stored"] = hand_on
-    row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
-    if not row and entry is not None:
-        # Its insert may have landed with its answer lost: asked again under the same id, the row stored before comes
-        # back (StoredBefore), or it is stored now. Still none: stored or not is not known, and the recovery minute
-        # looks the row up (this process alive or not): stored, the agent is told it was not sent.
+    ordered = messenger_channel.in_order(conversation_id) if "on_stored" in kw else contextlib.nullcontext()
+    async with ordered:
         row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
-        if not row:
-            await messenger_channel.unsure(entry, conversation_id, message_id)
+        if not row and entry is not None:
+            # Its insert may have landed with its answer lost: asked again under the same id, the row stored before
+            # comes back (StoredBefore), or it is stored now. Still none: stored or not is not known, and the recovery
+            # minute looks the row up (this process alive or not): stored, the agent is told it was not sent.
+            row = await db.add_message(conversation_id, role, content, model_used, cost, **kw)
+            if not row:
+                await messenger_channel.unsure(entry, conversation_id, message_id)
     for follow in follows:
         if follow is not None:
             await follow

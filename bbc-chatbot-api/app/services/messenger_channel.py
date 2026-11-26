@@ -276,6 +276,27 @@ def _collecting(conversation_id: str):
 # One delivery after another for each chat in this process: an agent's "joined" line and their message never
 # cross on the way out.
 _LAST: dict[str, asyncio.Task] = {}
+# A chat's rows for the person stored one at a time in this process (in_order), from before the insert to their
+# place in the chat's order: they go out in the order the database stored them, whatever an insert's answer took to
+# come back. [the lock, how many hold or wait for it]
+_ORDER: dict[str, list] = {}
+
+
+@contextlib.asynccontextmanager
+async def in_order(conversation_id: str):
+    """One of a chat's rows stored and given its place (conversation_service.add_message) while no other of its rows
+    is: the order of the places is the order of the stores."""
+    slot = _ORDER.setdefault(conversation_id, [asyncio.Lock(), 0])
+    slot[1] += 1
+    try:
+        async with slot[0]:
+            yield
+    finally:
+        slot[1] -= 1
+        if not slot[1] and _ORDER.get(conversation_id) is slot:
+            del _ORDER[conversation_id]
+# Set by a shutdown (drain_all): no delivery starts after it.
+_CLOSING = False
 # Set by a shutdown (drain_all): no delivery starts after it.
 _CLOSING = False
 

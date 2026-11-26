@@ -49,6 +49,7 @@ def fresh(monkeypatch):
         mc.MESSENGER_HEALTH[k] = 0
     mc._LAST.clear()
     mc._UNSENT.clear()
+    mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
     monkeypatch.setattr(settings, "messenger_gateway_url", "https://gateway.example.test")
@@ -830,8 +831,9 @@ async def test_a_chats_rows_go_out_in_the_order_they_were_stored(redis, monkeypa
 @pytest.mark.asyncio
 async def test_a_rows_place_is_taken_as_the_database_stores_it_before_its_activity_clocks(redis):
     """CodeRabbit #288, the real db.add_message: the agent's message inserted, then the chat's activity clocks slow to
-    update: it takes its place in the chat's order the moment it is stored, so a line stored after it goes out after
-    it. Rule 5: a row the database refused takes no place and goes nowhere."""
+    update: it takes its place in the chat's order the moment it is stored, and a line for the same chat is stored
+    after it (one at a time), so it goes out after it. Rule 5: a row the database refused takes no place and goes
+    nowhere."""
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import MagicMock
@@ -878,9 +880,13 @@ async def test_a_rows_place_is_taken_as_the_database_stores_it_before_its_activi
 
         agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
         await asyncio.wait_for(clocks.wait(), 1)  # stored, its clocks being updated
-        await add_message(CONV, "system", "Ana shared the itinerary")
+        line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not line.done(), "the chat's next row waits for the one being stored"
         go_on.set()
         assert (await agent)["content"] == "Hi, I'm Ana."
+        await asyncio.wait_for(line, 1)
         refuse["on"] = True
         assert await add_message(CONV, "system", "Refused by the database") is None
         await mc.drain(CONV)
@@ -889,6 +895,71 @@ async def test_a_rows_place_is_taken_as_the_database_stores_it_before_its_activi
     assert [r["content"] for r in stored] == ["Hi, I'm Ana.", "Ana shared the itinerary"]
     assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "out in the order stored"
     assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+async def test_a_chats_rows_are_stored_one_at_a_time_however_long_an_inserts_answer_takes(redis):
+    """CodeRabbit #288, the real db.add_message: the agent's message stored, its insert's answer slow to come back,
+    and a line for the same chat saved meanwhile: the line's insert waits for the agent's row (a chat's rows are
+    stored and placed one at a time in this process), so it is stored after it and goes out after it. Rule 5:
+    another chat's row never waits for this one's."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.db import supabase as db
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    stored: list[dict] = []
+
+    def insert(payload):
+        def execute():
+            row = {"id": payload.get("id") or f"r{len(stored) + 1}", "created_at": now_iso(), **payload}
+            stored.append(row)
+            return SimpleNamespace(data=[row])
+
+        return SimpleNamespace(execute=execute)
+
+    client = MagicMock()
+    client.table.return_value.insert.side_effect = insert
+    landed, answer = asyncio.Event(), asyncio.Event()
+
+    async def run_sync(fn, **kw):
+        out = fn()  # the database has it
+        if out.data[0]["role"] == "agent" and not answer.is_set():
+            landed.set()
+            await answer.wait()  # its answer on its way back
+        return out
+
+    async def touch(*a, **kw):
+        return None
+
+    order: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        order.append(messages[0]["text"])
+        return {"sent": 1}
+
+    with patch.object(db, "get_client", return_value=client), patch.object(db, "_run_sync", new=run_sync), \
+            patch.object(db, "_touch_conversation_activity", new=touch), patch.object(mc, "send", new=gw), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock()):
+        from app.services.conversation_service import add_message
+
+        agent = asyncio.create_task(add_message(CONV, "agent", "Hi, I'm Ana."))
+        await asyncio.wait_for(landed.wait(), 1)
+        line = asyncio.create_task(add_message(CONV, "system", "Ana shared the itinerary"))
+        assert await asyncio.wait_for(add_message("another-chat", "system", "Another chat's line"), 1)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not line.done() and [r["content"] for r in stored] == ["Hi, I'm Ana.", "Another chat's line"]
+        answer.set()
+        await asyncio.wait_for(agent, 1)
+        await asyncio.wait_for(line, 1)
+        await mc.drain(CONV)
+        await asyncio.sleep(0)
+        await mc.drain(CONV)
+    assert [r["content"] for r in stored if r["conversation_id"] == CONV] == ["Hi, I'm Ana.", "Ana shared the itinerary"]
+    assert order == ["Hi, I'm Ana.", "Ana shared the itinerary"], "out in the order stored"
 
 
 @pytest.mark.asyncio
