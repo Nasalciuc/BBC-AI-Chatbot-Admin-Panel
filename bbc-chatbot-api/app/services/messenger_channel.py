@@ -2836,22 +2836,26 @@ async def _tell_one(r, entry: str, d: dict, cid: str, state: Any, at: float) -> 
     return 0
 
 
-async def _held_to_send(r, k: str) -> bool:
-    """Whether a kept event's answer is the API's to send, its turn over: written as such (by "api", with replies), or
-    held by this process to write (_UNKEPT). An answer that cannot be read counts as none (logged). Redis failing
-    raises: the pass stops, and the event is left for the next one."""
+async def _claim_of(r, k: str) -> str:
+    """What holds a kept event as the pass looks at it, before any try is counted: "turn" (a turn's live claim,
+    `pending`: another process's, or one of this process's whose answer is not written yet), "answered" (its answer
+    written, the API's to send, the gateway's or none, or held by this process to write, _UNKEPT: no turn runs again)
+    or "none" (neither: a turn would run). Redis failing raises: the pass stops, the event left for the next one."""
     key = f"msgr:event:{k}"
     if key in _UNKEPT:
-        return True
+        return "answered"
     raw = await r.get(key)
-    if not raw or str(raw).startswith("pending"):
-        return False
-    try:
-        kept = json.loads(raw)
-    except ValueError as e:
-        logger.warning(f"[messenger] a kept event's answer not readable, its try counted: {e}")
-        return False
-    return isinstance(kept, dict) and kept.get("by") == "api" and bool(kept.get("replies"))
+    if not raw:
+        return "none"
+    return "turn" if str(raw).startswith("pending") else "answered"
+
+
+async def _give_up(r, k: str, who: Optional[str]) -> bool:
+    """A kept event let go of for its tries (or unreadable), only while nothing holds it: no turn's claim, no answer
+    written (the conditional release of RELEASE_UNSENT_LUA, guarded by the event's claim). False when one appeared
+    since the pass looked (a turn claimed it, or answered it): it stays, that turn's to finish. Redis failing raises."""
+    return bool(await r.eval(RELEASE_UNSENT_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}",
+                             f"{INBOX}:tries:{k}", f"msgr:event:{k}", k))
 
 
 async def _recover_one(r, k: str, waiting: set[str]) -> str:
@@ -2891,15 +2895,27 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         MESSENGER_HEALTH["off_skipped"] += 1
         waiting.add(who)
         return "waiting"
-    # Its tries bound turns that fail, never a send: one whose answer is kept for the API to send (its turn over: the
-    # channel turned off before its send, or the gateway not reached) counts none and is never given up for them; its
-    # send goes on until the inbox lets it go.
+    # Its tries bound turns that fail, never a send nor another's turn: one whose answer is written (kept for the API
+    # to send: the channel turned off before its send, or the gateway not reached; or the gateway's) counts none and is
+    # never given up for them, its send going on until the inbox lets it go; one a turn holds (another process's, which
+    # may keep its answer to write and renews its claim meanwhile) counts none and waits, never given up under it.
     tries = 0
-    if event is None or not await _held_to_send(r, k):
+    claim = "none" if event is None else await _claim_of(r, k)
+    if claim == "turn":
+        MESSENGER_HEALTH["recover_waiting"] += 1
+        waiting.add(who)
+        return "waiting"
+    if claim == "none":
         tries = await r.incr(f"{INBOX}:tries:{k}")
         await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
         if event is None or tries > RECOVER_TRIES:
-            await _release_event(k, who)
+            if not await _give_up(r, k, who):
+                # Claimed or answered since it was looked at: that turn's to finish, and its person's later events
+                # wait behind it.
+                MESSENGER_HEALTH["recover_waiting"] += 1
+                if who is not None:
+                    waiting.add(who)
+                return "waiting"
             MESSENGER_HEALTH["recover_given_up"] += 1
             logger.error(f"[messenger] a kept event given up after {tries} tries "
                          f"({event.kind if event else 'gone or unreadable'})")

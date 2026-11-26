@@ -4178,6 +4178,44 @@ async def test_an_event_that_keeps_failing_is_given_up_after_its_tries(chat, red
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("seen", ["as_the_pass_looks", "only_as_it_gives_up"])
+async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(chat, redis, monkeypatch, seen):
+    """CodeRabbit #288: a kept event at its last try whose claim another process holds (its turn over and its answer
+    not written yet: that process keeps it and renews the claim). The pass counts no try for it and never gives it up:
+    it waits, and once that answer is written it is sent from it, once, without a turn of this pass. The claim seen
+    only as the pass gives it up (taken between its look and the release): the release, guarded by the claim, leaves
+    it all the same. Rule 5: an event nothing holds is still given up after its tries
+    (test_an_event_that_keeps_failing_is_given_up_after_its_tries)."""
+    await _fail_once(chat, redis)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = str(mc.RECOVER_TRIES)
+    redis.kv["msgr:event:m1"] = "pending:another-process-turn"
+    blind = None
+    if seen == "only_as_it_gives_up":
+        async def not_seen(r, k):
+            return "none"
+
+        blind = patch.object(mc, "_claim_of", new=not_seen)
+        blind.start()
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        try:
+            out = await mc.run_messenger_recover()
+        finally:
+            if blind is not None:
+                blind.stop()  # the next pass sees the claim again
+        assert (out["waiting"], out["given_up"]) == (1, 0) and "m1" in redis.kv[mc.INBOX]
+        assert f"{mc.INBOX}:m1" in redis.kv and mc.MESSENGER_HEALTH["recover_given_up"] == 0
+        if seen == "as_the_pass_looks":
+            assert redis.kv[tries_key] == str(mc.RECOVER_TRIES), "no try counted while another turn holds it"
+        # That process writes its answer, its claim over.
+        redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "Their answer"}], "by": "api"})
+        out = await mc.run_messenger_recover()
+    assert (out["answered"], out["given_up"]) == (1, 0) and gw.sent == ["Their answer"] and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == 1, "the turn that failed: none of this pass's own"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("held_by", ["the_channel_turned_off", "the_gateway_not_reached"])
 async def test_an_answer_held_to_send_at_the_last_try_is_sent_never_given_up(chat, redis, monkeypatch, held_by):
     """CodeRabbit #288: a kept event whose turn runs at its last try, its answer kept as the API's to send and not sent
