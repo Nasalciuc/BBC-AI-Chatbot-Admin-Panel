@@ -56,6 +56,8 @@ QUEUED_EVERY_S = 1800
 # An event being answered, then the replies given for it: what a delivery made again by the gateway gets.
 PENDING_S = 120
 ANSWERED_S = 86400
+# How many times a claim found let go of between SET NX and GET is taken again before the event reads as being answered.
+CLAIM_TRIES = 3
 TARGET_S = 30 * 86400
 # The gateway waits for Meta, with its retries, within its own budget (bbc-messenger SendBudget, 60 s): never longer.
 GATEWAY_TIMEOUT_S = 80.0
@@ -1014,9 +1016,14 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     raw: Optional[str] = None
     kept: Any = None
     try:
-        if await r.set(key, token, nx=True, ex=PENDING_S):
-            return "new", {"token": token}
-        raw = await r.get(key)
+        # The turn starts only on a claim taken: one let go of between SET NX and GET (it ran out, or its turn failed)
+        # is taken again, never answered as new without it (another delivery could take it and run a second turn).
+        for _ in range(CLAIM_TRIES):
+            if await r.set(key, token, nx=True, ex=PENDING_S):
+                return "new", {"token": token}
+            raw = await r.get(key)
+            if raw is not None:
+                break
     except Exception as e:
         redis_failed("messenger dedupe", e)
         if client is not None:
@@ -1026,7 +1033,8 @@ async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
         logger.warning(f"[messenger] an event answered without its dedupe: {type(e).__name__}: {e}")
         return "new", {"token": token}
     if raw is None:
-        return "new", {"token": token}
+        # Taken and let go of each time it was looked at: answered as being answered (the gateway tries again).
+        return "pending", {}
     if raw == "pending" or str(raw).startswith("pending:"):
         return "pending", {}
     try:

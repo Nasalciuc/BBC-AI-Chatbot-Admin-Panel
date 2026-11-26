@@ -3027,6 +3027,30 @@ async def test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_deliv
 
 
 @pytest.mark.asyncio
+async def test_a_claim_let_go_of_between_its_set_and_get_is_taken_again_before_the_turn(redis, monkeypatch):
+    """CodeRabbit #288: another delivery's claim is there at SET NX and gone at GET (it ran out, or its turn failed):
+    the claim is taken again, under this turn's own token, before the turn starts, so a delivery after it waits
+    (pending), never a second turn beside it. Rule 5: a claim still there reads as being answered
+    (test_a_delivery_made_again_gets_the_same_replies_and_no_second_turn)."""
+    key = "msgr:event:m1"
+    redis.kv[key] = "pending:theirs"
+    real_get = redis.get
+    gone = {"once": True}
+
+    async def get(k):
+        if gone["once"] and k == key:
+            gone["once"] = False
+            redis.kv.pop(k, None)  # let go of between SET NX and GET
+            return None
+        return await real_get(k)
+
+    monkeypatch.setattr(redis, "get", get)
+    state, kept = await mc._claim(key)
+    assert state == "new" and redis.kv.get(key) == kept["token"], "taken, under its own token"
+    assert (await mc._claim(key))[0] == "pending"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("held_by", ["mine", "theirs"])
 async def test_a_turns_claim_is_renewed_only_while_it_holds_the_turns_own_token(redis, monkeypatch, held_by):
     """CodeRabbit #288: a turn's renewal finds another delivery's claim on the event (its own ran out, and the event
