@@ -55,6 +55,7 @@ def fresh(monkeypatch):
     mc._UNGIVEN.clear()
     mc._HELD_BESIDE.clear()
     mc._PUTTING_BACK.clear()
+    mc._TAKE_UNSURE.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -3912,6 +3913,52 @@ async def test_a_cooldown_after_the_later_event_is_kept_never_lets_it_past_an_ea
     assert [(r["role"], r["content"]) for r in chat.rows] == [
         ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
     assert not redis.kv[mc.INBOX] and json.loads(redis.kv["msgr:event:m2"])["by"] == "gateway"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redis_then", ["answer_lost", "away_before_any_write"])
+async def test_a_take_redis_may_have_run_waits_for_a_delivery_made_again(chat, redis, monkeypatch, redis_then):
+    """CodeRabbit #288: the person's first message failed (kept); Redis runs their second's take and its answer is
+    lost (the connection dropped): the second is never answered as one not kept, past the first. It waits (409,
+    take_unsure, its claim cleared), and the gateway's delivery made again, Redis cooling down since, looks in Redis
+    all the same: the second is kept (its place from the take that ran), the first answered and sent before it, in
+    order. Rule 5: Redis away before anything is written (its clock not read), the second is answered at once, as
+    before, not kept (not_kept), never waiting."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    second = event(mid="m2", text="Second", timestamp=200)
+    real_eval = redis.eval
+
+    async def answer_lost(script, numkeys, *keys_and_args):
+        out = await real_eval(script, numkeys, *keys_and_args)
+        if script == mc.TAKE_LUA:
+            raise ConnectionError("Connection reset by peer")  # it ran: its answer lost
+        return out
+
+    async def away():
+        raise ConnectionError("Connection refused")
+
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        if redis_then == "away_before_any_write":
+            monkeypatch.setattr(redis, "time", away)
+            out = await mc.handle(second)
+            assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
+            assert mc.MESSENGER_HEALTH["not_kept"] == 1 and mc.MESSENGER_HEALTH["take_unsure"] == 0
+            return
+        monkeypatch.setattr(redis, "eval", answer_lost)
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(second)
+        assert "m2" in redis.kv[mc.INBOX], "its take ran"
+        assert mc.MESSENGER_HEALTH["take_unsure"] == 1 and not [r for r in chat.rows if r["content"] == "Second"]
+        monkeypatch.setattr(redis, "eval", real_eval)
+        assert redis_client.get_redis() is None, "Redis cooling down since"
+        out = await mc.handle(second)  # the gateway's, again
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert [(r["role"], r["content"]) for r in chat.rows] == [
+        ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
+    assert not mc._TAKE_UNSURE
 
 
 @pytest.mark.asyncio

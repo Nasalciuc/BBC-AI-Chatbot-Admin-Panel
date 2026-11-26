@@ -158,7 +158,9 @@ MESSENGER_HEALTH: dict[str, int] = {
     "no_dedupe": 0,          # events answered with Redis down: a delivery made again could be answered twice
     "saved_once": 0,         # rows a delivery made again found saved already: not saved twice
     "not_kept": 0,           # events not put in the inbox (Redis down): one that fails is not answered later
-    "recovered": 0,          # events answered by the recovery, their replies sent
+    "take_unsure": 0,        # takes Redis may have run with its answer lost: delivered again (409), never answered
+                             # past an earlier event as one not kept
+    "recovered": 0,         # events answered by the recovery, their replies sent
     "recover_waiting": 0,    # recovery tries that failed again: the next minute tries again
     "recover_given_up": 0,   # events still failing after RECOVER_TRIES, or unreadable: given up
     "answered_first": 0,     # a person's earlier events still in the inbox, answered and sent before their later one
@@ -908,7 +910,12 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         MESSENGER_HEALTH["duplicates"] += 1
         return {"replies": given}
     token = str(kept.get("token") or "")
-    in_inbox = await _keep_event(event, client)
+    try:
+        in_inbox = await _keep_event(event, client)
+    except StillAnswering:
+        # Its take may have run, Redis's answer lost: delivered again in a moment, never answered as one not kept.
+        await _forget(key, token)
+        raise
     replies: list[dict] = []
     try:
         async with _claim_kept(key, token):
@@ -1410,6 +1417,22 @@ end
 return 1
 """
 
+# Events whose take Redis may have run with its answer lost (TAKE_LUA: in the inbox, or not), each with when that was
+# met (time.monotonic): their next delivery looks in Redis even while it cools down, so one is never answered past an
+# earlier event of its person's as an event Redis never kept. One whose next delivery still finds Redis away waits for it
+# TAKE_UNSURE_WAIT_S, then is answered as one Redis never took (not_kept); one never delivered again is let go of after
+# TAKE_UNSURE_S (the gateway delivers an event again for an hour at most).
+_TAKE_UNSURE: dict[str, float] = {}
+TAKE_UNSURE_WAIT_S = 30.0
+TAKE_UNSURE_S = 3600.0
+
+
+def _take_unsure(k: str) -> None:
+    now = time.monotonic()
+    for old in [x for x, at in _TAKE_UNSURE.items() if now - at > TAKE_UNSURE_S]:
+        del _TAKE_UNSURE[old]
+    _TAKE_UNSURE[k] = now
+
 # The event's place in the inbox (KEYS[1]) and among its person's (KEYS[2]), member ARGV[1]: the one it has when it is
 # there already (a delivery made again, the recovery's), or its take's time (ARGV[2]), made a microsecond later than
 # the person's latest one there when that one has the same time or a later one. Two takes of the person's that read
@@ -1433,28 +1456,43 @@ return 1
 
 async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     """The event in the inbox until it is answered, and among its person's there, by when it was first taken (in the
-    order the takes ran, TAKE_LUA): True once it is there; False when Redis could not take it (counted: one that fails
-    then is not answered later). With `client` given (the recovery's: the event is in the inbox already), Redis
-    failing raises."""
-    r = client if client is not None else get_redis()
+    order the takes ran, TAKE_LUA): True once it is there; False when Redis could not take it before anything was
+    written (counted: one that fails then is not answered later). A take Redis may have run with its answer lost
+    raises StillAnswering (take_unsure): the gateway delivers the event again in a moment, and that delivery looks in
+    Redis even while it cools down (_TAKE_UNSURE), so the event is never answered past an earlier one of its person's
+    as one not kept. With `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
+    k = event.key()
+    unsure = client is None and k in _TAKE_UNSURE
+    r = client if client is not None else get_redis(even_cooling_down=unsure)
     if r is None:
         MESSENGER_HEALTH["not_kept"] += 1
         return False
-    k = event.key()
+    wrote = False
     try:
         # Redis's time, never this process's: the person's events keep their order, and a late send of an earlier
         # one's replies is told from a take after it, whatever the clocks of the processes that took them.
         now = await _redis_now(r)
+        wrote = True  # from here on, a failure may follow a write Redis ran with its answer lost
         # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
         await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(now), INBOX_KEEP_S)
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
         await r.eval(TAKE_LUA, 2, INBOX, _who(event), k, repr(now), INBOX_KEEP_S)
+        _TAKE_UNSURE.pop(k, None)
         return True
     except Exception as e:
         redis_failed("messenger inbox", e)
         if client is not None:
             logger.warning(f"[messenger] a kept event's place in the inbox not written: {type(e).__name__}: {e}")
             raise
+        since = _TAKE_UNSURE.get(k)
+        if wrote or (since is not None and time.monotonic() - since < TAKE_UNSURE_WAIT_S):
+            if wrote:
+                _take_unsure(k)
+            MESSENGER_HEALTH["take_unsure"] += 1
+            logger.warning(f"[messenger] an event's take may have run, Redis's answer lost (delivered again in a "
+                           f"moment, never answered as not kept): {type(e).__name__}: {e}")
+            raise StillAnswering() from e
+        _TAKE_UNSURE.pop(k, None)
         MESSENGER_HEALTH["not_kept"] += 1
         logger.warning(f"[messenger] an event not kept in the inbox: {type(e).__name__}: {e}")
         return False
