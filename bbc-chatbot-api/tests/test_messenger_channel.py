@@ -2650,6 +2650,35 @@ async def test_a_later_message_waits_while_the_gateway_is_sending_an_earlier_one
 
 
 @pytest.mark.asyncio
+async def test_an_event_whose_later_ones_could_not_be_looked_up_stays_until_the_gateways_send_is_over(chat, redis,
+                                                                                                 monkeypatch):
+    """CodeRabbit #288: as above, the first delivered again and given to the gateway while the second waits, and the
+    look for a later one of the person's fails (Redis): never taken for "none waiting", the first stays in the inbox,
+    so the second still waits for the gateway's send of its replies. Rule 5: a look that answers "none" lets the first
+    go at once (test_a_later_message_never_comes_before_an_earlier_one_whose_turn_failed)."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    real_range = redis.zrangebyscore
+
+    async def later_not_read(key, lo, hi, *a, **kw):
+        if hi == "+inf" and lo != "-inf":  # the look for a later one only (_later_kept)
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_range(key, lo, hi, *a, **kw)
+
+    monkeypatch.setattr(redis, "zrangebyscore", later_not_read)
+    delivered = await mc.handle(event(mid="m1", text="First"))  # the gateway's, again
+    assert [r["text"] for r in delivered["replies"]] == ["About: First"]
+    assert set(redis.kv[mc.INBOX]) == {"m1", "m2"}, "kept: its later ones could not be looked up"
+    monkeypatch.setattr(redis, "zrangebyscore", real_range)
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    with pytest.raises(mc.StillAnswering):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))  # behind the gateway's send of the first
+
+
+@pytest.mark.asyncio
 async def test_an_earlier_event_that_could_not_be_read_keeps_the_later_one_behind_it(chat, redis, monkeypatch):
     """CodeRabbit #288: m1 is in the inbox and its payload's read fails: m2 is never answered past it (it fails,
     kept, and its turn does not run); once Redis answers, m1 goes first. Rule 5: one there and unreadable is left to

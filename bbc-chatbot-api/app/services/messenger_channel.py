@@ -859,10 +859,11 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         # again from it, never from a second turn. Not written (Redis failing): this process holds it, writes it at
         # its next minute, and the event waits for it.
         raise AnswerNotKept(kept_now)
-    if by == "gateway" and not (kept_now == "kept" and in_inbox and replies and await _later_kept(event)):
-        # Kept and given to the gateway with a later event of the person's waiting in the inbox, it stays there,
-        # its replies on their way through the gateway (_send_state), so the later one never goes before them; the
-        # recovery lets go of it once the gateway's send is over.
+    if by == "gateway" and not (kept_now == "kept" and in_inbox and replies
+                                and (await _later_kept(event)) is not False):
+        # Kept and given to the gateway with a later event of the person's waiting in the inbox (or one that could not
+        # be looked up), it stays there, its replies on their way through the gateway (_send_state), so the later one
+        # never goes before them; the recovery lets go of it once the gateway's send is over.
         await _release_event(event.key(), _who(event))
     MESSENGER_HEALTH["replies"] += len(replies)
     return {"replies": replies}
@@ -943,12 +944,13 @@ async def _give(r, key: str, k: str, replies: list, token: str, answer: str, rig
 _UNGIVEN: dict[str, tuple[str, list, str]] = {}
 
 
-async def _later_kept(event: InboundEvent) -> bool:
-    """Whether a later event of this person's is in the inbox (its turn failed): it waits there behind this one. Redis
-    failing: False (logged), this one let go of as before."""
+async def _later_kept(event: InboundEvent) -> Optional[bool]:
+    """Whether a later event of this person's is in the inbox (its turn failed): it waits there behind this one. None
+    when it can't be told (Redis failing, logged; or not there): never taken for "none waiting" (rule 7), so this one
+    stays in the inbox as if one waited, and a later one still waits for the gateway's send of its replies."""
     r = get_redis(even_cooling_down=True)
     if r is None:
-        return False
+        return None
     k, who = event.key(), _who(event)
     try:
         mine = await r.zscore(INBOX, k)
@@ -959,7 +961,8 @@ async def _later_kept(event: InboundEvent) -> bool:
                 return True
     except Exception as e:
         redis_failed("messenger inbox", e)
-        logger.warning(f"[messenger] a person's later events not looked up: {type(e).__name__}: {e}")
+        logger.warning(f"[messenger] a person's later events not looked up (the event kept): {type(e).__name__}: {e}")
+        return None
     return False
 
 
