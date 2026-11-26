@@ -693,8 +693,14 @@ async def test_an_agents_message_that_did_not_go_out_tells_the_agent(redis, answ
     # Any 5xx is a proxy's (the gateway never answers one): it may have come once the gateway had the call.
     (lambda request: __import__("httpx").Response(500, text="internal error"), "unknown"),
     (lambda request: __import__("httpx").Response(503, text="upstream connect error or disconnect/reset"), "unknown"),
-    # Rule 5: it never had the call, or it was turned away before anything was sent: not sent.
+    # A write that failed or ran out of time (CodeRabbit #288): what was handed to the socket before may have reached
+    # the gateway whole (here it did), so it is never "not sent".
+    (lambda request: (_ for _ in ()).throw(__import__("httpx").WriteError("broken pipe", request=request)), "unknown"),
+    (lambda request: (_ for _ in ()).throw(__import__("httpx").WriteTimeout("timed out", request=request)), "unknown"),
+    # Rule 5: it never had a connection to go on, or it was turned away before anything was sent: not sent.
     (lambda request: (_ for _ in ()).throw(__import__("httpx").ConnectError("refused", request=request)), "gateway"),
+    (lambda request: (_ for _ in ()).throw(__import__("httpx").ConnectTimeout("no route", request=request)), "gateway"),
+    (lambda request: (_ for _ in ()).throw(__import__("httpx").PoolTimeout("no connection", request=request)), "gateway"),
     (lambda request: __import__("httpx").Response(401, text="unauthorized"), "gateway"),
     (lambda request: __import__("httpx").Response(404, text="unknown page"), "gateway"),
     (lambda request: __import__("httpx").Response(308, headers={"location": "https://elsewhere.test"}), "gateway"),
@@ -702,10 +708,16 @@ async def test_an_agents_message_that_did_not_go_out_tells_the_agent(redis, answ
 async def test_the_gateways_silence_once_it_had_the_call_is_unknown(monkeypatch, answer, kind):
     import httpx
 
+    had: list = []
+
+    def gateway(request: httpx.Request):
+        had.append(request.content)  # tried once; a write error here comes once the gateway had the call whole
+        return answer(request)
+
     real = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(gateway), **kw))
     out = await mc.send(PAGE, PSID, [{"text": "Hi"}])
-    assert out == {"sent": 0, "failed": {"kind": kind}} and mc.MESSENGER_HEALTH["gateway_down"] == 1
+    assert out == {"sent": 0, "failed": {"kind": kind}} and mc.MESSENGER_HEALTH["gateway_down"] == 1 and len(had) == 1
 
 
 @pytest.mark.asyncio

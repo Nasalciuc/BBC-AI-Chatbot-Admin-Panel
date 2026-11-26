@@ -592,11 +592,12 @@ async def _keep_target(conversation_id: str, page_id: str, psid: str) -> None:
 async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str] = None) -> dict:
     """The gateway's POST /v1/send: {"sent": n, "parts": m, "parts_sent": k, "failed": {"kind", …}?} (a long
     message is several on Messenger: parts_sent of them went out). With no answer from the gateway (counted):
-    {"sent": 0, "failed": {"kind": "gateway"}} only when the call is known to have gone nowhere (never reached it
-    whole, or turned away with a 3xx or 4xx: the gateway refuses a call before it sends anything, and so does a
-    proxy before it); "unknown" for anything else (a lost connection, the wait over, any 5xx, which the gateway
-    never answers itself and a proxy may answer once the gateway had the call, an answer that is not one): what
-    went out is not known, and it is never sent again."""
+    {"sent": 0, "failed": {"kind": "gateway"}} only when the call is known to have gone nowhere (no connection was
+    ever had to write it on, or it was turned away with a 3xx or 4xx: the gateway refuses a call before it sends
+    anything, and so does a proxy before it); "unknown" for anything else (a write that failed or ran out of time,
+    whose bytes may have reached the gateway whole all the same; a lost connection, the wait over, any 5xx, which the
+    gateway never answers itself and a proxy may answer once the gateway had the call, an answer that is not one):
+    what went out is not known, and it is never sent again."""
     import httpx
     from config.settings import settings
 
@@ -622,8 +623,9 @@ async def send(page_id: str, psid: str, messages: list[dict], tag: Optional[str]
             # is never the gateway's (whatever it says, a proxy's: maybe after the gateway had it).
             kind = "gateway" if 300 <= res.status_code < 500 else "unknown"
             logger.error(f"[messenger] a send answered {res.status_code} ({kind})")
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteError, httpx.WriteTimeout) as e:
-        # Never reached it whole (the gateway reads the whole call before it does anything): nothing went out.
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+        # No connection to write it on: nothing went out. Never a write that failed (WriteError, WriteTimeout): what
+        # was handed to the socket before it may still reach the gateway whole.
         kind = "gateway"
         logger.error(f"[messenger] the gateway did not take a send: {type(e).__name__}: {e}")
     except Exception as e:
