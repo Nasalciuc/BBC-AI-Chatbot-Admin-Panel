@@ -989,7 +989,11 @@ async def _answer_earlier(event: InboundEvent) -> None:
             MESSENGER_HEALTH["still_answering"] += 1
             raise StillAnswering()  # its replies are being sent: this one comes after them
         if sending != "none":
-            await _send_ended(k, _who(earlier), sending, mark)
+            if await _send_ended(k, _who(earlier), sending, mark) is not True:
+                # Kept, its mark changed since it was read (its replies go again from its answer, or the gateway sends
+                # them from now), or not known: this one comes after them.
+                MESSENGER_HEALTH["still_answering"] += 1
+                raise StillAnswering()
             continue
         key = f"msgr:event:{k}"
         state, kept = await _claim(key, r)
@@ -1641,11 +1645,12 @@ async def _keep_pending(r, key: str, token: str) -> None:
             logger.warning(f"[messenger] an event's pending mark not renewed (tried again): {type(e).__name__}: {e}")
 
 
-# An event whose send's mark read as begun by a process no longer alive (ARGV[1], the mark read) let go of: out of the
-# inbox and its person's there (KEYS[1], KEYS[2], member ARGV[2]), its JSON and tries gone (KEYS[3], KEYS[4]), only
-# while that mark is still there (KEYS[5]): 1; 0 when it changed meanwhile (its process, back, cleared it as one that
-# sent nothing, and the event is sent from its answer).
-RELEASE_BEGUN_LUA = """
+# An event whose send's mark read as over, or as begun by a process no longer alive (ARGV[1], the mark read), let go
+# of: out of the inbox and its person's there (KEYS[1], KEYS[2], member ARGV[2]), its JSON and tries gone (KEYS[3],
+# KEYS[4]), only while that mark is still there (KEYS[5]): 1; 0 when it changed meanwhile (its process, back, cleared
+# it as one that sent nothing, and the event is sent from its answer; or the gateway, given its replies again, sends
+# them from now).
+RELEASE_ON_MARK_LUA = """
 if redis.call('get', KEYS[5]) ~= ARGV[1] then
   return 0
 end
@@ -1656,32 +1661,37 @@ return 1
 """
 
 
-async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") -> None:
-    """A kept event whose replies a send has had ("done", or "begun" by a process that stopped in it): never sent
-    again, out of the inbox. One begun and never over may be with the person, or not (counted), and is let go of only
-    while its mark is still the one read (`mark`): its process, back meanwhile, may have cleared it as one that sent
-    nothing, and then the event stays, to be sent from its answer. Redis failing: left for a later pass (logged)."""
-    if sending != "begun" or not mark:
+async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") -> Optional[bool]:
+    """A kept event whose replies a send has had ("done": over, or the gateway's right to send them read as over;
+    "begun" by a process that stopped in it): never sent again, out of the inbox, only while its mark is still the
+    one read (`mark`). Its process, back meanwhile, may have cleared it as one that sent nothing, and the event stays,
+    to be sent from its answer; or the gateway, given its replies again, sends them from now (_give_again). True once
+    it is let go of (one begun and never over may be with the person, or not: counted); False when it stays, its mark
+    changed meanwhile; None when that could not be told (Redis failing, logged). The person's later events go on only
+    after True (rule 7: a lookup that failed is never taken for an event let go of)."""
+    if not mark:
         await _release_event(k, who)
-        return
+        return True
     r = get_redis(even_cooling_down=True)
     if r is None:
-        return
+        return None
     try:
-        gone = await r.eval(RELEASE_BEGUN_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}", f"{INBOX}:tries:{k}",
-                            _sending_key(k), mark, k)
+        gone = await r.eval(RELEASE_ON_MARK_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}",
+                            f"{INBOX}:tries:{k}", _sending_key(k), mark, k)
     except Exception as e:
         redis_failed("messenger inbox", e)
-        logger.warning(f"[messenger] a kept event whose send's process stopped not let go of (looked at again): "
-                       f"{type(e).__name__}: {e}")
-        return
+        logger.warning(f"[messenger] a kept event whose send is over, or whose process stopped, not let go of "
+                       f"(looked at again): {type(e).__name__}: {e}")
+        return None
     if not gone:
-        logger.info("[messenger] a kept event whose send's process seemed stopped is kept: its mark changed "
-                    "meanwhile")
-        return
-    MESSENGER_HEALTH["recover_unsure"] += 1
-    logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with the "
-                   "person, never sent again")
+        logger.info("[messenger] a kept event whose send seemed over, or whose process seemed stopped, is kept: its "
+                    "mark changed meanwhile")
+        return False
+    if sending == "begun":
+        MESSENGER_HEALTH["recover_unsure"] += 1
+        logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with the "
+                       "person, never sent again")
+    return True
 
 
 async def _earlier_kept(r, event: InboundEvent) -> list[str]:
@@ -2193,7 +2203,13 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
             waiting.add(who)
         return "waiting"
     if sending != "none":
-        await _send_ended(k, who, sending, mark)
+        if await _send_ended(k, who, sending, mark) is not True:
+            # Kept, its mark changed since it was read, or not known: looked at again next minute, and its person's
+            # later events wait behind it.
+            MESSENGER_HEALTH["recover_waiting"] += 1
+            if who is not None:
+                waiting.add(who)
+            return "waiting"
         return "answered"
     tries = await r.incr(f"{INBOX}:tries:{k}")
     await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)

@@ -125,8 +125,8 @@ def clear_unsent(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
-def release_begun(fake: FakeRedis, keys: list, args: list) -> int:
-    """What messenger_channel.RELEASE_BEGUN_LUA does."""
+def release_on_mark(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.RELEASE_ON_MARK_LUA does."""
     inbox, who, event_json, tries, sending_key = keys
     mark, k = args[0], args[1]
     if (fake.kv.get(sending_key) if fake._alive(sending_key) else None) != mark:
@@ -153,7 +153,7 @@ def redis():
     r.register(mc.LAST_TAKEN_LUA, last_taken)
     r.register(mc.REKEEP_LUA, rekeep)
     r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
-    r.register(mc.RELEASE_BEGUN_LUA, release_begun)
+    r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -2536,10 +2536,71 @@ async def test_an_event_taken_for_one_whose_process_stopped_is_let_go_of_only_on
     redis.kv[mc._sending_key(k)] = mark
     if mark_then == "cleared_meanwhile":
         redis.kv.pop(mc._sending_key(k))
-    await mc._send_ended(k, who, "begun", mark)
+    ended = await mc._send_ended(k, who, "begun", mark)
     kept = mark_then == "cleared_meanwhile"
+    assert ended is (not kept), "it says whether it let the event go"
     assert (k in redis.kv[mc.INBOX]) == kept and (f"{mc.INBOX}:{k}" in redis.kv) == kept
     assert mc.MESSENGER_HEALTH["recover_unsure"] == (0 if kept else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["delivered", "recovered"])
+@pytest.mark.parametrize("mark_then", ["cleared_meanwhile", "not_read", "the_one_read"])
+async def test_a_later_event_waits_for_an_earlier_one_kept_because_its_mark_changed_since_it_was_read(
+        chat, redis, monkeypatch, path, mark_then):
+    """CodeRabbit #288: the person's first message is in the inbox, its send's mark read as begun by a process that
+    stopped (A), and A, back, clears it as one that sent nothing just before it is let go of: the first stays, its
+    replies to go again from its answer. Their second, delivered by the gateway or met by the recovery, never goes on
+    past it: it waits, and the recovery sends the first and then the second. The same while whether the first was let
+    go of is not known (Redis failing). Rule 5: the mark still the one read, the first is let go of (maybe with the
+    person, never sent again) and the second goes on."""
+    _turns(chat, fail_first=2 if path == "recovered" else 1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    if path == "recovered":
+        with pytest.raises(mc.EventFailed):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    redis.kv[mc._sending_key("m1")] = "1.0:process-a"  # A's send, begun long ago, A not alive
+    redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "About: First"}], "by": "api"})
+    real_eval = redis.eval
+    once = {"on": True}
+
+    async def eval_(script, numkeys, *keys_and_args):
+        if script == mc.RELEASE_ON_MARK_LUA and once["on"]:
+            once["on"] = False
+            if mark_then == "cleared_meanwhile":
+                redis.kv.pop(mc._sending_key("m1"), None)  # A, back, clears it as one that sent nothing
+            elif mark_then == "not_read":
+                raise ResponseError("LOADING Redis is loading the dataset in memory")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", eval_)
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)  # old enough for the recovery
+    gw = Gateway([])
+    let_go = mark_then == "the_one_read"
+    with patch.object(mc, "send", new=gw):
+        if path == "delivered":
+            if let_go:
+                out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+                assert [r["text"] for r in out["replies"]] == ["About: Second"]
+            else:
+                with pytest.raises(mc.StillAnswering):
+                    await mc.handle(event(mid="m2", text="Second", timestamp=200))
+                assert not [r for r in chat.rows if r["content"] == "About: Second"], "its turn never ran"
+        else:
+            first = await mc.run_messenger_recover()
+            assert (first["answered"], first["waiting"]) == ((2, 0) if let_go else (0, 2))
+        assert ("m1" in redis.kv[mc.INBOX]) is not let_go
+        redis_client.set_client_for_tests(redis)  # a cooldown its failure began, over
+        await mc.run_messenger_recover()
+    if mark_then == "cleared_meanwhile":
+        assert gw.sent == ["About: First", "About: Second"], "the first sent from its answer, then the second"
+    elif path == "recovered":
+        assert gw.sent == ["About: Second"], "the first let go of, never sent again"
+    else:
+        assert gw.sent == ([] if let_go else ["About: Second"])
+    assert mc.MESSENGER_HEALTH["recover_unsure"] == (0 if mark_then == "cleared_meanwhile" else 1)
+    assert not redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio
