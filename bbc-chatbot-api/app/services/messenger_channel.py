@@ -95,6 +95,11 @@ OUTBOX_SEEN = "msgr:outbox:seen"
 # over is taken for a process that stopped in it (a send waits for the gateway GATEWAY_TIMEOUT_S at most), unless
 # that process is still alive (it knows whether its send is over).
 SENDING_S = GATEWAY_TIMEOUT_S + 10
+# The gateway's right to send a kept event's replies (handle: "gateway:<when>") reads as on its way this long: the
+# gateway gets a delivery's answer within its own call to the API (bbc-messenger APITimeout, 75 s, begun before the
+# right was taken) and sends the replies within SendBudget after it (60 s), so a send of them is over by then. Given
+# them again (a delivery made again: the first answer never reached it), from then on (_give_again).
+GATEWAY_SENDING_S = 75.0 + 60.0 + 15.0
 # The ids of the rows an event stores are made from the event's key and the row's part (uuid5 in this namespace):
 # a delivery made again, or the recovery, stores each once, whatever became of an earlier insert.
 ROW_IDS = uuid.UUID("6f1d3c52-8a4e-4b7f-9d2a-5c0e7b13a948")
@@ -816,8 +821,20 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
     if state == "done":
         if kept.get("by", "gateway") != by:
             return {"replies": []}
+        given = kept.get("replies") or []
+        if by == "gateway" and given:
+            # Given to the gateway before, and delivered again: it never got them, and sends them now.
+            again = await _give_again(event)
+            if again is None:
+                MESSENGER_HEALTH["still_answering"] += 1
+                raise StillAnswering()  # not known whether they may go now: the gateway tries again in a moment
+            if not again:
+                MESSENGER_HEALTH["late_dropped"] += 1
+                logger.warning("[messenger] replies given to the gateway and delivered again after a later event of "
+                               "the person's was taken: never sent after its replies (dropped)")
+                return {"replies": []}
         MESSENGER_HEALTH["duplicates"] += 1
-        return {"replies": kept.get("replies") or []}
+        return {"replies": given}
     token = str(kept.get("token") or "")
     in_inbox = await _keep_event(event, client)
     replies: list[dict] = []
@@ -932,6 +949,50 @@ async def _give(r, key: str, k: str, replies: list, token: str, answer: str, rig
     return int(await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
                             json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S, right, INBOX_KEEP_S,
                             json.dumps({"replies": replies, "by": "api"})))
+
+
+# Replies given to the gateway before, delivered again (the gateway never got that answer, or stopped before sending
+# them: it sends them now). Their right a gateway's (KEYS[1], "gateway:<when>"): with the event still in the inbox
+# (KEYS[2], member ARGV[1]: a later event of the person's may wait behind it), the right is taken again from now
+# (ARGV[2], for ARGV[3] seconds), so that one waits while the gateway sends them: 1. The event let go of since: -1
+# when an event of the person's was taken after the right was (KEYS[3]: its replies may be out already, and these
+# never go after them); 1 otherwise. No gateway's right there (the event never kept): 1.
+GIVE_AGAIN_LUA = """
+local s = redis.call('get', KEYS[1])
+if not s or string.sub(s, 1, 7) ~= 'gateway' then
+  return 1
+end
+if redis.call('zscore', KEYS[2], ARGV[1]) then
+  redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  return 1
+end
+local at = tonumber(string.sub(s, 9)) or 0
+if tonumber(redis.call('get', KEYS[3]) or '0') > at then
+  return -1
+end
+return 1
+"""
+
+
+async def _give_again(event: InboundEvent) -> Optional[bool]:
+    """Replies given to the gateway before, delivered again (handle, "done"): True when they go to it again (their
+    right taken again from now while the event is kept: a later event of the person's waits for the gateway's send
+    of them); False when an event of the person's was taken after they were given, the event let go of since (its
+    replies may be out: these never go after them); None when that could not be told (Redis failing, logged: rule 7,
+    the delivery waits)."""
+    r = get_redis(even_cooling_down=True)
+    if r is None:
+        return True  # no Redis: no inbox, and no right to take again
+    k = event.key()
+    try:
+        out = int(await r.eval(GIVE_AGAIN_LUA, 3, _sending_key(k), INBOX, _last_key(event), k,
+                               f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S))
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] replies given to the gateway, delivered again, not given again yet (Redis): "
+                       f"{type(e).__name__}: {e}")
+        return None
+    return out > 0
 
 
 # Kept events whose giving to the gateway Redis did not answer (the right and the answer maybe written, maybe not):
@@ -1357,16 +1418,17 @@ async def _send_state_of(r, k: str) -> tuple[str, str]:
         _drop_unsent(k, known)
         return ("none" if raw is None else "done"), mark
     if raw == SENT_BY_GATEWAY or mark.startswith(f"{SENT_BY_GATEWAY}:"):
-        # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>"): on
-        # its way while the gateway may still be sending them (SENDING_S, past the gateway's own 60 seconds), then
-        # over, sent or not: never sent again by the API. A later event of the person's waits for it until then.
+        # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>", taken
+        # again from when a delivery made again gets them): on its way while the gateway may still be sending them
+        # (GATEWAY_SENDING_S: its call to the API, then its own 60 seconds), then over, sent or not: never sent again
+        # by the API. A later event of the person's waits for it until then.
         _drop_unsent(k, known)
         at = 0.0
         try:
             at = float(mark.partition(":")[2] or 0)
         except ValueError as e:
             logger.warning(f"[messenger] the gateway's right to send not readable, taken for one over: {e}")
-        return ("on_its_way" if time.time() - at < SENDING_S else "done"), mark
+        return ("on_its_way" if time.time() - at < GATEWAY_SENDING_S else "done"), mark
     ended = _ENDED.get(k)
     if ended is not None and ended[0] == raw:
         _ENDED.pop(k, None)

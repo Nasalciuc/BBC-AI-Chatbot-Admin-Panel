@@ -139,6 +139,26 @@ def release_on_mark(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def give_again(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.GIVE_AGAIN_LUA does."""
+    sending_key, inbox, last_key = keys
+    k, right, ex = args[0], args[1], int(args[2])
+    s = fake.kv.get(sending_key) if fake._alive(sending_key) else None
+    if s is None or not str(s).startswith("gateway"):
+        return 1
+    if k in fake._zset(inbox):
+        fake.kv[sending_key] = right
+        fake._set_expiry(sending_key, ex=ex)
+        return 1
+    try:
+        at = float(str(s)[8:] or 0)
+    except ValueError:
+        at = 0.0
+    if float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0) > at:
+        return -1
+    return 1
+
+
 @pytest.fixture
 def redis():
     from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
@@ -155,6 +175,7 @@ def redis():
     r.register(mc.REKEEP_LUA, rekeep)
     r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
     r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
+    r.register(mc.GIVE_AGAIN_LUA, give_again)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -2160,7 +2181,8 @@ async def test_a_giving_redis_made_but_whose_answer_was_lost_goes_back_with_the_
                                                                                                  monkeypatch):
     """CodeRabbit #288: Redis gives the event's replies to the gateway (their right and answer written) and its answer
     is lost on the way back: the gateway gets none (409), and the delivery made again gets them, the right found this
-    delivery's (made again, it is the same), with no second turn and nothing lost."""
+    delivery's (made again, it is the same) and taken again from then (the gateway sends them from then), with no
+    second turn and nothing lost."""
     from redis.exceptions import ConnectionError as RedisConnectionError
 
     _turns(chat)
@@ -2181,8 +2203,9 @@ async def test_a_giving_redis_made_but_whose_answer_was_lost_goes_back_with_the_
     redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
     reply = [{"text": "About: Hi, two seats to Istanbul in December?"}]
     assert (await mc.handle(event()))["replies"] == reply and len(chat.requests) == 1
-    assert redis.kv[f"{mc.INBOX}:sending:m1"] == right and not mc._UNGIVEN and not mc._UNKEPT
-    assert mc.MESSENGER_HEALTH["claim_lost"] == 0
+    again = redis.kv[f"{mc.INBOX}:sending:m1"]
+    assert again.startswith("gateway:") and float(again[8:]) >= float(right[8:]), "the gateway's, from now"
+    assert not mc._UNGIVEN and not mc._UNKEPT and mc.MESSENGER_HEALTH["claim_lost"] == 0
 
 
 @pytest.mark.asyncio
@@ -2972,10 +2995,77 @@ async def test_a_later_message_waits_while_the_gateway_is_sending_an_earlier_one
         assert out["waiting"] == 2 and gw.sent == [], "nothing of the second while the first may be on its way"
         with pytest.raises(mc.StillAnswering):
             await mc.handle(event(mid="m2", text="Second", timestamp=200))
-        monkeypatch.setattr(mc, "SENDING_S", -1.0)  # the gateway's send over
+        monkeypatch.setattr(mc, "GATEWAY_SENDING_S", -1.0)  # the gateway's send over
         out = await mc.run_messenger_recover()
     assert out["answered"] == 2 and gw.sent == ["About: Second"] and not redis.kv[mc.INBOX]
     assert len(chat.requests) == 4, "two failed turns, then one turn each"
+
+
+async def _given_with_a_later_one_waiting(chat, redis) -> None:
+    """The person's first and second messages failed (both kept); the gateway delivers the first again and its replies
+    go back to it, the second waiting behind it."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    delivered = await mc.handle(event(mid="m1", text="First"))
+    assert [r["text"] for r in delivered["replies"]] == ["About: First"]
+    assert set(redis.kv[mc.INBOX]) == {"m1", "m2"} and redis.kv[mc._sending_key("m1")].startswith("gateway:")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given", ["100_s_ago", "past_the_window"])
+async def test_the_gateways_right_covers_its_call_to_the_api_and_its_send_after(chat, redis, given):
+    """CodeRabbit #288: the gateway gets a delivery's answer within its own call to the API (75 s), begun before the
+    right to send its replies was taken, and sends them within 60 s after: a later event of the person's waits for
+    the right that long (GATEWAY_SENDING_S), past the API's own SENDING_S (an answer that reached the gateway 40 s
+    late is still being sent 90 s after the right). Rule 5: past it, the first is let go of, never sent by the API,
+    and the second goes."""
+    await _given_with_a_later_one_waiting(chat, redis)
+    at = time.time() - (100 if given == "100_s_ago" else getattr(mc, "GATEWAY_SENDING_S", mc.SENDING_S) + 1)
+    redis.kv[mc._sending_key("m1")] = f"gateway:{at}"
+    if given == "100_s_ago":
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))  # the gateway may still be sending them
+        assert set(redis.kv[mc.INBOX]) == {"m1", "m2"} and len(chat.requests) == 3
+        return
+    out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and not redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", ["kept", "let_go_nothing_taken", "let_go_a_later_one_taken"])
+async def test_replies_given_to_the_gateway_and_delivered_again_are_given_from_then_never_after_a_later_ones(
+        chat, redis, since):
+    """CodeRabbit #288: the gateway never got a delivery's answer (or stopped before sending its replies) and delivers
+    the event again, later than the right's window may allow: it gets the same replies, no second turn, and sends them
+    from then. The event still kept (a later one of the person's waiting behind it): the right is taken again from
+    then, so the later one waits for that send. The event let go of since and a later event of the person's taken
+    after the right (its replies may be out already): none given, never after them (late_dropped). Rule 5: let go of,
+    nothing taken since, the same replies (the gateway sends the person's events one after another)."""
+    if since == "kept":
+        await _given_with_a_later_one_waiting(chat, redis)
+        old = time.time() - 140  # near the end of the right's window
+        redis.kv[mc._sending_key("m1")] = f"gateway:{old}"
+    else:
+        _turns(chat)
+        first = await mc.handle(event(mid="m1", text="First"))  # given, and let go of: nothing waits behind it
+        assert [r["text"] for r in first["replies"]] == ["About: First"] and not redis.kv[mc.INBOX]
+        if since == "let_go_a_later_one_taken":
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    turns = len(chat.requests)
+    again = await mc.handle(event(mid="m1", text="First"))  # its first answer never reached the gateway
+    assert len(chat.requests) == turns, "no second turn"
+    if since == "let_go_a_later_one_taken":
+        assert again["replies"] == [] and mc.MESSENGER_HEALTH["late_dropped"] == 1
+        return
+    assert [r["text"] for r in again["replies"]] == ["About: First"] and mc.MESSENGER_HEALTH["late_dropped"] == 0
+    if since == "kept":
+        right = redis.kv[mc._sending_key("m1")]
+        assert float(right[8:]) > old + 100, "taken again from now"
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))  # behind the gateway's send from now
 
 
 @pytest.mark.asyncio
