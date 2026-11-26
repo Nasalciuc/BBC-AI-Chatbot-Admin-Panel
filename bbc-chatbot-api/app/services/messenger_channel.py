@@ -2022,8 +2022,22 @@ async def _send_put_back(r, k: str, event: InboundEvent, kept_event: str, replie
     who = _who(event)
     fresh = mark
     if not enabled():
+        # No call is made. Its mark cleared now with its answer written back, in one step while the event is in the
+        # inbox (_clear_unsent): whichever process looks first once the channel is on sends them from that answer, in
+        # the person's order, and no mark of this process is left to read as a send begun once its alive mark runs
+        # out. Not cleared now (Redis failing; let go of meanwhile): held, as one that never reached the gateway.
         MESSENGER_HEALTH["off_skipped"] += 1
-        _UNSENT[k] = (fresh, kept_event, replies)
+        entry = (fresh, kept_event, replies)
+        _UNSENT[k] = entry
+        try:
+            cleared = await _clear_unsent(r, k, fresh, replies)
+        except Exception as e:
+            redis_failed("messenger inbox", e)
+            logger.warning(f"[messenger] replies to send late met the channel turned off, their mark not cleared now "
+                           f"(cleared at a minute it is on): {type(e).__name__}: {e}")
+            return
+        if cleared >= 0:
+            _drop_unsent(k, entry)  # cleared (the recovery sends them), or the mark another's: not this one's to send
         logger.info("[messenger] replies to send late met the channel turned off: sent by the recovery from the inbox "
                     "once it is on again")
         return
@@ -2537,9 +2551,12 @@ async def run_messenger_recover() -> dict:
     RECOVER_BUDGET_S or once the lock is lost, the agents' notes first within TELL_BUDGET_S so the events always get
     their part. An event still failing after RECOVER_TRIES runs, or unreadable, is given up: counted, and logged
     without its words. The channel turned off during the pass ("off"): no event's turn starts after that, and no
-    reply goes out; a turn that ran keeps its answer, sent once the channel is on again (off_skipped)."""
+    reply goes out; a turn that ran keeps its answer, sent once the channel is on again (off_skipped). The channel off
+    at the minute: no pass, and only a process still holding marks of its own sends says it is alive
+    (_alive_while_off)."""
     out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0, "told": 0}
     if not enabled():
+        await _alive_while_off()
         return {**out, "state": "off"}
     r = get_redis()
     if r is None:
@@ -2593,6 +2610,24 @@ async def run_messenger_recover() -> dict:
             redis_failed("messenger recover", e)
             logger.warning(f"[messenger] the recovery's lock not released (it expires): {type(e).__name__}: {e}")
     return out
+
+
+async def _alive_while_off() -> None:
+    """The channel off: no pass runs, but a process still holding marks of its own sends (_UNSENT, _ENDED,
+    _PUTTING_BACK: each one it settles at a minute the channel is on) keeps saying it is alive, so that another process,
+    the channel on again, never takes one of them for a send a stopped process began (and lets its event go, its
+    replies never sent). Nothing is settled or sent; a process holding none writes nothing."""
+    if not (_UNSENT or _ENDED or _PUTTING_BACK):
+        return
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        await r.set(f"msgr:alive:{BOOT}", "1", ex=ALIVE_S)
+    except Exception as e:
+        redis_failed("messenger recover", e)
+        logger.warning(f"[messenger] this process's alive mark not renewed while the channel is off: "
+                       f"{type(e).__name__}: {e}")
 
 
 async def _keep_lock(r, token: str, held: dict) -> None:
