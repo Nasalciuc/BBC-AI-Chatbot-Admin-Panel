@@ -26,18 +26,20 @@ the API's `MESSENGER_GATEWAY_URL` and `MESSENGER_GATEWAY_SECRET` set. No migrati
   step for the whole delivery: the same delivery arriving twice at once is taken once, and no other delivery is
   decided in the middle of it. A full queue answers 503 and Meta delivers the batch again (`queue_full`); an event
   is marked taken only once queued, so the part already queued comes back as duplicates and the rest is taken. Each
-  event of the part not taken then takes its place among its person's refused events, by Meta's time: the earliest
-  must be taken first, then the next, and any other delivery of theirs is refused meanwhile (503, `held`, and it
-  takes its own place), so none overtakes an earlier one, whichever Meta delivers first. Stopping (a deploy): 503
-  (`closing`). 200 at once otherwise: Meta wants it within 5 seconds, after 15 minutes of failures it
-  warns, after an hour it unsubscribes the app from the Page, so the gateway never waits for the API before
-  answering Meta.
+  event of the part not taken then takes its place among its person's refused events, by Meta's time. A delivery of
+  theirs waits for those of them from before it (503, `held`, and it takes its own place): the earliest is taken
+  first, then the next, so none overtakes an earlier one, whichever Meta delivers first; one from before them all is
+  taken at once, never made to wait behind a later one. Stopping (a deploy): 503 (`closing`). 200 at once otherwise:
+  Meta wants it within 5 seconds, after 15 minutes of failures it warns, after an hour it unsubscribes the app from
+  the Page, so the gateway never waits for the API before answering Meta.
 
-  The order is kept within bounds, past which Messenger staying up wins over it: a refused event is waited for 15
-  minutes at most (`hold_expired`, counted at the next delivery of its person or by the minute's cleanup; waited for
-  near Meta's hour, the person's own deliveries failing would put the whole app at risk), at most 10,000 people
-  wait at once and each for 100 events (memory: what does not fit is not waited for, `hold_full`). Past them, a
-  later event may reach the API before a refused one, which the API still answers once.
+  The order is kept within bounds, past which Messenger staying up wins over it: a person is waited for 15 minutes
+  at most in all, from the first refusal of their wait, however Meta delivers their events again (an event refused
+  again, or one more of theirs refused, never starts it again; what the wait still had is `hold_expired`, counted at
+  the next delivery of its person or by the minute's cleanup; waited for near Meta's hour, the person's own
+  deliveries failing would put the whole app at risk), at most 10,000 people wait at once and each for 100 events
+  (memory: what does not fit is not waited for, `hold_full`). Past them, a later event may reach the API before a
+  refused one, which the API still answers once.
 
 Webhook fields to subscribe on each Page: `messages`, `messaging_postbacks`, `messaging_referrals`,
 `message_echoes`, `messaging_handovers`.
@@ -121,12 +123,21 @@ What the API does with an event:
   without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The recovery sends again only
   what never reached the gateway (`gateway`); replies the gateway had and never answered for (`unknown`) are never
   sent a second time.
+- **Sent once.** Each send of an event's replies the API makes (the recovery's, or an earlier event's below) is
+  written down before it starts (`msgr:inbox:sending:<key>`: when) and once it is over (`done`), then the event
+  leaves the inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox
+  not cleared after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never
+  over (a process stopped in the middle of it: maybe with the person) leaves it too, counted (`recover_unsure`);
+  one begun lately is on its way, and the event waits. Only a send that never reached the gateway clears its mark
+  and goes again.
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
-  inbox: that one is answered first, at once, and its replies go back first with this one's (`answered_first`);
-  one still being answered elsewhere, or answered by the recovery with its replies not sent yet, makes this one
-  wait (409: the gateway tries again); one failing again makes this one fail too, kept behind it. The recovery goes
-  oldest first, and a person whose event still waits has their later ones wait that minute, untried.
+  inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
+  (`answered_first`), so they are never lost if this one then fails; this one's replies go back to the gateway as
+  usual. One still being answered elsewhere, or answered with its replies not sent yet (the gateway could not be
+  reached: the recovery sends them, without a second turn), or being sent now, makes this one wait (409: the
+  gateway tries again); one failing again makes this one fail too, kept behind it. The recovery goes oldest first,
+  and a person whose event still waits has their later ones wait that minute, untried.
 
 ## The API → the gateway
 
@@ -158,19 +169,22 @@ in the chat, stored and never sent: past the 24 hours "reach them by SMS or emai
 decide on Human Agent), unreachable the same, the inbox's thread, "maybe not sent" (`unknown`: send it again if the
 client doesn't reply), "only the first k of m pieces" (`partly_sent`: send the rest, not the whole message), "the
 first k of m pieces, and maybe the next" (k pieces out, the next `unknown`: ask the client what they got before
-sending the rest), or "try again". The API's own call to `/v1/send` with no answer: never reached the gateway, or
-refused by it (a 4xx; a 503 on the way in), nothing went out (`gateway`, "try again"); the gateway had the call and
-its answer never came (a lost connection, the 80 seconds over, a proxy's 502 or 504), `unknown`.
+sending the rest), or "try again". The API's own call to `/v1/send` with no answer: known to have gone nowhere
+(never reached the gateway whole, or turned away with a 3xx or 4xx: the gateway's own refusals are a 4xx, before it
+sends anything), nothing went out (`gateway`, "try again"); anything else (a lost connection, the 80 seconds over,
+any 5xx: the gateway never answers one, and a proxy may once the gateway had the call), `unknown`.
 
 A shutdown gives the sends on their way 8 seconds, then 2 for the notes; each agent whose message did not go out
 then is told (not sent, or maybe not when it was with the gateway already), and a message saved after it began is
-told at once (`cut_at_shutdown`). An agent's message is written down in Redis (`msgr:outbox`) from the moment it is
-handed on until it went out or its agent was told, so a note the shutdown could not save is not lost: once the
+told at once (`cut_at_shutdown`). An agent's message is written down in Redis (`msgr:outbox`) before it is handed on
+(whatever the chat: a site chat's is crossed out once where it goes is looked up) until it went out or its agent was
+told, so nothing a shutdown can cut comes before it, and a note the shutdown could not save is not lost: once the
 stopped process's alive mark is gone (`msgr:alive:<process>`, 5 minutes, renewed each minute and by each message
 written down), the next process's recovery minute tells the agent (`told_later`), once (the note's id is the
-delivery's). A note that could not be saved in a live process stays written down too (`untold`), and the minute
-saves it; after 2 days, or unreadable, given up (`outbox_given_up`). Redis down: not written down
-(`outbox_unsaved`).
+delivery's), when the chat is on Messenger (one left before that was looked up is looked up then: a site chat's
+says nothing, a chat not read is looked at again the next minute). A note that could not be saved in a live process
+stays written down too (`untold`), and the minute saves it; after 2 days, or unreadable, given up
+(`outbox_given_up`). Redis down: not written down (`outbox_unsaved`).
 
 ## Sending (the gateway)
 
@@ -179,14 +193,17 @@ address), `messaging_type: RESPONSE` (`MESSAGE_TAG` with a tag). A text over 2,0
 messages, cut at a paragraph, a line, a sentence or a space. The quick replies go on the batch's last message
 (Messenger shows them on the newest one only): those of the last reply that has any. At most 13 quick replies,
 titles of 20 characters. One person's sends one after another. Rate limits (a Graph code, or HTTP 429 with no code)
-and Meta saying it did not send it (code 2, code 1200, HTTP 503 with no code) are tried again (2, 5, 15 seconds), and
-so is a network failure before the call went out (no connection had, or the transport said its write failed). A
-call Meta may have had whole is never tried again (the Send API takes no key that would make a second send the
-same message): one with a connection and no word of its write's failure (the transport writes apart from the
-call's own wait, and a deadline can end the wait before the write's end is told; the 10 seconds over included),
-and any other 5xx (500 with code 1 or none, 502, 504: a server or a proxy failed once it had the call, RFC 9110):
-`unknown` (`unconfirmed`). A 200 is a message sent, whatever its body. A call starts only while 10 seconds (the Meta
-client's own limit) are left of the send's time. The rest is counted by kind.
+and Meta saying it did not send it (code 2, code 1200) are tried again (2, 5, 15 seconds), and so is a network
+failure before the call could be with Meta (no try of it had a connection, or each one that did was told its write
+failed and none that it wrote: the transport may try a call again on a new connection, and a try's end can be told
+after the next one began, so the tries are counted, never paired). A call Meta may have had whole is never tried
+again (the Send API takes no key that would make a second send the same message): one with a try whose write was
+not told failed (the transport writes apart from the call's own wait, and a deadline can end the wait before the
+write's end is told; the 10 seconds over included), and any other 5xx (500 with code 1 or none, 502, 503 or 504
+that do not say: a server or a proxy failed once it may have had the call, RFC 9110; a proxy answers 503 too when
+the server it passed the call to went away): `unknown` (`unconfirmed`). A 200 is a message sent, whatever its body.
+A call starts only while 10 seconds (the Meta client's own limit) are left of the send's time. The rest is counted
+by kind.
 
 ## Redis (the API's)
 
@@ -196,6 +213,7 @@ client's own limit) are left of the send's time. The rest is counted by kind.
 | `msgr:inbox` | sorted set | the events taken and not answered yet, by when they were taken | until answered |
 | `msgr:inbox:<key>` | string | one of them, as the gateway handed it over | 2 days |
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
+| `msgr:inbox:sending:<key>` | string | the API's send of its replies: when it began, then `done` | until it leaves the inbox |
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
 | `msgr:recover:lock` | string | one process recovers at a time | 5 min |
 | `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "note"?}` a delivery | until sent or told |
@@ -220,7 +238,8 @@ the queues without time.
 
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
 `turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
-`saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `bad_signature`,
+`saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
+`bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
 `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
