@@ -162,6 +162,8 @@ MESSENGER_HEALTH: dict[str, int] = {
                              # its next minute, never a second turn; the API sends none until it is written
     "sent_late": 0,          # replies a process knew never went out, of an event another process let go of meanwhile
                              # (taking it, cut off from Redis, for one stopped): sent by it once Redis answered
+    "late_dropped": 0,       # such replies never sent: a later event of the person's was taken meanwhile, and its
+                             # replies may be out already (never sent after them)
     "answer_dropped": 0,     # answers still not taken by Redis when their process stopped: their event may be answered
                              # again once its claim runs out
     "bad_signature": 0,      # calls refused: not the gateway's
@@ -1186,6 +1188,23 @@ def _who(event: InboundEvent) -> str:
     return f"{INBOX}:who:{visitor_id_for(event.page_id, event.psid)}"
 
 
+def _last_key(event: InboundEvent) -> str:
+    """The Meta time of the latest event of one person's taken (_keep_event), answered since or not."""
+    return f"{INBOX}:last:{visitor_id_for(event.page_id, event.psid)}"
+
+
+# The person's latest event taken: its Meta time kept only when later than the one there (ARGV[1]), for INBOX_KEEP_S.
+LAST_TAKEN_LUA = """
+local v = tonumber(redis.call('get', KEYS[1]) or '0')
+if tonumber(ARGV[1]) > v then
+  redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+else
+  redis.call('expire', KEYS[1], ARGV[2])
+end
+return 1
+"""
+
+
 async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
     """The event in the inbox until it is answered, and among its person's there, by when it was first taken: True
     once it is there; False when Redis could not take it (counted: one that fails then is not answered later). With
@@ -1196,6 +1215,8 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         return False
     k = event.key()
     try:
+        # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
+        await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), event.timestamp, INBOX_KEEP_S)
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
         taken = await r.zscore(INBOX, k)
         if taken is None:
@@ -1456,25 +1477,63 @@ async def write_held(budget_s: float = NOTES_S) -> dict:
     return {"written": written, "dropped": dropped}
 
 
+# A late send's event put back in the inbox, and among its person's there, before its replies go (its JSON, ARGV[5];
+# ARGV[4], its place: before any taken after it), its send's mark made a new one (ARGV[7]: on its way from now, for
+# every process, this one too), only while the mark is still this process's (ARGV[1]): 0 when it is not; -1 when an
+# event of the person's later than it (ARGV[2], Meta's time) was taken since, whose replies may be out already (never
+# sent after them); 1 once it is back, so a later one taken now waits behind it.
+REKEEP_LUA = """
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if tonumber(redis.call('get', KEYS[2]) or '0') > tonumber(ARGV[2]) then
+  return -1
+end
+redis.call('set', KEYS[1], ARGV[7], 'EX', ARGV[6])
+redis.call('set', KEYS[5], ARGV[5], 'EX', ARGV[6])
+redis.call('zadd', KEYS[3], ARGV[4], ARGV[3])
+redis.call('zadd', KEYS[4], ARGV[4], ARGV[3])
+redis.call('expire', KEYS[4], ARGV[6])
+return 1
+"""
+
+
 async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> None:
     """A kept event's replies this process knows never went out, whose event another process let go of meanwhile: it
     took this one's mark for a send a stopped process began (this one, cut off from Redis past ALIVE_S, could not say
     it was alive), maybe out, and sent nothing. No one sends them while the mark is this one's, so they go from here,
-    under it, once (sent_late). Never reaching the gateway again: held for the next minute, while the mark lasts
-    (INBOX_KEEP_S). Redis failing raises (the caller logs): held, unless they went out already."""
+    under it, once (sent_late), in the person's order: the event is put back in the inbox first, so a later event of
+    theirs waits behind it, and then let go of again; a later one taken since (its replies maybe out already), they
+    are never sent after it: dropped, counted (late_dropped). Never reaching the gateway again: held, the event in
+    the inbox, and its mark cleared at the next minute, so the recovery sends them. Redis failing raises (the caller
+    logs): held, unless they went out already."""
     try:
         event = InboundEvent.model_validate_json(kept_event)
     except ValidationError as e:
         _UNSENT.pop(k, None)
         logger.error(f"[messenger] replies to send late, their event not readable ({e.error_count()} errors): given up")
         return
+    who = _who(event)
+    place = event.timestamp / 1000 if event.timestamp else time.time()
+    fresh = f"{time.time()}:{BOOT}"
+    back = int(await r.eval(REKEEP_LUA, 5, _sending_key(k), _last_key(event), INBOX, who, f"{INBOX}:{k}", mark,
+                            event.timestamp, k, place, kept_event, INBOX_KEEP_S, fresh))
+    _UNSENT.pop(k, None)  # its mark this one's no more, or on its way under the new one: never cleared as unsent
+    if back == 0:
+        return  # the mark ran out, or is another's: not this one's to send
+    if back < 0:
+        MESSENGER_HEALTH["late_dropped"] += 1
+        logger.warning("[messenger] replies known never to have gone out, a later event of the person's taken since: "
+                       "never sent after its replies (dropped)")
+        return
     result = await send(event.page_id, event.psid, replies)
     failed = result.get("failed") or {}
     kind = str(failed.get("kind") or "")
     if failed and kind == "gateway":
-        logger.warning("[messenger] replies to send late never reached the gateway: tried again next minute")
+        # In the inbox again: its mark cleared at the next minute, and the recovery sends them, in the person's order.
+        _UNSENT[k] = (fresh, kept_event, replies)
+        logger.warning("[messenger] replies to send late never reached the gateway: sent by the recovery from the inbox")
         return
-    _UNSENT.pop(k, None)  # went out, or may have, or Meta refused them: never sent again
     if failed:
         MESSENGER_HEALTH["send_failed"] += 1
         if kind == "unknown":
@@ -1482,7 +1541,16 @@ async def _send_late(r, k: str, kept_event: str, replies: list, mark: str) -> No
         logger.warning(f"[messenger] replies sent late not sent ({kind or 'no kind'})")
     else:
         MESSENGER_HEALTH["sent_late"] += 1
-    await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
+    try:
+        await r.set(_sending_key(k), "done", ex=INBOX_KEEP_S)
+    except Exception as e:
+        # Over, and its end not written: this process lets go of the event at its next minute (_settle_own).
+        redis_failed("messenger inbox", e)
+        _ENDED[k] = (fresh, who)
+        logger.warning(f"[messenger] replies sent late, their end not written (let go of at the next minute): "
+                       f"{type(e).__name__}: {e}")
+        return
+    await _release_event(k, who)
 
 
 @contextlib.asynccontextmanager

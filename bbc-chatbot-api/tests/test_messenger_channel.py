@@ -82,6 +82,34 @@ def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def last_taken(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.LAST_TAKEN_LUA does."""
+    (key,) = keys
+    at, ex = float(args[0]), int(args[1])
+    if at > float(fake.kv.get(key) or 0 if fake._alive(key) else 0):
+        fake.kv[key] = str(args[0])
+    fake._set_expiry(key, ex=ex)
+    return 1
+
+
+def rekeep(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.REKEEP_LUA does."""
+    sending_key, last_key, inbox, who, event_key = keys
+    mark, at, k, place, kept_event, ex = args[0], float(args[1]), args[2], float(args[3]), args[4], int(args[5])
+    if (fake.kv.get(sending_key) if fake._alive(sending_key) else None) != mark:
+        return 0
+    if float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0) > at:
+        return -1
+    fake.kv[sending_key] = args[6]
+    fake._set_expiry(sending_key, ex=ex)
+    fake.kv[event_key] = kept_event
+    fake._set_expiry(event_key, ex=ex)
+    fake._zset(inbox)[k] = place
+    fake._zset(who)[k] = place
+    fake._set_expiry(who, ex=ex)
+    return 1
+
+
 @pytest.fixture
 def redis():
     from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
@@ -94,6 +122,8 @@ def redis():
     r.register(mc.RENEW_LUA, compare_and_pexpire)
     r.register(mc.KEEP_ANSWER_LUA, compare_or_absent_and_set)
     r.register(mc.GIVE_TO_GATEWAY_LUA, give_to_gateway)
+    r.register(mc.LAST_TAKEN_LUA, last_taken)
+    r.register(mc.REKEEP_LUA, rekeep)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -2184,6 +2214,73 @@ async def test_a_send_that_sent_nothing_goes_from_its_process_after_another_let_
         await mc.run_messenger_recover()
     assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 2
     assert not mc._UNSENT and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later", ["taken_before", "delivered_during"])
+async def test_a_late_send_never_goes_after_a_later_events_replies(chat, redis, monkeypatch, later):
+    """CodeRabbit #288, the person's order: as above, process B let go of an event whose send A knows sent nothing,
+    A cut off from Redis. A later message of the person's taken before A is back (its replies maybe out already): A
+    never sends the earlier replies after them (dropped, late_dropped). One delivered while A's late send is on its
+    way waits behind it (409): the event is back in the inbox, its mark a new one of A's, and the later one goes once
+    the send is over, after it. Rule 5: with no later message, they go late, once
+    (test_a_send_that_sent_nothing_goes_from_its_process_after_another_let_its_event_go)."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    answers = [{"sent": 0, "failed": {"kind": "gateway"}}]
+    sent: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if len(sent) == 2 and later == "delivered_during":  # A's late send, on its way
+            sending.set()
+            await go_on.wait()
+        return answers.pop(0) if answers else {"sent": 1}
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    second = event(mid="m2", text="Second", timestamp=200)
+    sending_s = mc.SENDING_S
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        become("process-b", {})
+        assert (await mc.run_messenger_recover())["answered"] == 1 and not redis.kv[mc.INBOX], "B let it go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        if later == "taken_before":
+            out = await mc.handle(second)
+            assert [r["text"] for r in out["replies"]] == ["About: Second"]
+            become("process-a", a_knows)  # A reaches Redis again
+            await mc.run_messenger_recover()
+            assert sent == [reply], "never sent after the later one's"
+            assert mc.MESSENGER_HEALTH["late_dropped"] == 1 and not mc._UNSENT and not redis.kv[mc.INBOX]
+            return
+        become("process-a", a_knows)  # A reaches Redis again
+        late = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        become("process-b", {})
+        try:
+            with pytest.raises(mc.StillAnswering):
+                await asyncio.wait_for(mc.handle(second), 1)  # behind the earlier one's late send
+        finally:
+            go_on.set()
+        await asyncio.wait_for(late, 2)
+        out = await mc.handle(second)
+    assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 3
+    assert "m1" not in redis.kv[mc.INBOX] and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
 
 
 @pytest.mark.asyncio
