@@ -2741,8 +2741,9 @@ async def _tell_left(r, until: float) -> int:
 
     A part at a time: the outbox is gone through by a cursor (OUTBOX_CURSOR), TELL_BATCH of its deliveries looked up,
     told or deleted without a note (off, unreadable) at most and none started past `until` (time.monotonic), each
-    one's work cut there (its note may be saved after all: its id makes saving it again harmless; a deletion cut
-    leaves the delivery for a later pass). Redis gives a part of any size, and not always the same one
+    one's work cut there (its note may be saved after all: its id makes saving it again harmless; a deletion cut may
+    have run in Redis or not: still there, the delivery is looked at again by a later pass; gone, it went without a
+    note, as meant). Redis gives a part of any size, and not always the same one
     for a cursor (HSCAN's COUNT is a hint; a small hash comes whole), so the deliveries looked at in the part the
     passes are on are kept by their ids (OUTBOX_SEEN): a part cut short is gone on with from those not looked at yet,
     whatever left it meanwhile, and the cursor moves on once none is left. The ones that keep failing, or hang, never
@@ -2779,8 +2780,8 @@ async def _tell_left(r, until: float) -> int:
                 continue
             if state == "off":
                 # An agent's message the channel went off for before its call, its cross-out refused then: nothing
-                # went out, so it is crossed out now, without a note (refused again, or cut at the notes' time: a
-                # later pass, never a note).
+                # went out, so it is crossed out now, without a note (refused again, or cut at the notes' time and
+                # still there: a later pass, never a note).
                 worked += 1
                 if await _strike_within(r, entry, until) is None:
                     cut = True
@@ -2831,13 +2832,15 @@ async def _strike(r, entry: str) -> bool:
 
 async def _strike_within(r, entry: str, until: float) -> Optional[bool]:
     """_strike, cut at `until` (the notes' time, time.monotonic): True once deleted, False when Redis refuses it (both
-    as _strike), None when cut there (logged): the delivery left in the outbox for a later pass, never a note, and
-    the pass's part cut short with it."""
+    as _strike), None when cut there (logged), the pass's part cut short with it. A client cut says nothing of what
+    Redis did: the HDEL may have run. Still there, the delivery is looked at again by a later pass; gone, it went
+    without a note, as meant, and an unreadable one deleted so goes uncounted in outbox_given_up (at most one a
+    cut). An HDEL that ran late neither sends nor writes anything."""
     try:
         return await asyncio.wait_for(_strike(r, entry), max(0.0, until - time.monotonic()))
     except asyncio.TimeoutError as e:
-        logger.warning(f"[messenger] a written-down delivery's deletion cut at the notes' time, looked at again when "
-                       f"the outbox comes round ({type(e).__name__})")
+        logger.warning(f"[messenger] a written-down delivery's deletion cut at the notes' time (Redis may have run it): "
+                       f"looked at again when the outbox comes round if still there ({type(e).__name__})")
         return None
 
 

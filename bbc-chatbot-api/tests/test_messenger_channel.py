@@ -6481,8 +6481,8 @@ async def test_the_minutes_deletions_count_toward_its_batch(chat, redis, monkeyp
 async def test_a_deletion_that_hangs_is_cut_at_the_notes_time_and_the_events_still_get_theirs(chat, redis,
                                                                                             monkeypatch, which):
     """CodeRabbit #288: the HDEL of a delivery the minute deletes without a note (off, or unreadable) hangs (Redis
-    slow): it is cut at TELL_BUDGET_S, the delivery left in the outbox for a later pass (never a note, nothing counted
-    while it is there), and the inbox's event is answered in the same pass. Rule 5: Redis back, it is deleted (an
+    slow): it is cut at TELL_BUDGET_S, the delivery (its HDEL never run here) left in the outbox for a later pass
+    (never a note, nothing counted while it is there), and the inbox's event is answered in the same pass. Rule 5: Redis back, it is deleted (an
     unreadable one counted as given up once, when it is)."""
     import asyncio
 
