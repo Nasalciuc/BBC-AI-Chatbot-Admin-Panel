@@ -202,17 +202,22 @@ func (c *Client) call(ctx context.Context, token string, body any, out any) erro
 		}
 		return nil
 	}
-	var e struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    int    `json:"code"`
-			Subcode int    `json:"error_subcode"`
-		} `json:"error"`
-	}
-	if readErr == nil {
-		_ = json.Unmarshal(data, &e) // a body that is not Meta's error shape leaves only the status
+	var e graphError
+	if readErr != nil || json.Unmarshal(data, &e) != nil {
+		// Cut short, or not Meta's error shape whole (a field of the wrong type leaves the others filled): only the
+		// status says what happened, so a code read from it never makes a call one to try again.
+		e = graphError{}
 	}
 	return &Error{Status: res.StatusCode, Code: e.Error.Code, Subcode: e.Error.Subcode, Message: e.Error.Message}
+}
+
+// graphError is the Send API's error body.
+type graphError struct {
+	Error struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+		Subcode int    `json:"error_subcode"`
+	} `json:"error"`
 }
 
 // Split cuts a text into messages of at most MaxText characters, at a paragraph, a line, a sentence or a space when
