@@ -114,15 +114,22 @@ What the API does with an event:
   (`saved_once`), with no mark in Redis to lose; the chat's activity clocks, which the lost insert never moved,
   catch up to that row's own time, never back from a newer message's (one guarded UPDATE a clock). Not saved, or
   stored before and not readable: the event fails.
-- **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: `pending` for 2 minutes, renewed every 40
-  seconds while its turn runs and only while it still says pending, then the replies given and who sent them, a
-  day): a delivery made again gets the same replies and no second turn (none when the API sent them itself); one
-  made while the first is still answered, however long its turn takes, gets 409. An event that fails clears its mark,
-  so the next delivery is answered. Redis down: answered without the mark (`no_dedupe`).
+- **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: the turn's claim, `pending:<its own
+  token>`, for 2 minutes, renewed every 40 seconds while its turn runs and only while it still holds that token,
+  then the replies given and who sent them, a day): a delivery made again gets the same replies and no second turn
+  (none when the API sent them itself); one made while the first is still answered, however long its turn takes,
+  gets 409. An event that fails clears its claim (only its own), so the next delivery is answered. A turn whose
+  claim ran out (its renewal failing) and whose event another delivery or pass took since never renews, clears or
+  answers over theirs: its answer is not written (`claim_lost`), and a recovery pass's is never sent beside theirs.
+  An answer Redis did not take as its turn ended is held by its process and written at its next minute, in place of
+  the turn's claim or of nothing (`answer_unkept`): a delivery made again meanwhile gets it from that process, with
+  no second turn. Redis down: answered without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
   JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once 10
   minutes have passed (longer than the gateway's own tries of a kept event), its replies sent through `/v1/send`; the
-  gateway down then, the same replies go the next minute, without a second turn. The pass reads and writes each
+  gateway down then, the same replies go the next minute, without a second turn. Its replies go only once its answer
+  is written: one Redis did not take waits for its process to write it, the next minute, and then goes, so a send
+  that never reached the gateway goes again from the answer written, never from a new turn. The pass reads and writes each
   event's mark and its place in the inbox through its own Redis client: a cooldown begun meanwhile (another call's
   failure, process wide) never reads as an event with no mark, and Redis failing stops the pass, the event left for
   the next one. One process at a time (a lock in
@@ -159,8 +166,10 @@ What the API does with an event:
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
   (`answered_first`), so they are never lost if this one then fails; this one's replies go back to the gateway as
-  usual. One still being answered elsewhere, or answered with its replies not sent yet (the gateway could not be
-  reached: the recovery sends them, without a second turn), or being sent now, makes this one wait (409: the
+  usual. That one's answer is written first, then its send: one whose answer Redis did not take sends nothing, and
+  this one waits while its process writes it. One still being answered elsewhere, or answered with its replies not
+  sent yet (the gateway could not be reached: the recovery sends them, without a second turn), or being sent now,
+  makes this one wait (409: the
   gateway tries again); one failing again makes this one fail too, kept behind it, and so does one Redis could
   not read (never taken for one gone: this one is never answered past it). One there and unreadable is left to the
   recovery to give up. Redis down (this one not kept): there is no inbox to look in. Once this one is kept, a Redis
@@ -194,7 +203,9 @@ says how many there were. 401 a call not signed by the API, 404 a Page the gatew
 
 The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
-the live push: an agent's "joined" line and their message never cross, however long an insert's answer takes); a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
+the live push: an agent's "joined" line and their message never cross, however long an insert's answer takes); each
+row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
+going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
@@ -258,7 +269,7 @@ by kind.
 
 | Key | Type | Holds | Lives |
 |---|---|---|---|
-| `msgr:event:<mid or kind:page:psid:time>` | string | `pending`, then `{"replies", "by": "gateway" \| "api"}` | 2 min, then a day |
+| `msgr:event:<mid or kind:page:psid:time>` | string | the turn's claim, `pending:<its token>`, then `{"replies", "by": "gateway" \| "api"}` | 2 min, then a day |
 | `msgr:inbox` | sorted set | the events taken and not answered yet, by when they were taken | until answered |
 | `msgr:inbox:<key>` | string | one of them, as the gateway handed it over | 2 days |
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
@@ -290,7 +301,7 @@ the queues without time.
 The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`, `duplicates`, `still_answering`,
 `turns_failed`, `turns_refused`, `kept_unanswered`, `inbox_replies`, `attachments`, `referrals`, `no_dedupe`,
 `saved_once`, `not_kept`, `recovered`, `recover_waiting`, `recover_given_up`, `answered_first`, `recover_unsure`,
-`bad_signature`,
+`claim_lost`, `answer_unkept`, `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
 `target_unread`, `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
