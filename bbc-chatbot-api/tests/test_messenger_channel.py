@@ -52,6 +52,7 @@ def fresh(monkeypatch):
     mc._ENDED.clear()
     mc._UNKEPT.clear()
     mc._UNGIVEN.clear()
+    mc._HELD_BESIDE.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
     monkeypatch.setenv("MESSENGER_CHANNEL", "true")
@@ -3661,6 +3662,69 @@ async def test_a_turn_whose_claim_ran_out_and_whose_giving_redis_never_answered_
     assert json.loads(redis.kv["msgr:event:m1"])["replies"] == [{"text": "Answer 2"}], "the second's answer stands"
     again = await mc.handle(event())
     assert [r["text"] for r in again["replies"]] == ["Answer 2"] and calls["n"] == 2, "no third turn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_ends", ["after_the_second", "before_the_second"])
+async def test_two_turns_whose_givings_redis_never_ran_are_both_held_and_the_claims_one_is_given(chat, redis,
+                                                                                                monkeypatch,
+                                                                                                first_ends):
+    """CodeRabbit #288: a delivery's turn (the first) runs past its claim, its renewal failing, and a delivery made
+    again (the second) takes the event. Both turns end with Redis refusing their giving before it runs, in either
+    order: this process holds both, never one over the other. Once Redis answers, while the second's claim still
+    stands, a delivery made again gets the second's replies, given once with their right, and the first's is dropped
+    (claim_lost): two turns, never a third. Rule 5: one turn held, its own giving made again
+    (test_a_delivery_whose_giving_redis_did_not_take_waits_and_then_gets_the_replies_once)."""
+    import asyncio
+
+    from tests.fake_redis import FakeClock
+
+    calls = {"n": 0}
+    first_in, first_go = asyncio.Event(), asyncio.Event()
+    second_in, second_go = asyncio.Event(), asyncio.Event()
+
+    async def two_turns(req, add_message):
+        calls["n"] += 1
+        n = calls["n"]
+        entered, go = (first_in, first_go) if n == 1 else (second_in, second_go)
+        entered.set()
+        await go.wait()
+        row = await add_message(req.conversation_id, "ai", f"Answer {n}")
+        return ChatResponse(conversation_id=req.conversation_id, message=row["content"], type="ai", model_used="x")
+
+    chat.answer = two_turns
+    clock = FakeClock()
+    redis.clock = clock
+    real_eval = redis.eval
+    refusing = {"on": True}
+
+    async def flaky(script, numkeys, *keys_and_args):
+        if script == mc.RENEW_LUA and str(keys_and_args[0]).startswith("msgr:event:") and refusing["on"]:
+            raise ResponseError("LOADING Redis is loading the dataset in memory")
+        if script == mc.GIVE_TO_GATEWAY_LUA and refusing["on"]:
+            raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")  # never ran
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", flaky)
+    first = asyncio.create_task(mc.handle(event()))
+    await asyncio.wait_for(first_in.wait(), 1)
+    clock.advance(mc.PENDING_S * 2)  # the first's claim runs out
+    second = asyncio.create_task(mc.handle(event()))
+    await asyncio.wait_for(second_in.wait(), 1)
+    second_claim = redis.kv["msgr:event:m1"]
+    order = [second_go, first_go] if first_ends == "after_the_second" else [first_go, second_go]
+    turns = [second, first] if first_ends == "after_the_second" else [first, second]
+    for go, turn in zip(order, turns):
+        go.set()
+        with pytest.raises(mc.StillAnswering):
+            await asyncio.wait_for(turn, 1)  # none given while Redis did not say whose the right is
+    assert redis.kv["msgr:event:m1"] == second_claim, "the second's claim still stands"
+    refusing["on"] = False
+    redis_client.set_client_for_tests(redis)  # the cooldown its failure began, over
+    again = await mc.handle(event())  # a delivery made again, the second's claim still there
+    assert [r["text"] for r in again["replies"]] == ["Answer 2"], "the second's replies, given once"
+    assert redis.kv[mc._sending_key("m1")].startswith("gateway:") and calls["n"] == 2, "no third turn"
+    assert not mc._UNKEPT and not mc._UNGIVEN and not mc._HELD_BESIDE and mc.MESSENGER_HEALTH["claim_lost"] == 1
 
 
 @pytest.mark.asyncio
