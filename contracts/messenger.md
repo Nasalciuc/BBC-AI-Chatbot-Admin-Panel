@@ -114,9 +114,10 @@ What the API does with an event:
   (`saved_once`), with no mark in Redis to lose; the chat's activity clocks, which the lost insert never moved,
   catch up to that row's own time, never back from a newer message's (one guarded UPDATE a clock). Not saved, or
   stored before and not readable: the event fails.
-- **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: `pending` for 2 minutes, then the replies
-  given and who sent them, a day): a delivery made again gets the same replies and no second turn (none when the
-  API sent them itself); one made while the first is still answered gets 409. An event that fails clears its mark,
+- **Delivered again.** Redis keeps each event's mark (`msgr:event:<mid>`: `pending` for 2 minutes, renewed every 40
+  seconds while its turn runs and only while it still says pending, then the replies given and who sent them, a
+  day): a delivery made again gets the same replies and no second turn (none when the API sent them itself); one
+  made while the first is still answered, however long its turn takes, gets 409. An event that fails clears its mark,
   so the next delivery is answered. Redis down: answered without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
   JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once 10
@@ -127,20 +128,26 @@ What the API does with an event:
   another's); a pass starts nothing new after 2 minutes, nor once its lock is found lost (what it is on goes on: a
   send's mark keeps any reply from going twice), and the agents' notes go first within 30 seconds and 20 of them at
   most, each one cut at the 30 seconds (its note's id makes saving it again harmless), the outbox gone through in
-  parts from where the last pass stopped inside one (a part can be any size: HSCAN's COUNT is a hint), so the events
-  always get their part and a note that keeps failing, or hangs, never keeps the others from their turn. After 60
+  parts, the deliveries looked at in the part the passes are on kept by their ids until it is gone through (a part
+  can be any size, and not always the same one for a cursor: HSCAN's COUNT is a hint), so a pass goes on from those
+  not looked at yet whatever left the part meanwhile, the events always get their part, and a note that keeps
+  failing, or hangs, never keeps the others from their turn. After 60
   tries, or unreadable, the event is given up
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
   (`unknown`) are never sent a second time.
 - **Sent once.** Each send of an event's replies the API makes (the recovery's, or an earlier event's below) is
-  written down before it starts (`msgr:inbox:sending:<key>`: when) and once it is over (`done`), then the event
-  leaves the inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox
-  not cleared after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never
-  over (a process stopped in the middle of it: maybe with the person) leaves it too, counted (`recover_unsure`);
-  one begun lately is on its way, and the event waits. Only a send that never reached the gateway clears its mark
-  and goes again; its mark not cleared then (Redis failing), the process clears it the next time it looks at the
-  event, however long Redis took (one that stopped first leaves it to read as begun: never sent twice).
+  written down before it starts (`msgr:inbox:sending:<key>`: when, and by which process), by one sender only (SET
+  NX: a pass whose turn of the event ends after another's began a send, or after it sent them and the event left the
+  inbox, sends nothing), and once it is over (`done`); the mark stays until it expires, past the event's leaving the
+  inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
+  after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
+  process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
+  (`recover_unsure`); one begun lately, or by a process still alive, is on its way, and the event waits. Only a send
+  that never reached the gateway clears its mark (compare and delete: only its own) and goes again; its mark not
+  cleared then (Redis failing), its process clears it at its next minute, whether it holds the lock or not, or when
+  it next looks at the event, however long Redis took (one that stopped first leaves it to read as begun: never sent
+  twice).
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -178,9 +185,10 @@ seconds, and a send cut then has no answer, its outcome unknown to the API even 
 `unknown`). `parts` is counted before the wait for the person's other sends, so a send that never got its turn still
 says how many there were. 401 a call not signed by the API, 404 a Page the gateway has no token for.
 
-The API sends a chat's rows one after another, in the order they were stored (a row's place is taken as it is
-stored, before the live push: an agent's "joined" line and their message never cross); a row waiting for the chat's
-previous one is not sent if the channel was turned off meanwhile (`off_skipped`). Where a
+The API sends a chat's rows one after another, in the order they were stored (a row's place is taken the moment the
+database stores it, before the chat's activity clocks and the live push: an agent's "joined" line and their message
+never cross); a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
+(`off_skipped`). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata. When an agent's message did not go out, the agent sees a line
 in the chat, stored and never sent: past the 24 hours "reach them by SMS or email" (the owner's default until they
@@ -199,8 +207,10 @@ is told (not sent, or maybe not when it was with the gateway already), and a mes
 once (`cut_at_shutdown`). An agent's message is written down in Redis (`msgr:outbox`) before it is stored, under the
 id its row gets (whatever the chat: a site chat's is crossed out once where it goes is looked up), until it went out
 or its agent was told, so nothing a stop or a cancelled request can cut comes before it, and a note the shutdown
-could not save is not lost; one whose insert failed is crossed out at once. A write whose answer was lost is taken as
-written. It goes to the gateway only once its being sent is written down too (Redis refusing that: not sent, "try
+could not save is not lost. One whose insert gave no row (it may have been committed, its answer lost) is asked again
+under the same id: the row stored before comes back and goes out; still not known, it stays written down as
+`unsure`, and the recovery minute looks its row up even while its process is alive: stored, the agent is told it was
+not sent; not stored, it is crossed out without a word. A write whose answer was lost is taken as written. It goes to the gateway only once its being sent is written down too (Redis refusing that: not sent, "try
 again"), so a stop never says "not sent" of one that may be with the client; a send whose end was known before a stop
 says that end (sent: nothing to tell; refused: its own note). Once the stopped process's alive mark is gone
 (`msgr:alive:<process>`, 5 minutes, renewed each minute and by each message written down), the next process's
@@ -208,7 +218,8 @@ recovery minute tells the agent (`told_later`), once (the note's id is the deliv
 and the row is found stored (one left before that was looked up is looked up then: a site chat's says nothing, nor
 one whose row never was stored; a chat or a row not read is looked at again the next minute). A note that could not
 be saved in a live process stays written down too (`untold`), and the minute saves it; after 2 days, or unreadable,
-given up (`outbox_given_up`). Redis down: not written down (`outbox_unsaved`).
+given up (`outbox_given_up`). Redis down: not written down (`outbox_unsaved`), and the message still goes out; only
+the note a stop would leave its agent can be lost then.
 
 ## Sending (the gateway)
 
@@ -241,11 +252,12 @@ by kind.
 | `msgr:inbox` | sorted set | the events taken and not answered yet, by when they were taken | until answered |
 | `msgr:inbox:<key>` | string | one of them, as the gateway handed it over | 2 days |
 | `msgr:inbox:tries:<key>` | string | the recovery's tries of it | 2 days |
-| `msgr:inbox:sending:<key>` | string | the API's send of its replies: when it began, then `done` | until it leaves the inbox |
+| `msgr:inbox:sending:<key>` | string | the API's send of its replies: `<when it began>:<process>`, then `done` | 2 days |
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
 | `msgr:recover:lock` | string | the pass's own token: one process recovers at a time | 5 min, renewed while the pass runs |
-| `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery | until sent or told |
-| `msgr:outbox:cursor` | string | where the recovery's next part of the outbox starts: `<cursor>`, or `<cursor>:<the first delivery not looked at in it>` | 2 days |
+| `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery (`state`: `waiting`, `sending`, `untold`, `unsure`) | until sent or told |
+| `msgr:outbox:cursor` | string | the part of the outbox the recovery is on (an HSCAN cursor) | 2 days |
+| `msgr:outbox:seen` | set | the deliveries looked at in that part, until it is gone through | 2 days |
 | `msgr:alive:<process>` | string | a process that writes deliveries down is alive | 5 min, renewed |
 | `msgr:conv:<conversation id>` | string | `{"page_id", "psid"}` | 30 days, renewed by each event |
 | `msgr:ref:<visitor id>` | string | a referral before the first message | 7 days |
