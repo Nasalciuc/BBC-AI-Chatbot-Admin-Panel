@@ -1153,7 +1153,9 @@ async def _answer_these(r, found: list[str], unreadable: dict[str, str]) -> None
     this one made to wait (StillAnswering) or to fail behind it. One read as gone, or there and no event, is left to
     the recovery to give up: put in `unreadable` with what was read of it ("" for nothing), and passed over only while
     that is still what is there (EARLIER_LUA). One put back since, for a late send of its replies (REKEEP_LUA writes
-    it with its place), is looked at again: this one waits behind that send, never passing it."""
+    it with its place), is looked at again: this one waits behind that send, never passing it. Each one's turn runs
+    only after one step finds none of its own earlier ones left and marks its passing (EARLIER_LUA), as this one's
+    does: one passed over here and put back before that step makes it wait; one put back after it finds it passed."""
     for k in found:
         earlier, raw = await _read_kept(r, k)
         if earlier is None:
@@ -1184,6 +1186,13 @@ async def _answer_these(r, found: list[str], unreadable: dict[str, str]) -> None
         token = str(kept.get("token") or "")
         try:
             async with _claim_kept(key, token):
+                # Its own earlier ones looked at again and its passing marked, in one step, right before its turn: one
+                # passed over above as gone and put back since, for a late send of its replies, makes it wait (and
+                # this one behind it); one put back after this step finds it passed (REKEEP_LUA: -1), and its
+                # replies never go after this one's.
+                if await _earlier_kept(r, earlier, unreadable):
+                    MESSENGER_HEALTH["still_answering"] += 1
+                    raise StillAnswering()
                 replies = await _answer(earlier)
         except Exception:
             await _forget(key, token)
