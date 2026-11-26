@@ -143,15 +143,18 @@ What the API does with an event:
   written down before it starts (`msgr:inbox:sending:<key>`: when, and by which process), by one sender only (SET
   NX: a pass whose turn of the event ends after another's began a send, or after it sent them and the event left the
   inbox, sends nothing), and once it is over (`done`); the mark stays until it expires, past the event's leaving the
-  inbox. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
+  inbox. A delivery of a kept event from the gateway takes the same right before its replies go back to the gateway
+  (`gateway`), so a recovery pass of the event that lost its claim mid-turn sends nothing beside it; one that took
+  it first keeps it, and the gateway gets none. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
-  (`recover_unsure`); one begun lately, or by a process still alive (5 minutes more at most: its minutes clear a mark
-  it knows sent nothing), is on its way, and the event waits. Only a send
-  that never reached the gateway clears its mark (compare and delete: only its own) and goes again; its mark not
-  cleared then (Redis failing), its process clears it at its next minute, whether it holds the lock or not, or when
-  it next looks at the event, however long Redis took (one that stopped first leaves it to read as begun: never sent
-  twice).
+  (`recover_unsure`); one begun lately, or by a process still alive, is on its way, and the event waits: every old
+  mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not. Only
+  a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again; its mark
+  not cleared then (Redis failing), or written with its answer lost, its process clears it at its next minute, or
+  when it next looks at the event, however long Redis took; a send that ended and whose end could not be written has
+  its event let go of then (out of the inbox, never sent again). A process that stopped first leaves its marks to read
+  as begun: never sent twice.
 - **The person's order.** The inbox also keeps each person's events by when they were taken
   (`msgr:inbox:who:<visitor id>`). An event never runs its turn while an earlier one of its person's is still in the
   inbox: that one is answered first, at once, and its replies sent through `/v1/send` before this one's turn
@@ -189,9 +192,9 @@ seconds, and a send cut then has no answer, its outcome unknown to the API even 
 `unknown`). `parts` is counted before the wait for the person's other sends, so a send that never got its turn still
 says how many there were. 401 a call not signed by the API, 404 a Page the gateway has no token for.
 
-The API sends a chat's rows one after another, in the order they were stored (a row's place is taken the moment the
-database stores it, before the chat's activity clocks and the live push: an agent's "joined" line and their message
-never cross); a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
+The API sends a chat's rows one after another, in the order they were stored (a chat's rows are stored one at a time
+in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
+the live push: an agent's "joined" line and their message never cross, however long an insert's answer takes); a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
