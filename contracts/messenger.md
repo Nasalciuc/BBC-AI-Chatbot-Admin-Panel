@@ -1,4 +1,4 @@
-# Facebook Messenger: bbc-messenger and the API (25 Nov 2026)
+# Facebook Messenger: bbc-messenger and the API (26 Nov 2026)
 
 Skye answers on Messenger for the BuyBusinessClass and Business Class Tickets Pages, as on the site; agents answer
 from the panel. One Meta app, the two Pages. Switch: `MESSENGER_CHANNEL` (`app_settings.flags`, off at merge), with
@@ -85,11 +85,14 @@ typing (`mark_seen`, `typing_on`).
 What the API does with an event:
 
 - **The chat.** Visitor id `msgr-` + 40 hex of SHA-256(page id + ":" + PSID). The person's newest chat written to in
-  the last 7 days (its last change, or their last message) goes on, closed or not (the turn reopens it, or answers
+  the last 7 days (its last change, or their last message; a database without that clock, migration 024, is read
+  without it) goes on, closed or not (the turn reopens it, or answers
   after the sale, as the widget's chat); else the chat is found as the widget's is (an open one of theirs), or a
   new one starts: tunnel sales, metadata `site`, `chat_channel: "messenger"`, `messenger: {page_id, psid}`,
   `utm_source: "messenger"`, `utm_medium` (`messenger_ads` for an ad, else `messenger`), `utm_campaign` (the ref),
-  `messenger_referral`. A referral before the first message waits in Redis for the chat.
+  `messenger_referral`. A referral before the first message waits in Redis for the chat; one to a chat that goes on
+  is saved to it, or the event fails and is delivered again (the next message goes on in that chat, and never reads
+  the one kept in Redis).
 - **The turn.** A message (or a Page button, as its words) takes the widget's own turn (`app.api.chat.chat`): the
   blocklist, the message limit, the chat's doors, an agent who holds the chat, the card's buttons (a quick reply whose
   payload is a button's kind is that button), the cache, Skye. What the turn stores for the person (Skye's answer,
@@ -126,8 +129,12 @@ What the API does with an event:
   An answer Redis did not take as its turn ended is held by its process and written at its next minute, in place of
   the turn's claim or of nothing (`answer_unkept`): a delivery made again meanwhile gets it from that process, with
   no second turn, and the process keeps the event's claim (a new expiry each minute) until it is written, so no other
-  delivery or pass answers the event again; a newer one of the event, held meanwhile, is never dropped by an older
-  one's write. A shutdown stops the recovery first (5 seconds at most), so none of its turns holds one after, then
+  delivery or pass answers the event again while that process reaches Redis; a newer one of the event, held
+  meanwhile, is never dropped by an older one's write. Cut off from Redis past the claim's 2 minutes (a network
+  partition), it cannot renew it: another delivery or pass may take the event and run its turn again, and the held
+  answer, found under another's claim or answer once Redis answers again, is dropped, never written over theirs
+  (`claim_lost`). `answer_dropped` is another case: an answer a shutdown could not write. A shutdown stops the
+  recovery first (5 seconds at most), so none of its turns holds one after, then
   writes what the process holds, each one tried whatever Redis said of the one before; one Redis still refuses then
   goes with it (`answer_dropped`), and its event may be answered again once its claim runs out. The claim is looked
   up even while the process cools down (another call's failure, process wide), as the take is: a delivery made again
@@ -145,7 +152,9 @@ What the API does with an event:
   Redis, 5 minutes, held under the pass's own token, renewed every 100 seconds while the pass runs and let go only
   while it is still that pass's, so a slow turn or send never lets another pass in beside it and a pass never frees
   another's); a pass starts nothing new after 2 minutes, nor once its lock is found lost (what it is on goes on: a
-  send's mark keeps any reply from going twice), and the agents' notes go first within 30 seconds and 20 of them at
+  send's mark keeps any reply from going twice), and looks at 20 events at most, those that wait without a look behind
+  an earlier one of their person's not counted (one person's events never keep another's out), and the agents'
+  notes go first within 30 seconds and 20 of them at
   most, each one cut at the 30 seconds (its note's id makes saving it again harmless), the outbox gone through in
   parts, the deliveries looked at in the part the passes are on kept by their ids until it is gone through (a part
   can be any size, and not always the same one for a cursor: HSCAN's COUNT is a hint), so a pass goes on from those
@@ -154,7 +163,10 @@ What the API does with an event:
   tries, or unreadable, the event is given up
   (`recover_given_up`, logged without its words). Redis down: not kept (`not_kept`), the gateway's tries only. The
   recovery sends again only what never reached the gateway (`gateway`); replies the gateway had and never answered for
-  (`unknown`) are never sent a second time.
+  (`unknown`) are never sent a second time. The channel turned off during a pass: it starts no event's turn after
+  that, and no kept event's replies go out (nor an earlier event's answered first for a later one, nor a late send):
+  the check comes before a send's mark is written, so the answer stays kept as the API's to send, and goes once the
+  channel is on again, without a second turn (`off_skipped`).
 - **Sent once.** Each send of an event's replies the API makes (the recovery's, or an earlier event's below) is
   written down before it starts (`msgr:inbox:sending:<key>`: when, and by which process), by one sender only (SET
   NX: a pass whose turn of the event ends after another's began a send, or after it sent them and the event left the
@@ -180,7 +192,10 @@ What the API does with an event:
   the same replies, the right taken again from then while the event is kept; the event let go of since and an event
   of the person's taken after the right, none (`late_dropped`: never after its replies); Redis failing, 409. An event
   given to the gateway while a later one of the person's waits in the inbox (or while one could not be looked up:
-  never taken for none) stays there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
+  never taken for none) stays there until then, so the later one waits for it. One answered by its delivery from the
+  gateway is let go of by a later event, or by the recovery, only while no send of its replies is written down, in one
+  step: its replies given to the gateway after its send was looked at, it stays, and the later one waits for that
+  send. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
   (`recover_unsure`). Either is let go of only while its mark is still the one read (its process, back meanwhile, may
@@ -224,6 +239,9 @@ What the API does with an event:
   written (this one not kept): there is no inbox to look in. Redis refusing the take's first write (an error reply:
   out of memory, read only) wrote nothing of it either: this one is answered as one not kept, unless an earlier
   delivery took it (read then: Redis still answers reads), and never sent back at each delivery while Redis refuses.
+  Kept so, it runs its turn only once its passing is marked: Redis refusing that write too (out of memory refuses
+  every write that may take memory), it fails, kept, as with Redis away (the gateway tries again, then the
+  recovery), never answered unmarked, where an earlier event's late send could go after its replies.
   Every take looks in Redis even while its process cools
   down (another call's failure, process wide): only Redis failing the take itself sends an event the way of one not
   kept. A take Redis may have run with its answer lost makes this one wait (409, `take_unsure`): the delivery made
