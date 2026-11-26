@@ -319,7 +319,8 @@ again. An agent's "joined" line and their message never cross, however long an i
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`), nor one the channel went off for while its going to the gateway was written down (crossed out, no
-note: nothing went out). Where a
+note: nothing went out; written down as `off` first, so one whose cross-out Redis refuses is crossed out by
+the next minute, never told as maybe sent). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
 chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
@@ -393,7 +394,7 @@ back (or gave them again to a delivery made again): the call's 75 seconds, then 
 | `msgr:inbox:who:<visitor id>` | sorted set | one person's events in the inbox, by when they were taken | 2 days, renewed |
 | `msgr:inbox:last:<visitor id>` | string | when the person's latest event was taken (a first take, a delivery made again, or the recovery's), answered since or not | 2 days, renewed |
 | `msgr:recover:lock` | string | the pass's own token: one process recovers at a time | 5 min, renewed while the pass runs |
-| `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery (`state`: `waiting`, `sending`, `untold`, `unsure`) | until sent or told |
+| `msgr:outbox` | hash | agents' messages on their way: `{"cid", "boot", "state", "at", "row"?, "note"?}` a delivery (`state`: `waiting`, `sending`, `off`, `untold`, `unsure`) | until sent or told |
 | `msgr:outbox:cursor` | string | the part of the outbox the recovery is on (an HSCAN cursor) | 2 days |
 | `msgr:outbox:seen` | set | the deliveries looked at in that part, until it is gone through | 2 days |
 | `msgr:alive:<process>` | string | a process that writes deliveries down is alive | 5 min, renewed |
