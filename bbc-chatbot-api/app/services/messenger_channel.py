@@ -591,13 +591,16 @@ async def _deliver(conversation_id: str, role: str, row: dict, state: dict) -> N
         # reached the person, and a recovery minute crosses it out without a note, this process alive or not.
         marked = await _mark_entry(entry, conversation_id, "off")
         if not await _cross_out(entry) and not marked:
-            # Redis took neither: it still reads "sending". No minute takes it up while this process lives (its alive
-            # mark); stopped before Redis takes a write, the next process's minute tells its agent it may have gone
-            # out, as for any send a stopped process began: a note too many, never a message lost without one.
+            # Redis took neither: it still reads "sending". This process knows nothing went out: it holds it
+            # (_OFF_UNSETTLED) and crosses it out at its next minutes, saying it is alive meanwhile, so no other
+            # process's minute takes it up. Stopped before Redis takes a write, the next process's minute cannot tell
+            # it from a send a stopped process began: its agent is told it may have gone out, a note too many, never
+            # a message lost without one.
+            _OFF_UNSETTLED[entry] = conversation_id
             MESSENGER_HEALTH["off_unsettled"] += 1
             logger.error(f"[messenger] conv {conversation_id}: an agent's message the channel went off for, not sent, "
-                         f"left reading as sending (Redis took neither its off nor its cross-out): its agent may be "
-                         f"told it may have gone out")
+                         f"left reading as sending (Redis took neither its off nor its cross-out): crossed out at this "
+                         f"process's next minute")
         return
     state["sending"] = True
     result = await send(target["page_id"], target["psid"], [{"text": text}])
@@ -728,6 +731,20 @@ async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, no
         logger.warning(f"[messenger] conv {conversation_id}: a delivery's state not written down ({state}): "
                        f"{type(e).__name__}: {e}")
         return False
+
+
+# Agents' messages the channel went off for before their call whose entry Redis took neither as off nor crossed out
+# (it reads "sending"): entry -> conversation id. Nothing went out; this process crosses each out at its next
+# minutes (_settle_off), the channel on or off, and says it is alive while it holds any (_alive_while_off).
+_OFF_UNSETTLED: dict[str, str] = {}
+
+
+async def _settle_off() -> None:
+    """This process's own off-skipped messages still reading "sending": crossed out now, each Redis takes dropped from
+    the list, the others tried again at the next minute."""
+    for entry in list(_OFF_UNSETTLED):
+        if await _cross_out(entry):
+            _OFF_UNSETTLED.pop(entry, None)
 
 
 async def _cross_out(entry: Optional[str]) -> bool:
@@ -2601,6 +2618,7 @@ async def run_messenger_recover() -> dict:
     at the minute: no pass, and only a process still holding marks of its own sends says it is alive
     (_alive_while_off)."""
     out: dict[str, Any] = {"state": "empty", "answered": 0, "waiting": 0, "given_up": 0, "told": 0}
+    await _settle_off()  # this process's own off-skipped messages its cross-out missed: every minute, on or off
     if not enabled():
         await _alive_while_off()
         return {**out, "state": "off"}
@@ -2660,10 +2678,11 @@ async def run_messenger_recover() -> dict:
 
 async def _alive_while_off() -> None:
     """The channel off: no pass runs, but a process still holding marks of its own sends (_UNSENT, _ENDED,
-    _PUTTING_BACK: each one it settles at a minute the channel is on) keeps saying it is alive, so that another process,
+    _PUTTING_BACK: each one it settles at a minute the channel is on; _OFF_UNSETTLED: crossed out at any minute) keeps
+    saying it is alive, so that another process,
     the channel on again, never takes one of them for a send a stopped process began (and lets its event go, its
     replies never sent). Nothing is settled or sent; a process holding none writes nothing."""
-    if not (_UNSENT or _ENDED or _PUTTING_BACK):
+    if not (_UNSENT or _ENDED or _PUTTING_BACK or _OFF_UNSETTLED):
         return
     # Through a cooldown another call began (CodeRabbit #288): skipped, the mark could run out while Redis answers,
     # and another process take one of these sends for one a stopped process began.

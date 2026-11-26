@@ -55,6 +55,7 @@ def fresh(monkeypatch):
     mc._UNGIVEN.clear()
     mc._HELD_BESIDE.clear()
     mc._PUTTING_BACK.clear()
+    mc._OFF_UNSETTLED.clear()
     mc._TAKE_UNSURE.clear()
     mc._ORDER.clear()
     monkeypatch.setattr(mc, "_CLOSING", False)
@@ -2071,17 +2072,20 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_and_not_crossed
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cross_out_refused", [True, False])
+@pytest.mark.parametrize("case", ["its_process_lives", "its_process_stopped_first", "its_cross_out_taken"])
 async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_off_nor_cross_out_taken_is_counted(
-        redis, monkeypatch, cross_out_refused):
-    """CodeRabbit #288: as above, and Redis refuses the entry's write as off too: it still reads "sending", so the
-    next process's minute, this one stopped first, tells the agent their message may have gone out although no call
-    was made. The limit (contracts/messenger.md): a note too many, never a message lost without one; counted
-    (off_unsettled) and logged. Rule 5: the write as off refused alone, its cross-out taken: nothing is left, told or
-    counted."""
+        redis, monkeypatch, case):
+    """CodeRabbit #288: as above, and Redis refuses the entry's write as off too: it still reads "sending". Its process
+    knows nothing went out: it holds it and crosses it out at its next minutes, the channel still off, saying it is
+    alive meanwhile (a minute whose cross-out Redis refuses again keeps it), and no agent is told. The limit
+    (contracts/messenger.md): that process stopped before Redis took a write, the next one's minute cannot tell it from
+    a send a stopped process began, and tells the agent it may have gone out: a note too many, never a message lost
+    without one. Counted (off_unsettled) and logged. Rule 5: the write as off refused alone, its cross-out taken:
+    nothing is left, held, told or counted."""
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     real_hset, real_hdel = redis.hset, redis.hdel
-    once = {"off": True, "mark": True, "hdel": cross_out_refused}
+    refusals = {"its_process_lives": 2, "its_process_stopped_first": 1, "its_cross_out_taken": 0}[case]
+    once = {"off": True, "mark": True, "hdel": refusals}
 
     async def off_then_refused(key, field=None, value=None, mapping=None):
         if key == mc.OUTBOX and once["off"] and '"sending"' in str(value):
@@ -2094,7 +2098,7 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_of
 
     async def hdel_refused(key, *fields):
         if once["hdel"] and key == mc.OUTBOX:
-            once["hdel"] = False
+            once["hdel"] -= 1
             raise ConnectionError("Connection reset by peer")
         return await real_hdel(key, *fields)
 
@@ -2102,6 +2106,7 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_of
     monkeypatch.setattr(redis, "hdel", hdel_refused)
     c = Chat().start()
     gw = Gateway([])
+    alive = f"msgr:alive:{mc.BOOT}"
     try:
         with patch.object(mc, "send", new=gw):
             from app.services.conversation_service import add_message
@@ -2110,22 +2115,32 @@ async def test_an_agents_message_skipped_as_the_channel_goes_off_with_neither_of
             await mc.drain(CONV)
             left = await redis.hgetall(mc.OUTBOX)
             assert gw.sent == [] and not once["mark"], "no call made, its write as off refused"
-            stopped = mc.BOOT
-            monkeypatch.setattr(mc, "BOOT", "the-next-process")
-            redis.kv.pop(f"msgr:alive:{stopped}", None)
+            if case == "its_cross_out_taken":
+                assert left == {} and not mc._OFF_UNSETTLED and mc.MESSENGER_HEALTH["off_unsettled"] == 0
+            else:
+                assert [json.loads(v)["state"] for v in left.values()] == ["sending"]
+                assert list(mc._OFF_UNSETTLED.values()) == [CONV] and mc.MESSENGER_HEALTH["off_unsettled"] == 1
             redis_client.set_client_for_tests(redis)  # Redis answering again, its cooldown over
+            if case == "its_process_lives":
+                redis.kv.pop(alive, None)
+                assert (await mc.run_messenger_recover())["state"] == "off"  # its cross-out refused again
+                assert len(await redis.hgetall(mc.OUTBOX)) == 1 and mc._OFF_UNSETTLED and alive in redis.kv
+                redis_client.set_client_for_tests(redis)
+                assert (await mc.run_messenger_recover())["state"] == "off"
+                assert not await redis.hgetall(mc.OUTBOX) and not mc._OFF_UNSETTLED
+            elif case == "its_process_stopped_first":
+                mc._OFF_UNSETTLED.clear()  # what it held went with it
+                monkeypatch.setattr(mc, "BOOT", "the-next-process")
+                redis.kv.pop(alive, None)
             monkeypatch.setenv("MESSENGER_CHANNEL", "true")
             out = await mc.run_messenger_recover()
     finally:
         c.stop()
     notes = [r["content"] for r in c.rows if r["role"] == "system"]
-    if cross_out_refused:
-        assert [json.loads(v)["state"] for v in left.values()] == ["sending"]
-        assert mc.MESSENGER_HEALTH["off_unsettled"] == 1
+    if case == "its_process_stopped_first":
         assert out["told"] == 1 and notes == [mc.NOT_SENT["unknown"]], "the limit: a note too many, none missing"
     else:
-        assert left == {} and mc.MESSENGER_HEALTH["off_unsettled"] == 0
-        assert out["told"] == 0 and notes == []
+        assert out["told"] == 0 and notes == [], "no call was made, and its process knew it"
     assert not await redis.hgetall(mc.OUTBOX) and gw.sent == []
 
 
