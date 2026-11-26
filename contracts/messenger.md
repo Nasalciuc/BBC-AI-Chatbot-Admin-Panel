@@ -129,8 +129,10 @@ What the API does with an event:
   delivery or pass answers the event again; a newer one of the event, held meanwhile, is never dropped by an older
   one's write. A shutdown stops the recovery first (5 seconds at most), so none of its turns holds one after, then
   writes what the process holds, each one tried whatever Redis said of the one before; one Redis still refuses then
-  goes with it (`answer_dropped`), and its event may be answered again once its claim runs out. Redis down: answered
-  without the mark (`no_dedupe`).
+  goes with it (`answer_dropped`), and its event may be answered again once its claim runs out. The claim is looked
+  up even while the process cools down (another call's failure, process wide), as the take is: a delivery made again
+  then never runs a second turn of an event answered, or being answered, while Redis answers. Redis failing the claim
+  itself: answered without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
   JSON beside it, 2 days). One whose turn failed is answered by the scheduler's minute (`messenger_recover`) once 10
   minutes have passed (longer than the gateway's own tries of a kept event), its replies sent through `/v1/send`; the
