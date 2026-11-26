@@ -487,14 +487,34 @@ async def get_or_create_conversation(
         return None
 
 
+class StoredBefore(dict):
+    """The row an earlier insert with the same id stored (add_message with message_id): found, nothing stored now."""
+
+
+async def get_message(message_id: str) -> Optional[dict]:
+    """One message by its id; None when there is none. Raises when it could not be read, so "not there" is never
+    told from "not known" by a None (rule 7)."""
+    db = get_client()
+    res = await _run_sync(lambda: db.table("messages").select("*").eq("id", message_id).limit(1).execute(),
+                          label="messages")
+    return res.data[0] if res.data else None
+
+
 async def add_message(
     conversation_id: str,
     role: str,
     content: str,
     model_used: Optional[str] = None,
     cost: float = 0.0,
+    *,
+    message_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Insert a message. Never loses a message."""
+    """Insert a message. Never loses a message.
+
+    `message_id`: the row's id, fixed by the caller from what the message is (a Messenger event and its part), so
+    an insert made again finds the row an earlier one stored, its answer lost included: that row comes back as a
+    StoredBefore, and nothing is stored twice. None back: not stored, or not known to be (it could not be read):
+    the caller tries again later."""
     try:
         db = get_client()
         if role == "ai":
@@ -510,7 +530,23 @@ async def add_message(
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
-        res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False, label="messages")
+        if message_id:
+            payload["id"] = message_id
+        try:
+            res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False,
+                                  label="messages")
+        except Exception as e:
+            # By the database's code only (23505 on the id, the table's one unique key): its text quotes the row.
+            if not message_id or _error_code(e) != "23505":
+                raise
+            logger.info(f"add_message: message {message_id} stored before, conv={conversation_id} role={role} "
+                        f"({_loggable_code(_error_code(e))})")
+            before = await get_message(message_id)
+            if before is None:
+                logger.error(f"add_message: message {message_id} refused as stored before, then not found "
+                             f"conv={conversation_id}")
+                return None
+            return StoredBefore(before)
         row = res.data[0] if res.data else None
         if row:
             await _touch_conversation_activity(

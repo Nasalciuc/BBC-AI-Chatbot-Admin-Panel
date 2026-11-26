@@ -18,13 +18,18 @@ async def get_or_create_conversation(
 
 async def add_message(conversation_id: str, role: str, content: str,
                       model_used: Optional[str] = None, cost: float = 0.0,
-                      live_extra: Optional[dict] = None, *, outbound: bool = True):
+                      live_extra: Optional[dict] = None, *, outbound: bool = True,
+                      message_id: Optional[str] = None):
     """Store a message and publish it. `live_extra` rides the published copy
     only — the operator's name and photo, which the messages table has no
     column for. This push is the first copy a client gets, and both consumers
     keep the first copy of an id: on 17 Nov 2026 the bare copy came first and
-    the widget signed the operator's message "Consultant", with no photo."""
-    row = await db.add_message(conversation_id, role, content, model_used, cost)
+    the widget signed the operator's message "Consultant", with no photo.
+    `message_id` (db.add_message): a row stored before under that id comes back
+    as it was (a StoredBefore) and is published and handed on as a new one is;
+    its consumers keep the first copy of an id."""
+    row = await db.add_message(conversation_id, role, content, model_used, cost,
+                               **({"message_id": message_id} if message_id else {}))
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live

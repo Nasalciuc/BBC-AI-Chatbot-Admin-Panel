@@ -235,6 +235,12 @@ class FakeRedis:
         self._check("hget")
         return self.kv[key].get(field) if self._alive(key) else None
 
+    async def hdel(self, key: str, *fields: str) -> int:
+        self._check("hdel")
+        if not self._alive(key):
+            return 0
+        return sum(1 for f in fields if self.kv[key].pop(str(f), None) is not None)
+
     # ── lists ────────────────────────────────────────────────
     def _list(self, key: str) -> list:
         if not self._alive(key):
