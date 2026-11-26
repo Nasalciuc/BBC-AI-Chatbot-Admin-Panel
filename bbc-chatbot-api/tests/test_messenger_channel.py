@@ -4195,20 +4195,23 @@ async def test_an_event_that_keeps_failing_is_given_up_after_its_tries(chat, red
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("seen", ["as_the_pass_looks", "only_as_it_gives_up"])
+@pytest.mark.parametrize("seen", ["as_the_pass_looks", "only_as_it_gives_up", "only_as_its_turn_starts"])
 async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(chat, redis, monkeypatch, seen):
     """CodeRabbit #288: a kept event at its last try whose claim another process holds (its turn over and its answer
     not written yet: that process keeps it and renews the claim). The pass counts no try for it and never gives it up:
     it waits, and once that answer is written it is sent from it, once, without a turn of this pass. The claim seen
     only as the pass gives it up (taken between its look and the release): the release, guarded by the claim, leaves
-    it all the same. Rule 5: an event nothing holds is still given up after its tries
+    it all the same, and the try counted is given back. Seen only as its turn starts (taken between the look and the
+    count, the event one try short of its last): no turn runs, and the try counted is given back too, so the last
+    one is never spent waiting on another's turn. Rule 5: an event nothing holds is still given up after its tries
     (test_an_event_that_keeps_failing_is_given_up_after_its_tries)."""
     await _fail_once(chat, redis)
     tries_key = f"{mc.INBOX}:tries:m1"
-    redis.kv[tries_key] = str(mc.RECOVER_TRIES)
+    start = mc.RECOVER_TRIES - 1 if seen == "only_as_its_turn_starts" else mc.RECOVER_TRIES
+    redis.kv[tries_key] = str(start)
     redis.kv["msgr:event:m1"] = "pending:another-process-turn"
     blind = None
-    if seen == "only_as_it_gives_up":
+    if seen != "as_the_pass_looks":
         async def not_seen(r, k):
             return "none"
 
@@ -4223,8 +4226,8 @@ async def test_an_event_another_turn_holds_at_its_last_try_is_never_given_up(cha
                 blind.stop()  # the next pass sees the claim again
         assert (out["waiting"], out["given_up"]) == (1, 0) and "m1" in redis.kv[mc.INBOX]
         assert f"{mc.INBOX}:m1" in redis.kv and mc.MESSENGER_HEALTH["recover_given_up"] == 0
-        if seen == "as_the_pass_looks":
-            assert redis.kv[tries_key] == str(mc.RECOVER_TRIES), "no try counted while another turn holds it"
+        assert redis.kv[tries_key] == str(start), "no try spent while another turn holds it"
+        assert len(chat.requests) == 1, "no turn of this pass's own"
         # That process writes its answer, its claim over.
         redis.kv["msgr:event:m1"] = json.dumps({"replies": [{"text": "Their answer"}], "by": "api"})
         out = await mc.run_messenger_recover()
@@ -5380,7 +5383,8 @@ async def test_no_turn_starts_once_the_channel_is_turned_off_after_the_switch_wa
         else:
             assert (await mc.run_messenger_recover())["waiting"] == 1
         assert len(chat.requests) == turns and gw.sent == [] and "m1" in redis.kv[mc.INBOX]
-        assert f"{mc.INBOX}:tries:m1" not in redis.kv or redis.kv[f"{mc.INBOX}:tries:m1"] == "1"
+        # No try counted: none, or one counted as the pass looked and given back once no turn ran.
+        assert redis.kv.get(f"{mc.INBOX}:tries:m1", "0") == "0"
         assert "msgr:event:m1" not in redis.kv, "its claim let go of: no turn of it holds it"
         assert mc.MESSENGER_HEALTH["off_skipped"] == 1
         monkeypatch.setenv("MESSENGER_CHANNEL", "true")

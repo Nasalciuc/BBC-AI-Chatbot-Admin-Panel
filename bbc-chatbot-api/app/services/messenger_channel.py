@@ -2908,7 +2908,10 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
     # Its tries bound turns that fail, never a send nor another's turn: one whose answer is written (kept for the API
     # to send: the channel turned off before its send, or the gateway not reached; or the gateway's) counts none and is
     # never given up for them, its send going on until the inbox lets it go; one a turn holds (another process's, which
-    # may keep its answer to write and renews its claim meanwhile) counts none and waits, never given up under it.
+    # may keep its answer to write and renews its claim meanwhile) counts none and waits, never given up under it. A
+    # try is counted before the turn (one whose turn stops the process still counts), and given back when the pass runs
+    # none after all: another turn took the claim between the look and the count (StillAnswering), or the give-up met
+    # it. So the tries are the turns this pass's kind ran, and the last one is never spent waiting on another's.
     tries = 0
     claim = "none" if event is None else await _claim_of(r, k)
     if claim == "turn":
@@ -2920,8 +2923,9 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)
         if event is None or tries > RECOVER_TRIES:
             if not await _give_up(r, k, who):
-                # Claimed or answered since it was looked at: that turn's to finish, and its person's later events
-                # wait behind it.
+                # Claimed or answered since it was looked at: that turn's to finish, its try given back, and its
+                # person's later events wait behind it.
+                await r.incr(f"{INBOX}:tries:{k}", -1)
                 MESSENGER_HEALTH["recover_waiting"] += 1
                 if who is not None:
                     waiting.add(who)
@@ -2935,6 +2939,10 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         # event with no mark, and Redis failing stops the pass, the event left for the next one.
         out = await handle(event, by="api", client=r)
     except StillAnswering as e:
+        if tries:
+            # No turn of its ran in this pass (another holds it, one of its person's earlier ones is being answered,
+            # or its answer is still to be written): the try counted for it is given back.
+            await r.incr(f"{INBOX}:tries:{k}", -1)
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
         logger.info(f"[messenger] a kept event waits: it, or an earlier one of its person's, is being answered, or "
