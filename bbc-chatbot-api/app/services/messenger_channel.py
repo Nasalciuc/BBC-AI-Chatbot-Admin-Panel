@@ -908,11 +908,14 @@ class StillAnswering(Exception):
 
 class EventFailed(Exception):
     """An event that could not be answered now: the gateway delivers it again. `kept`: it is in the inbox, and the
-    API answers it later itself (run_messenger_recover) if no delivery does first (503 with X-Messenger-Kept)."""
+    API answers it later itself (run_messenger_recover) if no delivery does first (503 with X-Messenger-Kept).
+    `turn_ran`: its own turn started (_answer) before the failure; False when it failed before (its person's earlier
+    events not looked up, or one of theirs failing first): the recovery counts no try for it."""
 
-    def __init__(self, kept: bool):
+    def __init__(self, kept: bool, turn_ran: bool = True):
         super().__init__("kept for later" if kept else "not kept")
         self.kept = kept
+        self.turn_ran = turn_ran
 
 
 class AnswerNotKept(StillAnswering):
@@ -965,6 +968,7 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
         await _forget(key, token)
         raise
     replies: list[dict] = []
+    turn_ran = False  # its own turn started: a failure before it never counts as one of its tries (the recovery)
     try:
         async with _claim_kept(key, token):
             # Never before an earlier event of theirs still in the inbox (its turn failed): it is answered and sent
@@ -977,13 +981,14 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
                 # stops trying it; the recovery answers it once the channel is on).
                 MESSENGER_HEALTH["off_skipped"] += 1
                 raise StillAnswering()
+            turn_ran = True
             replies = await _answer(event)
     except StillAnswering:
         await _forget(key, token)
         raise
     except Exception as e:
         await _forget(key, token)
-        raise EventFailed(in_inbox) from e
+        raise EventFailed(in_inbox, turn_ran) from e
     if by == "gateway" and in_inbox and replies:
         kept_now = await _give_to_gateway(key, event.key(), replies, token)
         if kept_now == "theirs":
@@ -2945,9 +2950,10 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
     # to send: the channel turned off before its send, or the gateway not reached; or the gateway's) counts none and is
     # never given up for them, its send going on until the inbox lets it go; one a turn holds (another process's, which
     # may keep its answer to write and renews its claim meanwhile) counts none and waits, never given up under it. A
-    # try is counted before the turn (one whose turn stops the process still counts), and given back when the pass runs
-    # none after all: another turn took the claim between the look and the count (StillAnswering), or the give-up met
-    # it. So the tries are the turns this pass's kind ran, and the last one is never spent waiting on another's.
+    # try is counted before the turn (one whose turn stops the process still counts), and given back when its own turn
+    # never started after all: another turn took the claim between the look and the count (StillAnswering), the
+    # give-up met it, or it failed before (EventFailed, turn_ran False). So the tries are the turns this pass's kind
+    # ran, whatever came of their answers, and the last one is never spent waiting on another's.
     tries = 0
     claim = "none" if event is None else await _claim_of(r, k)
     if claim == "turn":
@@ -2975,9 +2981,11 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         # event with no mark, and Redis failing stops the pass, the event left for the next one.
         out = await handle(event, by="api", client=r)
     except StillAnswering as e:
-        if tries:
-            # No turn of its ran in this pass (another holds it, one of its person's earlier ones is being answered,
-            # or its answer is still to be written): the try counted for it is given back.
+        if tries and not isinstance(e, AnswerNotKept):
+            # No turn of its ran in this pass (another holds it, or one of its person's earlier ones is being
+            # answered): the try counted for it is given back. One that ran keeps it, its answer not kept
+            # (AnswerNotKept): held by this process, written at its next minute and sent then without a try
+            # (_claim_of: "answered"), or another delivery's or pass's.
             await _give_back(r, k)
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
@@ -2985,6 +2993,10 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
                     f"its answer is still to be written ({type(e).__name__}, try {tries})")
         return "waiting"
     except EventFailed as e:
+        if tries and not e.turn_ran:
+            # Failed before its own turn started (its person's earlier ones not looked up, or one of theirs failing
+            # first): the try counted for it is given back. Its own turn failing keeps it.
+            await _give_back(r, k)
         MESSENGER_HEALTH["recover_waiting"] += 1
         waiting.add(who)
         cause = e.__cause__

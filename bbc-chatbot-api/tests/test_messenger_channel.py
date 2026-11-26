@@ -4360,6 +4360,68 @@ async def test_an_event_whose_send_begins_after_the_look_is_never_given_up(chat,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fails", ["before_its_turn", "in_its_turn"])
+async def test_a_try_counts_only_once_its_own_turn_started(chat, redis, monkeypatch, fails):
+    """CodeRabbit #288: a kept event one try short of its last fails before its own turn starts (its person's earlier
+    events not looked up: EARLIER_LUA failing): the try counted for it is given back, so it is never given up at the
+    next pass for turns that never ran. Rule 5: its own turn failing keeps the try (in_its_turn)."""
+    await _fail_once(chat, redis)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = str(mc.RECOVER_TRIES - 1)
+    if fails == "before_its_turn":
+        _turns(chat)
+        real_eval = redis.eval
+
+        async def earlier_not_looked_up(script, numkeys, *keys_and_args):
+            if script == mc.EARLIER_LUA:
+                raise ResponseError("BUSY Redis is busy running a script")
+            return await real_eval(script, numkeys, *keys_and_args)
+
+        monkeypatch.setattr(redis, "eval", earlier_not_looked_up)
+    else:
+        _turns(chat, fail_first=1)
+    with patch.object(mc, "send", new=Gateway([])):
+        out = await mc.run_messenger_recover()
+    assert (out["waiting"], out["given_up"]) == (1, 0) and "m1" in redis.kv[mc.INBOX]
+    if fails == "before_its_turn":
+        assert redis.kv[tries_key] == str(mc.RECOVER_TRIES - 1), "no turn of its ran: its try given back"
+        assert len(chat.requests) == 1, "the failure only"
+    else:
+        assert redis.kv[tries_key] == str(mc.RECOVER_TRIES), "its own turn failed: the try counted"
+        assert len(chat.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_ran_keeps_its_try_when_its_answer_is_not_kept(chat, redis, monkeypatch):
+    """CodeRabbit #288: a kept event's recovery turn runs at its last try and Redis refuses its answer (held by this
+    process: AnswerNotKept). The turn ran, so its try stays counted. Its answer is still written and sent at the next
+    minute, once, without a try nor a second turn, and never given up for its tries. Rule 5: a turn that never started
+    gives its try back (test_an_event_another_turn_holds_at_its_last_try_is_never_given_up)."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    tries_key = f"{mc.INBOX}:tries:m1"
+    redis.kv[tries_key] = str(mc.RECOVER_TRIES - 1)
+    real_eval = redis.eval
+    refuse = {"on": True}
+
+    async def refusing(script, numkeys, *keys_and_args):
+        if refuse["on"] and script == mc.KEEP_ANSWER_LUA:
+            raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
+        return await real_eval(script, numkeys, *keys_and_args)
+
+    monkeypatch.setattr(redis, "eval", refusing)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert out["waiting"] == 1 and mc._UNKEPT, "its answer held by this process"
+        assert redis.kv[tries_key] == str(mc.RECOVER_TRIES), "its turn ran: the try counted"
+        refuse["on"] = False
+        out = await mc.run_messenger_recover()
+    assert (out["answered"], out["given_up"]) == (1, 0) and mc.MESSENGER_HEALTH["recover_given_up"] == 0
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and len(chat.requests) == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("held_by", ["the_channel_turned_off", "the_gateway_not_reached"])
 async def test_an_answer_held_to_send_at_the_last_try_is_sent_never_given_up(chat, redis, monkeypatch, held_by):
     """CodeRabbit #288: a kept event whose turn runs at its last try, its answer kept as the API's to send and not sent
