@@ -127,7 +127,8 @@ What the API does with an event:
   the turn's claim or of nothing (`answer_unkept`): a delivery made again meanwhile gets it from that process, with
   no second turn, and the process keeps the event's claim (a new expiry each minute) until it is written, so no other
   delivery or pass answers the event again; a newer one of the event, held meanwhile, is never dropped by an older
-  one's write. A shutdown writes what the process holds; one Redis still refuses then
+  one's write. A shutdown stops the recovery first (5 seconds at most), so none of its turns holds one after, then
+  writes what the process holds, each one tried whatever Redis said of the one before; one Redis still refuses then
   goes with it (`answer_dropped`), and its event may be answered again once its claim runs out. Redis down: answered
   without the mark (`no_dedupe`).
 - **Answered later.** From the moment it is taken until it is answered, an event is in the inbox (`msgr:inbox`, its
@@ -167,16 +168,19 @@ What the API does with an event:
   lost: given), so a delivery made again gets the event's answer from Redis, this one's, or none when another
   delivery's or the API's send stands; never from the process while Redis fails. The right reads as on its way for 90
   seconds (past the gateway's own 60), then as over: never sent by the API. An event given to the gateway while a
-  later one of the person's waits in the inbox stays there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
+  later one of the person's waits in the inbox (or while one could not be looked up: never taken for none) stays
+  there until then, so the later one waits for it. An event found in the inbox with a send written down is never sent again: one over (the inbox not cleared
   after, a process stopped or Redis failed) just leaves it; one begun more than 90 seconds ago and never over, by a
   process no longer alive (it stopped in the middle of it: maybe with the person), leaves it too, counted
-  (`recover_unsure`); one begun lately, or by a process still alive, is on its way, and the event waits: every old
+  (`recover_unsure`), let go of only while its mark is still the one read (its process, back meanwhile, may have
+  cleared it: the event then stays, and is sent from its answer); one begun lately, or by a process still alive, is on its way, and the event waits: every old
   mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not. Only
   a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
   event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
   claim or answer), so the same replies go, with no second turn; its mark
   not cleared then (Redis failing), or written with its answer lost, its process clears it at its next minute, or
-  when it next looks at the event, however long Redis took; a send that ended and whose end could not be written has
+  when it next looks at the event, however long Redis took, with the answer written back, in one step and only while
+  the event is still in the inbox (let go of meanwhile, it keeps the mark and sends them late, below); a send that ended and whose end could not be written has
   its event let go of then (out of the inbox, never sent again). A process that stopped first leaves its marks to read
   as begun: never sent twice. A process cut off from Redis past its alive mark while it runs, whose event another
   process let go of so meanwhile, sends the replies it knows never went out itself once Redis answers, once
@@ -227,7 +231,8 @@ The API sends a chat's rows one after another, in the order they were stored (a 
 in each process, and a row's place is taken the moment the database stores it, before the chat's activity clocks and
 the live push, even when the request that stored it was cancelled meanwhile (the cancel waits for the insert's
 answer, as a request not cancelled does; one that answers an error leaves the agent's message to the recovery minute
-as `unsure`, before the chat's next row may go: stored, its agent is told it was not sent): an agent's "joined" line
+as `unsure`, before the chat's next row may go: stored, its agent is told it was not sent; one stored has what its
+place left to do, its delivery crossed out or its agent told, done before the cancel goes on): an agent's "joined" line
 and their message never cross, however long an insert's answer takes); each
 row ends only after the chat's previous one, so one with nothing to send (its chat not read, kept for the minute, or
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
