@@ -320,7 +320,10 @@ row ends only after the chat's previous one, so one with nothing to send (its ch
 going nowhere) never lets the next one go beside the one before it; a row waiting for the chat's previous one is not sent if the channel was turned off meanwhile
 (`off_skipped`), nor one the channel went off for while its going to the gateway was written down (crossed out, no
 note: nothing went out; written down as `off` first, so one whose cross-out Redis refuses is crossed out by
-the next minute, never told as maybe sent). Where a
+the next minute, never told as maybe sent). The limit: when Redis refuses its write as `off` too, it still reads
+`sending`; no minute takes it up while its process lives, but once that process stopped before Redis took a write,
+the next one's minute tells its agent it may have gone out, as for any send a stopped process began: a note too many,
+never a message lost without one (`off_unsettled`, logged). Where a
 chat answers to is in Redis (`msgr:conv:<conversation id>`, 30 days, renewed by each event); an agent's message to a
 chat Redis no longer knows reads the chat's metadata, and one whose chat could not be read is never taken for a site
 chat's: it stays written down as `unsure` (`target_unread`), and the recovery minute looks the chat up again, its
@@ -422,7 +425,7 @@ The API's `/health/detail` `messenger`: `enabled`, `events`, `turns`, `replies`,
 `claim_lost`, `answer_unkept`, `sent_late`, `late_dropped`, `answer_dropped`, `turn_rows_left`, `bad_signature`,
 `sent`, `send_failed`
 with `window_closed`, `unavailable`, `thread_owned`, `unconfirmed`, `partly_sent`, `gateway_down`, `no_target`,
-`target_unread`, `off_skipped`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
+`target_unread`, `off_skipped`, `off_unsettled`, `cut_at_shutdown`, `outbox_unsaved`, `told_later`, `outbox_given_up`.
 
 ## The gateway's environment
 
