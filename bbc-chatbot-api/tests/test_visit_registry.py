@@ -63,9 +63,19 @@ def fresh_counters():
     yield
 
 
+def count_try(fake, keys, args):
+    """visit_registry._COUNT_TRY_LUA: the try counted only on a visit still there."""
+    if not fake._alive(keys[0]):
+        return None
+    h = fake.kv[keys[0]]
+    h[args[0]] = str(int(h.get(args[0]) or 0) + 1)
+    return int(h[args[0]])
+
+
 @pytest.fixture
 def fake():
     r = FakeRedis()
+    r.register(reg._COUNT_TRY_LUA, count_try)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -296,6 +306,25 @@ async def test_a_lookup_that_breaks_keeps_the_visits_that_need_it(fake):
     assert out["rows"] == 1 and out["waiting"] == 1 and reg.VISIT_HEALTH["link_failed"] == 1
     assert [r["visitor_id"] for r in store.await_args.args[0]] == [OTHER_VID]
     assert fake.kv[reg.ENDED_KEY] == [KEY]
+
+
+@pytest.mark.asyncio
+async def test_a_visit_another_process_stored_meanwhile_is_not_made_again(fake):
+    """CodeRabbit #282, round 9: during a deploy the other scheduler may store the waiting visit and delete its hash
+    while this run writes; its try is then counted on nothing, never on a new hash of that count alone."""
+    _queue(fake, (KEY, visit(conversation_id=None)))
+
+    async def the_other_process_took_it(rows):
+        fake.kv.pop(KEY, None)
+        fake.kv[reg.ENDED_KEY] = []
+        return "stored"
+
+    other = f"live:ended:{OTHER_VID}:{T0 + 10}"
+    _queue(fake, (other, visit()))
+    with patch("app.db.supabase.store_site_visits", new=AsyncMock(side_effect=the_other_process_took_it)), \
+            patch("app.db.supabase.first_chat_of_visit", new=AsyncMock(return_value=None)):
+        out = await reg.run_visit_registry()
+    assert out["waiting"] == 1 and KEY not in fake.kv, "no hash made of link_tries alone"
 
 
 @pytest.mark.asyncio

@@ -253,12 +253,6 @@ class FakeRedis:
             h[str(f)] = str(v)
         return added
 
-    async def hincrby(self, key: str, field: str, amount: int = 1) -> int:
-        self._check("hincrby")
-        h = self._hash(key)
-        h[str(field)] = str(int(h.get(str(field)) or 0) + int(amount))
-        return int(h[str(field)])
-
     async def hgetall(self, key: str) -> dict[str, str]:
         self._check("hgetall")
         return dict(self.kv[key]) if self._alive(key) else {}

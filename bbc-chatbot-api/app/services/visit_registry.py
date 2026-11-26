@@ -50,6 +50,15 @@ _CHAT_AFTER_VISIT_S = 1800
 # own hash (bbc-live's ended key, deleted with it).
 LINK_TRIES = 5
 _TRIES_FIELD = "link_tries"
+# The try is counted only on a visit still there: during a deploy another process may have stored it and deleted
+# its hash meanwhile, and a bare HINCRBY would make a hash of that count alone, with no expiry, that nothing reads
+# (CodeRabbit #282, round 9). The check and the count in one step.
+_COUNT_TRY_LUA = """
+if redis.call('exists', KEYS[1]) == 1 then
+  return redis.call('hincrby', KEYS[1], ARGV[1], 1)
+end
+return false
+"""
 # Lookups at once (they share the database's thread pool with the chat).
 _LOOKUPS_AT_ONCE = 4
 # The visit's text fields as bbc-live writes them, and the table's names for them.
@@ -267,7 +276,7 @@ async def run_visit_registry() -> dict:
         pipe = r.pipeline(transaction=False)
         for k in keys:
             if k in kept:
-                pipe.hincrby(k, _TRIES_FIELD, 1)
+                pipe.eval(_COUNT_TRY_LUA, 1, k, _TRIES_FIELD)
                 continue
             pipe.lrem(ENDED_KEY, 1, k)
             pipe.delete(k)
