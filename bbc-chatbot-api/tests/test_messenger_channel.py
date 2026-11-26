@@ -4325,6 +4325,7 @@ async def test_a_take_another_process_may_have_run_is_looked_up_through_a_cooldo
         with pytest.raises(mc.StillAnswering):
             await mc.handle(second)
         assert "m2" in redis.kv[mc.INBOX] and "m2" in mc._TAKE_UNSURE, "its take ran, and A knows it may have"
+        places = (redis.kv[mc.INBOX]["m2"], redis.kv[mc._who(second)]["m2"])  # where A's take put it, in both
         monkeypatch.setattr(redis, "eval", real_eval)
         monkeypatch.setattr(mc, "BOOT", "process-b")
         mc._TAKE_UNSURE.clear()  # B never heard of it
@@ -4337,7 +4338,17 @@ async def test_a_take_another_process_may_have_run_is_looked_up_through_a_cooldo
             assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
             assert mc.MESSENGER_HEALTH["not_kept"] == 1
             return
+        real_found = mc._earlier_kept
+        looked: list = []
+
+        async def found(r, ev, *a):
+            if ev.mid == "m2" and not looked:
+                looked.append((redis.kv[mc.INBOX]["m2"], redis.kv[mc._who(second)]["m2"]))
+            return await real_found(r, ev, *a)
+
+        monkeypatch.setattr(mc, "_earlier_kept", found)
         out = await mc.handle(second)  # the gateway's, again, at B
+    assert looked == [places], "the second keeps the place A's take gave it, in both indexes"
     assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
     assert [(r["role"], r["content"]) for r in chat.rows] == [
         ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
