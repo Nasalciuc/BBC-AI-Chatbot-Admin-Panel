@@ -6424,6 +6424,68 @@ async def test_a_delivery_whose_deletion_is_refused_never_keeps_the_notes_after_
 
 
 @pytest.mark.asyncio
+async def test_the_minutes_deletions_count_toward_its_batch(chat, redis, monkeypatch):
+    """CodeRabbit #288: the outbox in one part (HSCAN's COUNT a hint), with more deliveries the minute deletes without
+    a note (off, unreadable) than TELL_BATCH: each pass deletes TELL_BATCH of them at most, as it tells TELL_BATCH
+    notes at most, and the next passes go on with the rest, then the note behind them. Rule 5: fewer than the batch
+    are all deleted in one pass, and the note after them told in it too."""
+    redis.scan_whole = True
+    off = json.dumps({"cid": CONV, "boot": "gone-one", "state": "off", "at": time.time()})
+    redis.kv[mc.OUTBOX] = {**{f"e{i}": off if i % 2 else "{not json" for i in range(5)},
+                           "e-note": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold", "note": "A note",
+                                                 "at": time.time()})}
+    monkeypatch.setattr(mc, "TELL_BATCH", 2)
+    left = []
+    for _ in range(3):
+        told = (await mc.run_messenger_recover())["told"]
+        left.append((len(await redis.hgetall(mc.OUTBOX)), told))
+    assert left == [(4, 0), (2, 0), (0, 1)], "two of the work at most per pass, the note in the third"
+    assert mc.MESSENGER_HEALTH["outbox_given_up"] == 3
+    assert [r["content"] for r in chat.rows if r["role"] == "system"] == ["A note"]
+    monkeypatch.setattr(mc, "TELL_BATCH", 20)
+    redis.kv[mc.OUTBOX] = {"e-off": off, "e-note": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold",
+                                                                "note": "Another", "at": time.time()})}
+    assert (await mc.run_messenger_recover())["told"] == 1 and not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["off", "unreadable"])
+async def test_a_deletion_that_hangs_is_cut_at_the_notes_time_and_the_events_still_get_theirs(chat, redis,
+                                                                                            monkeypatch, which):
+    """CodeRabbit #288: the HDEL of a delivery the minute deletes without a note (off, or unreadable) hangs (Redis
+    slow): it is cut at TELL_BUDGET_S, the delivery left in the outbox for a later pass (never a note, nothing counted
+    while it is there), and the inbox's event is answered in the same pass. Rule 5: Redis back, it is deleted (an
+    unreadable one counted as given up once, when it is)."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    off = json.dumps({"cid": CONV, "boot": "gone-one", "state": "off", "at": time.time()})
+    redis.kv[mc.OUTBOX] = {"e-slow": off if which == "off" else "{not json"}
+    hang = {"on": True}
+    real_hdel = redis.hdel
+
+    async def slow(key, *fields):
+        if hang["on"] and key == mc.OUTBOX:
+            await asyncio.sleep(30)
+        return await real_hdel(key, *fields)
+
+    monkeypatch.setattr(redis, "hdel", slow)
+    monkeypatch.setattr(mc, "TELL_BUDGET_S", 0.1)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await asyncio.wait_for(mc.run_messenger_recover(), 2)
+        assert out["answered"] == 1 and set(await redis.hgetall(mc.OUTBOX)) == {"e-slow"}
+        assert mc.MESSENGER_HEALTH["outbox_given_up"] == 0, "nothing given up while it is still there"
+        hang["on"] = False
+        later = [(await mc.run_messenger_recover())["told"] for _ in range(2)]
+    assert later == [0, 0] and not await redis.hgetall(mc.OUTBOX)
+    assert mc.MESSENGER_HEALTH["outbox_given_up"] == (1 if which == "unreadable" else 0)
+    assert gw.sent == ["About: Hi, two seats to Istanbul in December?"] and not any(
+        r["role"] == "system" for r in chat.rows)
+
+
+@pytest.mark.asyncio
 async def test_the_notes_after_failing_ones_are_told_while_the_deliveries_between_them_end(chat, redis, monkeypatch):
     """CodeRabbit #288: the outbox in one part (HSCAN's COUNT a hint), its first notes failing pass after pass, and
     the deliveries after them (a live process's) done with and crossed out by it between passes, one each time: each
