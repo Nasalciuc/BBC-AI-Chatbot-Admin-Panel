@@ -1280,21 +1280,29 @@ _ENDED: dict[str, tuple[str, Optional[str]]] = {}
 SENT_BY_GATEWAY = "gateway"
 
 
+def _drop_unsent(k: str, entry: Optional[tuple]) -> None:
+    """An entry of _UNSENT let go of, only while it is still the one looked at: a newer one, written by a send of this
+    process that sent nothing meanwhile, stays (it is that send's to settle)."""
+    if entry is not None and _UNSENT.get(k) is entry:
+        del _UNSENT[k]
+
+
 async def _send_state(r, k: str) -> str:
     """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun, or known to have sent
     nothing), "on_its_way" (begun lately: its process may still be at it; or before that by another process still
     alive, which may know that nothing went out, for as long as its minutes could still clear it: ALIVE_S), "begun"
     (begun and never over: its process stopped in it, or this one, which is not at it), "done" (over, and the event
     not taken out of the inbox after). Redis failing raises."""
+    known = _UNSENT.get(k)  # what this process knew of the send before the read: never one it writes meanwhile
     raw = await r.get(_sending_key(k))
     if raw is None or raw == "done":
-        _UNSENT.pop(k, None)
+        _drop_unsent(k, known)
         return "none" if raw is None else "done"
     if raw == SENT_BY_GATEWAY or str(raw).startswith(f"{SENT_BY_GATEWAY}:"):
         # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>"): on
         # its way while the gateway may still be sending them (SENDING_S, past the gateway's own 60 seconds), then
         # over, sent or not: never sent again by the API. A later event of the person's waits for it until then.
-        _UNSENT.pop(k, None)
+        _drop_unsent(k, known)
         at = 0.0
         try:
             at = float(str(raw).partition(":")[2] or 0)

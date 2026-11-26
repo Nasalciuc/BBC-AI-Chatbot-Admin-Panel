@@ -3360,6 +3360,31 @@ async def test_a_claim_let_go_of_between_its_set_and_get_is_taken_again_before_t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("known", ["written_meanwhile", "there_before"])
+async def test_a_send_known_to_have_sent_nothing_written_down_meanwhile_is_never_dropped_by_an_older_read(redis,
+                                                                                                    monkeypatch, known):
+    """CodeRabbit #288: _send_state reads an event's send mark and finds none, and while Redis answers a send of this
+    process writes its own mark, sends nothing and could not clear it (_UNSENT): the read, older than it, never drops
+    what that send wrote down, so this process still clears its mark itself. Rule 5: what was written down before the
+    read, its mark found gone, is dropped."""
+    k = "m1"
+    newer = (f"{time.time()}:{mc.BOOT}", event().model_dump_json(), [{"text": "Hi"}])
+    if known == "there_before":
+        mc._UNSENT[k] = newer
+    real_get = redis.get
+
+    async def get(key):
+        out = await real_get(key)
+        if key == mc._sending_key(k) and known == "written_meanwhile":
+            mc._UNSENT[k] = newer  # written down by a send of this process while Redis answered
+        return out
+
+    monkeypatch.setattr(redis, "get", get)
+    assert await mc._send_state(redis, k) == "none"
+    assert (mc._UNSENT.get(k) == newer) == (known == "written_meanwhile")
+
+
+@pytest.mark.asyncio
 async def test_a_newer_held_answer_is_never_dropped_by_the_write_of_an_older_one(redis, monkeypatch):
     """CodeRabbit #288: this process writes an answer it holds, and while Redis answers, a newer turn of the same event
     has its own held (its write refused): the older one's write never drops the newer one, which stays to be
