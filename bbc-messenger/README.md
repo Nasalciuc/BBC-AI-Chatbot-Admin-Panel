@@ -18,7 +18,8 @@ META_PAGE_ID_BBC=… META_PAGE_TOKEN_BBC=… META_PAGE_ID_BCT=… META_PAGE_TOKE
 API_URL=https://… MESSENGER_GATEWAY_SECRET=… go run .
 ```
 
-`GET /health` says `"ready": true` once every variable is set (never their values).
+`GET /health` says `"ready": true` once every variable is set (never their values). Until then the webhook answers
+Meta 503 (Meta delivers again); Meta's check (`GET /webhook`) and `/health` still answer, for the setup.
 
 ## Test
 

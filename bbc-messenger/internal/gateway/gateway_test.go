@@ -39,6 +39,9 @@ type graph struct {
 	answer func(call map[string]any) (int, string)
 }
 
+// dropAnswer, as a graph answer's status: Meta read the whole call and the connection dropped before its answer.
+const dropAnswer = -1
+
 func (g *graph) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var call map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&call)
@@ -50,6 +53,12 @@ func (g *graph) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status, body := 200, `{"recipient_id":"PSID-7","message_id":"mid.out"}`
 	if answer != nil {
 		status, body = answer(call)
+	}
+	if status == dropAnswer {
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+		return
 	}
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, body)
@@ -87,6 +96,7 @@ type api struct {
 	events  []map[string]any
 	badSigs int
 	answer  func(n int, event map[string]any) (int, string)
+	header  func(n int, event map[string]any) http.Header // the answer's headers, when the test sets some
 }
 
 func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -104,11 +114,16 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.events = append(a.events, ev)
 	n := len(a.events)
-	answer := a.answer
+	answer, header := a.answer, a.header
 	a.mu.Unlock()
 	status, out := 200, `{"replies":[]}`
 	if answer != nil {
 		status, out = answer(n, ev)
+	}
+	if header != nil {
+		for k, v := range header(n, ev) {
+			w.Header()[k] = v
+		}
 	}
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, out)
@@ -131,27 +146,46 @@ type rig struct {
 
 func newRig(t *testing.T, workers, queue int) *rig {
 	t.Helper()
+	return newRigWith(t, workers, queue, nil)
+}
+
+// newRigWith is a rig whose settings the test changes before it starts.
+func newRigWith(t *testing.T, workers, queue int, set func(*Config)) *rig {
+	t.Helper()
 	g, a := &graph{}, &api{t: t}
 	gs, as := httptest.NewServer(g), httptest.NewServer(a)
+	// Cleanups run last registered first: the webhook closes, then the workers stop, and only then the fake API and
+	// Graph close, so no worker is left running against a closed server.
 	t.Cleanup(gs.Close)
 	t.Cleanup(as.Close)
 	logs := &bytes.Buffer{}
+	cfg := Config{
+		AppSecret: []byte(appSecret), VerifyToken: "verify-me", AppID: "123456789012345",
+		Pages:  map[string]Page{pageID: {ID: pageID, Token: pageToken, Site: "bbc"}},
+		APIURL: as.URL, GatewaySecret: []byte(gwSecret), Workers: workers, QueueSize: queue,
+		APITimeout: 5 * time.Second, Retries: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond},
+		KeepFor: 200 * time.Millisecond, LongRetry: 5 * time.Millisecond,
+		SendBudget: 2 * time.Second, CallTimeout: 100 * time.Millisecond, HoldFor: time.Second,
+	}
+	if set != nil {
+		set(&cfg)
+	}
 	srv := &Server{
-		Cfg: Config{
-			AppSecret: []byte(appSecret), VerifyToken: "verify-me", AppID: "123456789012345",
-			Pages:  map[string]Page{pageID: {ID: pageID, Token: pageToken, Site: "bbc"}},
-			APIURL: as.URL, GatewaySecret: []byte(gwSecret), Workers: workers, QueueSize: queue,
-			APITimeout: 5 * time.Second, Retries: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond},
-		},
+		Cfg:  cfg,
 		Meta: &meta.Client{HTTP: gs.Client(), Base: gs.URL, Version: "v26.0"},
 		API:  as.Client(),
 		Log:  slog.New(slog.NewJSONHandler(&lockedWriter{w: logs}, nil)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	srv.Start(ctx)
+	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		stop, done := context.WithTimeout(context.Background(), 2*time.Second)
+		defer done()
+		srv.Stop(stop)
+	})
 	web := httptest.NewServer(srv.Handler())
 	t.Cleanup(web.Close)
-	t.Cleanup(cancel)
 	return &rig{srv: srv, web: web, graph: g, api: a, logs: logs, stop: cancel}
 }
 
@@ -192,6 +226,12 @@ func (r *rig) post(t *testing.T, body string, signature string) int {
 func messageEvent(mid, text string, ts int64, extra string) string {
 	return fmt.Sprintf(`{"sender":{"id":%q},"recipient":{"id":%q},"timestamp":%d,"message":{"mid":%q,"text":%q%s}}`,
 		psid, pageID, ts, mid, text, extra)
+}
+
+// messageFrom is a message of another person on the Page.
+func messageFrom(sender, mid, text string, ts int64) string {
+	return fmt.Sprintf(`{"sender":{"id":%q},"recipient":{"id":%q},"timestamp":%d,"message":{"mid":%q,"text":%q}}`,
+		sender, pageID, ts, mid, text)
 }
 
 func batch(page string, events ...string) string {
@@ -358,9 +398,12 @@ func TestAnEchoFromThePageInboxIsKeptAndNotAnswered(t *testing.T) {
 	}
 }
 
-func TestAFullQueueAsksMetaToDeliverAgain(t *testing.T) {
+func TestAFullQueueAsksMetaToDeliverAgainAndNothingOvertakesTheRefusedEvent(t *testing.T) {
 	r := newRig(t, 1, 1)
 	release := make(chan struct{})
+	// Released on every way out of the test (a t.Fatalf included): the fake API's handler never blocks its Close.
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
 	r.api.answer = func(n int, _ map[string]any) (int, string) {
 		if n == 1 {
 			<-release
@@ -378,15 +421,116 @@ func TestAFullQueueAsksMetaToDeliverAgain(t *testing.T) {
 	if code := r.post(t, third, hubSign(third)); code != 503 || r.srv.Health.QueueFull.Load() != 1 {
 		t.Fatalf("full: %d", code)
 	}
-	close(release)
+	free()
 	until(t, func() bool { return len(r.api.seen()) == 2 }, "m2")
-	// Meta delivers m3 again: it was never marked, so it is taken now.
+	// Room again, but the person's later message, in a delivery of its own, waits for m3: refused, never queued
+	// ahead of it, whenever Meta delivers m3 again.
+	fourth := batch(pageID, messageEvent("m4", "d", 400, ""))
+	if code := r.post(t, fourth, hubSign(fourth)); code != 503 || r.srv.Health.Held.Load() != 1 {
+		t.Fatalf("m4 before m3: %d, held %d", code, r.srv.Health.Held.Load())
+	}
+	// Rule 5: another person on the Page does not wait.
+	other := batch(pageID, messageFrom("PSID-8", "q1", "hello", 450))
+	if code := r.post(t, other, hubSign(other)); code != 200 {
+		t.Fatalf("another person: %d", code)
+	}
+	until(t, func() bool { return len(r.api.seen()) == 3 }, "q1")
+	// Meta delivers m3 again: it was never marked, so it is taken now, and the person's m4 after it.
 	if code := r.post(t, third, hubSign(third)); code != 200 {
 		t.Fatalf("again: %d", code)
 	}
-	until(t, func() bool { return len(r.api.seen()) == 3 }, "m3")
-	if r.srv.Health.Duplicates.Load() != 0 {
-		t.Errorf("m3 was not a duplicate")
+	until(t, func() bool { return len(r.api.seen()) == 4 }, "m3")
+	if code := r.post(t, fourth, hubSign(fourth)); code != 200 {
+		t.Fatalf("m4 after m3: %d", code)
+	}
+	until(t, func() bool { return len(r.api.seen()) == 5 }, "m4")
+	var order []string
+	for _, ev := range r.api.seen() {
+		if ev["psid"] == psid {
+			order = append(order, ev["mid"].(string))
+		}
+	}
+	if strings.Join(order, ",") != "m1,m2,m3,m4" || r.srv.Health.Duplicates.Load() != 0 {
+		t.Errorf("the person's order %v, duplicates %d", order, r.srv.Health.Duplicates.Load())
+	}
+}
+
+func TestARefusedEventMetaNeverDeliversAgainHoldsThePersonNoLongerThanHoldFor(t *testing.T) {
+	in := newIntake(time.Hour, 100, time.Minute)
+	t0 := time.Unix(1_800_000_000, 0)
+	ev := func(mid string) meta.Inbound {
+		return meta.Inbound{Kind: "message", PageID: pageID, PSID: psid, MID: mid}
+	}
+	full := func() bool { return false }
+	room := func() bool { return true }
+	if v, _ := in.admit(ev("m3"), t0, full); v != refused {
+		t.Fatalf("m3: %v", v)
+	}
+	in.holdRest([]meta.Inbound{ev("m3")}, t0)
+	if v, _ := in.admit(ev("m4"), t0.Add(30*time.Second), room); v != waiting {
+		t.Fatalf("m4 while m3 is awaited: %v", v)
+	}
+	// m3 never came again: after HoldFor the person's events are taken again.
+	v, expired := in.admit(ev("m4"), t0.Add(61*time.Second), room)
+	if v != taken || !expired {
+		t.Fatalf("m4 after the hold: %v %v", v, expired)
+	}
+}
+
+func TestTheIntakeForgetsItsOldestKeysWhenFullWithoutAScan(t *testing.T) {
+	in := newIntake(time.Hour, 3, time.Minute)
+	t0 := time.Unix(1_800_000_000, 0)
+	room := func() bool { return true }
+	ev := func(mid string) meta.Inbound {
+		return meta.Inbound{Kind: "message", PageID: pageID, PSID: psid, MID: mid}
+	}
+	for i, mid := range []string{"k1", "k2", "k3", "k4"} {
+		if v, _ := in.admit(ev(mid), t0.Add(time.Duration(i)*time.Second), room); v != taken {
+			t.Fatalf("%s: %v", mid, v)
+		}
+	}
+	// All four are recent: the limit still holds, the oldest went.
+	if len(in.at) != 3 {
+		t.Fatalf("%d keys kept, the limit is 3", len(in.at))
+	}
+	if v, _ := in.admit(ev("k2"), t0.Add(5*time.Second), room); v != duplicate {
+		t.Errorf("k2 is still a duplicate: %v", v)
+	}
+	if v, _ := in.admit(ev("k1"), t0.Add(5*time.Second), room); v != taken {
+		t.Errorf("k1, the oldest, was forgotten: %v", v)
+	}
+	// Past their time, all go.
+	in.forget(t0.Add(2 * time.Hour))
+	if len(in.at) != 0 || in.head != len(in.order) {
+		t.Errorf("expired keys kept: %d", len(in.at))
+	}
+	// Rule 5: a refused event is never marked (it is taken when Meta delivers it again).
+	if v, _ := in.admit(ev("k9"), t0.Add(3*time.Hour), func() bool { return false }); v != refused {
+		t.Fatalf("k9: %v", v)
+	}
+	if v, _ := in.admit(ev("k9"), t0.Add(3*time.Hour), room); v != taken {
+		t.Errorf("k9 again: %v", v)
+	}
+}
+
+func TestTheSameWebhookTwiceAtOnceIsTakenOnce(t *testing.T) {
+	r := newRig(t, 2, 16)
+	body := batch(pageID, messageEvent("m1", "Hi", 100, ""))
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.post(t, body, hubSign(body))
+		}()
+	}
+	wg.Wait()
+	until(t, func() bool { return r.srv.Health.Forwarded.Load() == 1 }, "the forward")
+	time.Sleep(20 * time.Millisecond)
+	// One taken, seven duplicates: one forward, and the person sees it read and Skye typing once.
+	if len(r.api.seen()) != 1 || r.srv.Health.Duplicates.Load() != 7 || len(r.graph.actions()) != 2 {
+		t.Errorf("forwarded %d, duplicates %d, actions %v", len(r.api.seen()), r.srv.Health.Duplicates.Load(),
+			r.graph.actions())
 	}
 }
 
@@ -413,18 +557,68 @@ func TestTheAPIIsTriedAgainWhileItIsDownButNotWhenItRefuses(t *testing.T) {
 	body = batch(pageID, messageEvent("m9", "z", 900, ""))
 	r.post(t, body, hubSign(body))
 	until(t, func() bool { return r.srv.Health.ForwardRefused.Load() == 1 }, "the refusal")
-	calls := 0
-	for _, ev := range r.api.seen() {
-		if ev["mid"] == "m9" {
-			calls++
-		}
+	if n := calls(r, "m9"); n != 1 {
+		t.Errorf("a refusal is not tried again: %d calls", n)
 	}
-	if calls != 1 {
-		t.Errorf("a refusal is not tried again: %d calls", calls)
-	}
+	// Still on the same event (409) for good: tried like an API that can't be reached, until KeepFor.
 	body = batch(pageID, messageEvent("m2", "b", 200, ""))
 	r.post(t, body, hubSign(body))
-	until(t, func() bool { return r.srv.Health.ForwardFailed.Load() == 1 }, "409 four times")
+	until(t, func() bool { return r.srv.Health.ForwardFailed.Load() == 1 }, "409 until KeepFor")
+	if n := calls(r, "m2"); n <= 4 {
+		t.Errorf("409 tried past Retries until KeepFor: %d calls", n)
+	}
+}
+
+func calls(r *rig, mid string) int {
+	n := 0
+	for _, ev := range r.api.seen() {
+		if ev["mid"] == mid {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAnEventTheAPIHasNotTakenIsKeptAndTriedAgain(t *testing.T) {
+	r := newRigWith(t, 1, 8, func(c *Config) { c.KeepFor = 2 * time.Second })
+	r.api.answer = func(_ int, ev map[string]any) (int, string) {
+		switch ev["mid"] {
+		case "down": // the API's proxy answering for it, more times than Retries allow
+			if calls(r, "down") <= 6 {
+				return 502, `bad gateway`
+			}
+			return 200, `{"replies":[{"text":"Here now"}]}`
+		case "off", "kept":
+			return 503, `{}`
+		}
+		return 200, `{"replies":[]}`
+	}
+	r.api.header = func(_ int, ev map[string]any) http.Header {
+		switch ev["mid"] {
+		case "off":
+			return http.Header{HeaderOff: {"1"}}
+		case "kept":
+			return http.Header{HeaderKept: {"1"}}
+		}
+		return nil
+	}
+	body := batch(pageID, messageEvent("down", "a", 100, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return len(r.graph.messages()) == 1 }, "the reply once the API is back")
+	if n := calls(r, "down"); n != 7 || r.srv.Health.ForwardFailed.Load() != 0 {
+		t.Errorf("kept until the API took it: %d calls, %v", n, r.srv.Health.snapshot())
+	}
+	// The channel off: final at once, nothing tried again.
+	body = batch(pageID, messageEvent("off", "b", 200, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return r.srv.Health.APIOff.Load() == 1 }, "the channel off")
+	// Kept by the API (its turn failed, it answers later itself): Retries, then left to it.
+	body = batch(pageID, messageEvent("kept", "c", 300, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return r.srv.Health.ForwardKept.Load() == 1 }, "kept by the API")
+	if calls(r, "off") != 1 || calls(r, "kept") != 4 || r.srv.Health.ForwardFailed.Load() != 0 {
+		t.Errorf("off %d calls, kept %d calls, %v", calls(r, "off"), calls(r, "kept"), r.srv.Health.snapshot())
+	}
 }
 
 func TestSendFailuresAreCountedByKindAndOnlyMetasOwnTroubleIsTriedAgain(t *testing.T) {
@@ -466,6 +660,92 @@ func TestALongReplyGoesAsSeveralWithTheButtonsOnTheLast(t *testing.T) {
 	until(t, func() bool { return r.srv.Health.Replies.Load() == 1 }, "one reply sent whole")
 }
 
+func TestTheBatchsQuickRepliesGoOnItsLastMessageOnly(t *testing.T) {
+	r := newRig(t, 1, 4)
+	yes := map[string]any{"content_type": "text", "title": "Yes", "payload": "yes"}
+	sms := map[string]any{"content_type": "text", "title": "SMS", "payload": "sms"}
+	r.api.answer = func(n int, _ map[string]any) (int, string) {
+		replies := []any{ // m1: buttons on a reply before the last one; m2: on two of them
+			map[string]any{"text": "Which dates?", "quick_replies": []any{yes}},
+			map[string]any{"text": "And how should we reach you?"},
+		}
+		if n == 2 {
+			replies[1] = map[string]any{"text": "And how should we reach you?", "quick_replies": []any{sms}}
+		}
+		b, _ := json.Marshal(map[string]any{"replies": replies})
+		return 200, string(b)
+	}
+	body := batch(pageID, messageEvent("m1", "a", 100, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return len(r.graph.messages()) == 2 }, "two replies")
+	body = batch(pageID, messageEvent("m2", "b", 200, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return len(r.graph.messages()) == 4 }, "two more")
+	msgs := r.graph.messages()
+	payload := func(m map[string]any) string {
+		qr, _ := m["quick_replies"].([]any)
+		if len(qr) != 1 {
+			return fmt.Sprint(len(qr))
+		}
+		return qr[0].(map[string]any)["payload"].(string)
+	}
+	// Messenger shows quick replies on the newest message only: the batch's go on its last one, the last reply's
+	// that has any.
+	if payload(msgs[0]) != "0" || payload(msgs[1]) != "yes" || payload(msgs[2]) != "0" || payload(msgs[3]) != "sms" {
+		t.Errorf("quick replies: %s %s %s %s", payload(msgs[0]), payload(msgs[1]), payload(msgs[2]), payload(msgs[3]))
+	}
+}
+
+func TestStopCountsAnEventStillWithItsWorker(t *testing.T) {
+	r := newRig(t, 1, 4)
+	release := make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	r.api.answer = func(int, map[string]any) (int, string) {
+		<-release
+		return 200, `{"replies":[]}`
+	}
+	body := batch(pageID, messageEvent("m1", "a", 100, ""))
+	r.post(t, body, hubSign(body))
+	until(t, func() bool { return len(r.api.seen()) == 1 }, "m1 with its worker")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// The queue is empty, but m1 is not done: the stop that runs out of time counts it.
+	r.srv.Stop(ctx)
+	if got := r.srv.Health.DroppedAtShutdown.Load(); got != 1 {
+		t.Errorf("dropped at shutdown: %d", got)
+	}
+}
+
+func TestAWebhookIsRefusedUntilTheGatewayIsSetUp(t *testing.T) {
+	r := newRigWith(t, 1, 4, func(c *Config) { c.GatewaySecret = nil })
+	body := batch(pageID, messageEvent("m1", "Hi", 100, ""))
+	// 503: Meta delivers it again once every variable is set, nothing is taken and dropped meanwhile.
+	if code := r.post(t, body, hubSign(body)); code != 503 || r.srv.Health.NotReady.Load() != 1 {
+		t.Fatalf("not configured: %d", code)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(r.api.seen()) != 0 || r.srv.Health.Events.Load() != 0 {
+		t.Errorf("an event was taken: %v", r.srv.Health.snapshot())
+	}
+	// Meta's check when the webhook is saved, and /health, still answer during the setup.
+	res, err := http.Get(r.web.URL + "/webhook?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	h, err := http.Get(r.web.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Body.Close() }()
+	var out map[string]any
+	_ = json.NewDecoder(h.Body).Decode(&out)
+	if res.StatusCode != 200 || out["ready"] != false {
+		t.Errorf("verify %d, health %v", res.StatusCode, out)
+	}
+}
+
 func signedSend(t *testing.T, r *rig, body string, at time.Time, secret string) (int, map[string]any) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, r.web.URL+"/v1/send", strings.NewReader(body))
@@ -485,7 +765,8 @@ func TestTheAPISendsAnAgentsMessageThroughTheGateway(t *testing.T) {
 	r := newRig(t, 1, 4)
 	call := fmt.Sprintf(`{"page_id":%q,"psid":%q,"messages":[{"text":"Hi, I'm Ana from the team."},{"text":"Which dates suit you?"}]}`, pageID, psid)
 	code, out := signedSend(t, r, call, time.Now(), gwSecret)
-	if code != 200 || out["sent"] != float64(2) || out["failed"] != nil {
+	if code != 200 || out["sent"] != float64(2) || out["parts"] != float64(2) || out["parts_sent"] != float64(2) ||
+		out["failed"] != nil {
 		t.Fatalf("send: %d %v", code, out)
 	}
 	if msgs := r.graph.messages(); len(msgs) != 2 || msgs[1]["text"] != "Which dates suit you?" {
@@ -518,6 +799,82 @@ func TestTheAPISendsAnAgentsMessageThroughTheGateway(t *testing.T) {
 	failed, _ := out["failed"].(map[string]any)
 	if code != 200 || out["sent"] != float64(0) || failed["kind"] != "window_closed" || failed["subcode"] != float64(2018278) {
 		t.Errorf("window closed: %d %v", code, out)
+	}
+}
+
+func agentCall(text string) string {
+	b, _ := json.Marshal(map[string]any{"page_id": pageID, "psid": psid, "messages": []any{map[string]any{"text": text}}})
+	return string(b)
+}
+
+func TestALongAgentsMessageCutShortSaysHowMuchWentOut(t *testing.T) {
+	r := newRig(t, 1, 4)
+	var n atomic.Int32
+	r.graph.answer = func(map[string]any) (int, string) {
+		if n.Add(1) == 1 {
+			return 200, `{"message_id":"mid.1"}`
+		}
+		return 400, `{"error":{"message":"outside the window","code":10,"error_subcode":2018278}}`
+	}
+	code, out := signedSend(t, r, agentCall(strings.Repeat("word ", 900)), time.Now(), gwSecret) // 3 pieces
+	failed, _ := out["failed"].(map[string]any)
+	// Not one message whole, but its first piece is with the person: the API tells the agent so, never "send again".
+	if code != 200 || out["sent"] != float64(0) || out["parts"] != float64(3) || out["parts_sent"] != float64(1) ||
+		failed["kind"] != "window_closed" {
+		t.Errorf("cut short: %d %v", code, out)
+	}
+}
+
+func TestAnAgentsSendKeepsToItsBudgetAndSaysWhatWentOut(t *testing.T) {
+	r := newRigWith(t, 1, 4, func(c *Config) {
+		c.SendBudget = 300 * time.Millisecond
+		c.CallTimeout = 50 * time.Millisecond
+		c.Retries = []time.Duration{200 * time.Millisecond, 200 * time.Millisecond, 200 * time.Millisecond}
+	})
+	var n atomic.Int32
+	r.graph.answer = func(map[string]any) (int, string) {
+		if n.Add(1) == 1 {
+			return 200, `{"message_id":"mid.1"}`
+		}
+		return 500, `{"error":{"message":"oops","code":2}}`
+	}
+	start := time.Now()
+	code, out := signedSend(t, r, agentCall(strings.Repeat("word ", 900)), time.Now(), gwSecret)
+	failed, _ := out["failed"].(map[string]any)
+	if code != 200 || out["sent"] != float64(0) || out["parts_sent"] != float64(1) || failed["kind"] != "timeout" {
+		t.Errorf("out of time: %d %v", code, out)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("the send outlived its budget: %v", took)
+	}
+	// The wait for the person's lock is in the budget: a send stuck behind another of theirs answers in time, with
+	// nothing sent.
+	unlock, err := r.srv.sending.lock(context.Background(), pageID, psid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sync.OnceFunc(unlock))
+	before := n.Load()
+	code, out = signedSend(t, r, agentCall("second"), time.Now(), gwSecret)
+	failed, _ = out["failed"].(map[string]any)
+	if code != 200 || out["parts_sent"] != float64(0) || failed["kind"] != "timeout" || n.Load() != before {
+		t.Errorf("behind another send: %d %v", code, out)
+	}
+	if r.srv.Health.OutOfTime.Load() != 2 {
+		t.Errorf("out of time counted: %v", r.srv.Health.snapshot())
+	}
+}
+
+func TestAnAgentsSendMetaMayHaveCarriedOutIsNeverSentTwice(t *testing.T) {
+	r := newRig(t, 1, 4)
+	r.graph.answer = func(map[string]any) (int, string) { return dropAnswer, "" }
+	code, out := signedSend(t, r, agentCall("Hi, I'm Ana."), time.Now(), gwSecret)
+	failed, _ := out["failed"].(map[string]any)
+	if code != 200 || out["sent"] != float64(0) || failed["kind"] != "unknown" {
+		t.Errorf("unconfirmed: %d %v", code, out)
+	}
+	if got := len(r.graph.messages()); got != 1 || r.srv.Health.Unconfirmed.Load() != 1 {
+		t.Errorf("sent %d times: %v", got, r.srv.Health.snapshot())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -39,6 +40,17 @@ type Config struct {
 	QueueSize     int    // per worker; a full queue answers Meta 503 and Meta tries again
 	APITimeout    time.Duration
 	Retries       []time.Duration // the waits before each retry of a call to the API or Meta
+	// An event the API has not taken (it could not be reached) is tried again every LongRetry after Retries, until
+	// KeepFor has passed since its first try.
+	KeepFor   time.Duration
+	LongRetry time.Duration
+	// SendBudget is the whole time one /v1/send may take, the wait for the person's send lock included; a call to
+	// Meta starts only while CallTimeout (the Meta client's own timeout) is left of it.
+	SendBudget  time.Duration
+	CallTimeout time.Duration
+	// HoldFor is how long a person whose event was refused waits for Meta to deliver it again: their later events are
+	// refused meanwhile, so none overtakes it.
+	HoldFor time.Duration
 }
 
 // Health is the counters /health shows. Every failure on the way to a reply is counted: one the gateway does not
@@ -49,6 +61,8 @@ type Health struct {
 	OwnEchoes, Skipped, ForwardFailed, ForwardRefused, SendFailed          atomic.Int64
 	WindowClosed, Unavailable, ThreadOwned, TokenFailed, RateLimited       atomic.Int64
 	ActionFailed, BadCalls, DroppedAtShutdown                              atomic.Int64
+	NotReady, Closing, Held, HoldExpired, ForwardKept, APIOff              atomic.Int64
+	Unconfirmed, OutOfTime                                                 atomic.Int64
 }
 
 func (h *Health) snapshot() map[string]int64 {
@@ -62,14 +76,29 @@ func (h *Health) snapshot() map[string]int64 {
 		"unavailable": h.Unavailable.Load(), "thread_owned": h.ThreadOwned.Load(),
 		"token_failed": h.TokenFailed.Load(), "rate_limited": h.RateLimited.Load(),
 		"action_failed": h.ActionFailed.Load(), "bad_calls": h.BadCalls.Load(),
-		"dropped_at_shutdown": h.DroppedAtShutdown.Load(),
+		"dropped_at_shutdown": h.DroppedAtShutdown.Load(), "not_ready": h.NotReady.Load(),
+		"closing": h.Closing.Load(), "held": h.Held.Load(), "hold_expired": h.HoldExpired.Load(),
+		"forward_kept": h.ForwardKept.Load(), "api_off": h.APIOff.Load(), "unconfirmed": h.Unconfirmed.Load(),
+		"out_of_time": h.OutOfTime.Load(),
 	}
+}
+
+// errOutOfTime is a send stopped because the time it was given ran out before the next call to Meta could start:
+// nothing was in flight, so what went out is exactly what was counted.
+var errOutOfTime = errors.New("out of time")
+
+// kindOf is the kind of a send's failure (meta.KindOf), "timeout" when its time ran out.
+func kindOf(err error) string {
+	if errors.Is(err, errOutOfTime) || errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return meta.KindOf(err)
 }
 
 // sendFailed counts a Send API failure by its kind.
 func (h *Health) sendFailed(err error) string {
 	h.SendFailed.Add(1)
-	kind := meta.KindOf(err)
+	kind := kindOf(err)
 	switch kind {
 	case "window_closed":
 		h.WindowClosed.Add(1)
@@ -81,6 +110,10 @@ func (h *Health) sendFailed(err error) string {
 		h.TokenFailed.Add(1)
 	case "rate":
 		h.RateLimited.Add(1)
+	case "unknown":
+		h.Unconfirmed.Add(1)
+	case "timeout":
+		h.OutOfTime.Add(1)
 	}
 	return kind
 }
@@ -113,57 +146,142 @@ func validSigned(secret []byte, now time.Time, unixHeader, sigHeader string, bod
 	return hmac.Equal([]byte(Sign(secret, unix, body)), []byte(strings.TrimSpace(sigHeader)))
 }
 
-// seen is the events already taken, by key, for as long as Meta may deliver one again. One process's memory: the
-// API checks again by Meta's message id, across restarts.
-type seen struct {
+// verdict is what the intake did with one event.
+type verdict int
+
+const (
+	taken     verdict = iota // queued for its worker, and marked taken
+	duplicate                // taken before: left out
+	refused                  // its worker's queue was full, or the gateway is stopping
+	waiting                  // an earlier event of the same person was refused: this one waits for it
+)
+
+// intake decides, under one lock, what a webhook takes. An event already taken (by key, for as long as Meta may
+// deliver one again) is a duplicate. A person with a refused event waits for it: their later events are refused
+// too until Meta delivers it again, so none of them can overtake it, whenever Meta's deliveries come. The rest go
+// to their worker, and only an event its queue took is marked taken (one refused is taken when Meta delivers it
+// again). One process's memory: the API checks again by Meta's message id, across restarts.
+type intake struct {
 	mu   sync.Mutex
-	at   map[string]time.Time
 	ttl  time.Duration
 	most int
+	at   map[string]time.Time // key → when it was taken
+	// The keys in the order they were taken: the oldest go first, when they expire or when room is needed, so a
+	// full map never costs a scan.
+	order   []stamp
+	head    int
+	holdFor time.Duration
+	held    map[string]hold // person → their first event still to take
 }
 
-func newSeen(ttl time.Duration, most int) *seen {
-	return &seen{at: map[string]time.Time{}, ttl: ttl, most: most}
+type stamp struct {
+	key string
+	at  time.Time
 }
 
-func (s *seen) has(key string, now time.Time) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.at[key]
-	return ok && now.Sub(t) < s.ttl
+type hold struct {
+	key string
+	at  time.Time
 }
 
-// mark records a key once its event is queued (never before: an event refused for a full queue must be taken
-// when Meta delivers it again).
-func (s *seen) mark(key string, now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.at) >= s.most {
-		s.forgetLocked(now)
+// mostHeld is the most people who wait for a refused event at once; past it a refused batch still answers 503, and
+// its people are not held.
+const mostHeld = 10_000
+
+func newIntake(ttl time.Duration, most int, holdFor time.Duration) *intake {
+	return &intake{at: map[string]time.Time{}, ttl: ttl, most: most, holdFor: holdFor, held: map[string]hold{}}
+}
+
+// person is one person on one Page: a hold's key.
+func person(in meta.Inbound) string {
+	return in.PageID + "\x00" + in.PSID
+}
+
+// admit is one event's check and queueing, as one step: a duplicate is left out; a person waiting for an earlier
+// event is refused (waiting); otherwise enqueue is tried, and the key is marked only when it took the event.
+// expired says a hold that outlived HoldFor was dropped (Meta never delivered its event again).
+func (in *intake) admit(ev meta.Inbound, now time.Time, enqueue func() bool) (v verdict, expired bool) {
+	key, p := ev.Key(), person(ev)
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
+		return duplicate, false
 	}
-	if len(s.at) >= s.most {
-		// Still full of live keys: the oldest half goes (a duplicate then reaches the API, which checks again).
-		cut := now.Add(-s.ttl / 2)
-		for k, t := range s.at {
-			if t.Before(cut) {
-				delete(s.at, k)
-			}
+	if h, ok := in.held[p]; ok {
+		if now.Sub(h.at) >= in.holdFor {
+			delete(in.held, p)
+			expired = true
+		} else if h.key != key {
+			return waiting, false
 		}
 	}
-	s.at[key] = now
+	if !enqueue() {
+		return refused, expired
+	}
+	delete(in.held, p)
+	in.markLocked(key, now)
+	return taken, expired
 }
 
-func (s *seen) forget(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.forgetLocked(now)
-}
-
-func (s *seen) forgetLocked(now time.Time) {
-	for k, t := range s.at {
-		if now.Sub(t) >= s.ttl {
-			delete(s.at, k)
+// holdRest makes each person with an event in rest (a batch's events from the one refused on) wait for their first
+// one there, unless they already wait for an earlier one.
+func (in *intake) holdRest(rest []meta.Inbound, now time.Time) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	for _, ev := range rest {
+		key, p := ev.Key(), person(ev)
+		if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
+			continue // taken before: a duplicate when Meta delivers the batch again
 		}
+		if h, ok := in.held[p]; ok && now.Sub(h.at) < in.holdFor {
+			continue
+		}
+		if len(in.held) >= mostHeld {
+			continue
+		}
+		in.held[p] = hold{key: key, at: now}
+	}
+}
+
+// forget drops what expired: keys past their time, holds past HoldFor.
+func (in *intake) forget(now time.Time) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.expireLocked(now)
+	for p, h := range in.held {
+		if now.Sub(h.at) >= in.holdFor {
+			delete(in.held, p)
+		}
+	}
+}
+
+func (in *intake) markLocked(key string, now time.Time) {
+	in.expireLocked(now)
+	// Still full of live keys: the oldest go (a duplicate then reaches the API, which checks again).
+	for len(in.at) >= in.most && in.head < len(in.order) {
+		in.dropOldestLocked()
+	}
+	in.at[key] = now
+	in.order = append(in.order, stamp{key: key, at: now})
+}
+
+func (in *intake) expireLocked(now time.Time) {
+	for in.head < len(in.order) && now.Sub(in.order[in.head].at) >= in.ttl {
+		in.dropOldestLocked()
+	}
+	if in.head > 1024 && in.head*2 > len(in.order) {
+		in.order = append([]stamp(nil), in.order[in.head:]...)
+		in.head = 0
+	}
+}
+
+func (in *intake) dropOldestLocked() {
+	s := in.order[in.head]
+	in.order[in.head] = stamp{}
+	in.head++
+	// A key taken again since (it had expired) has a newer stamp further on: this one is stale.
+	if t, ok := in.at[s.key]; ok && t.Equal(s.at) {
+		delete(in.at, s.key)
 	}
 }
 
@@ -183,13 +301,25 @@ func who(pageID, psid string) string {
 }
 
 // stripes serialise the sends to one person (a reply and an agent's message never cross), with a fixed number of
-// locks whatever the number of people.
-type stripes [256]sync.Mutex
+// locks whatever the number of people. A lock is waited for no longer than the caller's context.
+type stripes struct {
+	once sync.Once
+	sem  [256]chan struct{}
+}
 
-func (s *stripes) lock(pageID, psid string) func() {
-	m := &s[shard(pageID, psid, len(s))]
-	m.Lock()
-	return m.Unlock
+func (s *stripes) lock(ctx context.Context, pageID, psid string) (func(), error) {
+	s.once.Do(func() {
+		for i := range s.sem {
+			s.sem[i] = make(chan struct{}, 1)
+		}
+	})
+	ch := s.sem[shard(pageID, psid, len(s.sem))]
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // wait sleeps for d, or less if ctx ends first (then false).

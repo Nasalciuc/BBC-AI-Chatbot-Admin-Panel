@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Nasalciuc/BBC-AI-Chatbot-Admin-Panel/bbc-messenger/internal/meta"
@@ -24,6 +25,13 @@ const MaxBody = 1 << 20
 // InboundPath is the API's route for each event (contracts/messenger.md).
 const InboundPath = "/api/channels/messenger/inbound"
 
+// The API's answers about an event it could not answer now (contracts/messenger.md): 503 with HeaderKept, it keeps
+// the event and answers it later itself; 503 with HeaderOff, the channel is off and nothing is kept.
+const (
+	HeaderKept = "X-Messenger-Kept"
+	HeaderOff  = "X-Messenger-Off"
+)
+
 // Server is the gateway: the webhook, the workers that take each person's events to the API in order, the route
 // the API sends the agents' messages through, and /health.
 type Server struct {
@@ -34,15 +42,17 @@ type Server struct {
 	Health Health
 	Now    func() time.Time
 
-	seen    *seen
+	intake  *intake
 	queues  []chan meta.Inbound
 	sending stripes
 	wg      sync.WaitGroup
 	mu      sync.RWMutex
 	closed  bool
+	// pending is the events taken and not yet done with: queued, or with their worker.
+	pending atomic.Int64
 }
 
-// Start makes the queues and starts the workers; Stop drains them.
+// Start makes the queues and starts the workers; Close takes no more events, Stop drains them.
 func (s *Server) Start(ctx context.Context) {
 	if s.Now == nil {
 		s.Now = time.Now
@@ -56,7 +66,22 @@ func (s *Server) Start(ctx context.Context) {
 	if s.Cfg.APITimeout <= 0 {
 		s.Cfg.APITimeout = 75 * time.Second
 	}
-	s.seen = newSeen(2*time.Hour, 200_000)
+	if s.Cfg.KeepFor <= 0 {
+		s.Cfg.KeepFor = time.Hour
+	}
+	if s.Cfg.LongRetry <= 0 {
+		s.Cfg.LongRetry = time.Minute
+	}
+	if s.Cfg.SendBudget <= 0 {
+		s.Cfg.SendBudget = 60 * time.Second
+	}
+	if s.Cfg.CallTimeout <= 0 {
+		s.Cfg.CallTimeout = 10 * time.Second
+	}
+	if s.Cfg.HoldFor <= 0 {
+		s.Cfg.HoldFor = 15 * time.Minute
+	}
+	s.intake = newIntake(2*time.Hour, 200_000, s.Cfg.HoldFor)
 	s.queues = make([]chan meta.Inbound, s.Cfg.Workers)
 	for i := range s.queues {
 		s.queues[i] = make(chan meta.Inbound, s.Cfg.QueueSize)
@@ -71,34 +96,50 @@ func (s *Server) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.seen.forget(s.Now())
+				s.intake.forget(s.Now())
 			}
 		}
 	}()
 }
 
-// Stop takes no more events and waits for the queued ones, until ctx ends; what is left then is counted.
-func (s *Server) Stop(ctx context.Context) {
+// Close takes no more events: the webhook answers 503 from now on (Meta delivers them to the next process), and the
+// workers finish what is queued. Safe to call more than once.
+func (s *Server) Close() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.closed {
 		s.closed = true
 		for _, q := range s.queues {
 			close(q)
 		}
 	}
-	s.mu.Unlock()
+}
+
+// Stop closes the intake and waits for the events taken, until ctx ends; what is not done with then (queued, or
+// still with its worker) is counted.
+func (s *Server) Stop(ctx context.Context) {
+	s.Close()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-ctx.Done():
-		left := 0
-		for _, q := range s.queues {
-			left += len(q)
-		}
-		s.Health.DroppedAtShutdown.Add(int64(left))
-		s.Log.Error("stopped with events still queued", "left", left)
+		left := s.pending.Load()
+		s.Health.DroppedAtShutdown.Add(left)
+		s.Log.Error("stopped with events not done", "left", left)
 	}
+}
+
+func (s *Server) isClosed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.closed
+}
+
+// ready is whether every setting the webhook and the way to the API need is there (never their values).
+func (s *Server) ready() bool {
+	return len(s.Cfg.AppSecret) > 0 && s.Cfg.VerifyToken != "" && len(s.Cfg.Pages) > 0 && s.Cfg.APIURL != "" &&
+		len(s.Cfg.GatewaySecret) > 0
 }
 
 // Handler is the gateway's routes.
@@ -129,8 +170,15 @@ func (s *Server) verify(w http.ResponseWriter, r *http.Request) {
 }
 
 // webhook takes Meta's events: signed, read, each person's in order to their worker, answered at once (Meta wants
-// 200 within 5 seconds; the API's answer comes later, through the Send API).
+// 200 within 5 seconds; the API's answer comes later, through the Send API). While a setting is missing nothing is
+// taken (503: Meta delivers it again once the gateway is set up).
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
+	if !s.ready() {
+		s.Health.NotReady.Add(1)
+		s.Log.Warn("webhook refused: not configured yet (/health says ready)")
+		http.Error(w, "not configured", http.StatusServiceUnavailable)
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
 	if err != nil {
 		s.Health.TooLarge.Add(1)
@@ -155,27 +203,46 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	s.Health.OwnEchoes.Add(int64(skipped.OwnEchoes))
 	s.Health.Skipped.Add(int64(skipped.Other))
 	now := s.Now()
+	ours := make([]meta.Inbound, 0, len(events))
 	for _, in := range events {
 		if _, ok := s.Cfg.Pages[in.PageID]; !ok {
 			s.Health.UnknownPage.Add(1)
 			s.Log.Warn("event for a Page the gateway has no token for", "page", in.PageID)
 			continue
 		}
-		key := in.Key()
-		if s.seen.has(key, now) {
+		ours = append(ours, in)
+	}
+	for i, in := range ours {
+		v, expired := s.intake.admit(in, now, func() bool { return s.enqueue(in) })
+		if expired {
+			s.Health.HoldExpired.Add(1)
+			s.Log.Warn("a refused event never came again: the person's events are taken again", logAttrs(in)...)
+		}
+		switch v {
+		case duplicate:
 			s.Health.Duplicates.Add(1)
 			continue
-		}
-		if !s.enqueue(in) {
-			// Meta sends the whole batch again: what was queued before this one is a duplicate then, the rest
-			// is taken.
+		case taken:
+			s.Health.Events.Add(1)
+			continue
+		case waiting:
+			s.Health.Held.Add(1)
+			s.Log.Warn("an earlier event of this person was refused: this one waits for it", logAttrs(in)...)
+		case refused:
+			if s.isClosed() {
+				s.Health.Closing.Add(1)
+				http.Error(w, "stopping", http.StatusServiceUnavailable)
+				return
+			}
 			s.Health.QueueFull.Add(1)
 			s.Log.Error("queue full: Meta will deliver again", logAttrs(in)...)
-			http.Error(w, "busy", http.StatusServiceUnavailable)
-			return
 		}
-		s.seen.mark(key, now)
-		s.Health.Events.Add(1)
+		// Nothing more of this batch is taken now, and Meta delivers it again (what was taken comes back as
+		// duplicates). Each person in the rest waits for their first event: a later delivery of theirs is refused
+		// until that one is taken, so it can never overtake it.
+		s.intake.holdRest(ours[i:], now)
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -186,10 +253,12 @@ func (s *Server) enqueue(in meta.Inbound) bool {
 	if s.closed {
 		return false
 	}
+	s.pending.Add(1)
 	select {
 	case s.queues[shard(in.PageID, in.PSID, len(s.queues))] <- in:
 		return true
 	default:
+		s.pending.Add(-1)
 		return false
 	}
 }
@@ -198,6 +267,7 @@ func (s *Server) work(ctx context.Context, q chan meta.Inbound) {
 	defer s.wg.Done()
 	for in := range q {
 		s.handle(ctx, in)
+		s.pending.Add(-1)
 	}
 }
 
@@ -221,25 +291,38 @@ func (s *Server) handle(ctx context.Context, in meta.Inbound) {
 	}
 	answer, err := s.forward(ctx, in, page.Site)
 	if err != nil {
-		s.Log.Error("event not taken by the API", append(logAttrs(in), "error", err.Error())...)
+		if errors.Is(err, errKept) {
+			s.Log.Warn("event kept by the API, which answers it later", append(logAttrs(in), "error", err.Error())...)
+		} else if ctx.Err() == nil {
+			s.Log.Error("event not taken by the API", append(logAttrs(in), "error", err.Error())...)
+		}
 		return
 	}
 	s.Health.Forwarded.Add(1)
 	if len(answer.Replies) == 0 {
 		return
 	}
-	n, err := s.deliver(ctx, page, in.PSID, answer.Replies, "")
-	s.Health.Replies.Add(int64(n))
+	p, err := s.deliver(ctx, page, in.PSID, answer.Replies, "")
+	s.Health.Replies.Add(int64(p.Whole))
 	if err != nil {
 		kind := s.Health.sendFailed(err)
-		s.Log.Error("reply not sent", append(logAttrs(in), "sent", n, "of", len(answer.Replies), "kind", kind)...)
+		s.Log.Error("reply not sent", append(logAttrs(in), "sent", p.Whole, "of", len(answer.Replies), "kind", kind)...)
 	}
 }
 
-// errRefused is an API answer that a retry would not change (a 4xx).
-var errRefused = errors.New("refused by the API")
+var (
+	// errRefused is an API answer that a retry would not change (a 4xx, the channel off).
+	errRefused = errors.New("refused by the API")
+	// errKept is an event the API keeps after it failed to answer it: it answers it later itself.
+	errKept = errors.New("kept by the API")
+)
 
-// forward hands one event to the API, signed, trying again while the API is down or still on the same event.
+// forward hands one event to the API, signed. The gateway keeps an event until the API has it: while the API can't
+// be reached (a network failure, a 5xx it did not answer itself, 429) or is still on the same event (409), it is
+// tried again after Retries, then every LongRetry until KeepFor has passed since the first try (forward_failed
+// after that). Once the API said it keeps the event (503 with HeaderKept) only Retries are left to it
+// (forward_kept after that: the API answers it itself). The channel off (503 with HeaderOff) and any other 4xx are
+// final (api_off, forward_refused).
 func (s *Server) forward(ctx context.Context, in meta.Inbound, site string) (apiAnswer, error) {
 	body, err := json.Marshal(struct {
 		meta.Inbound
@@ -248,36 +331,69 @@ func (s *Server) forward(ctx context.Context, in meta.Inbound, site string) (api
 	if err != nil {
 		return apiAnswer{}, err
 	}
+	first := s.Now()
+	kept := false
 	var last error
-	for try := 0; try <= len(s.Cfg.Retries); try++ {
-		if try > 0 && !wait(ctx, s.Cfg.Retries[try-1]) {
-			break
+	for try := 0; ; try++ {
+		if try > 0 {
+			d, ok := s.retryWait(try, first, kept)
+			if !ok {
+				break
+			}
+			if !wait(ctx, d) {
+				return apiAnswer{}, ctx.Err()
+			}
 		}
-		answer, status, err := s.post(ctx, body)
+		answer, status, header, err := s.post(ctx, body)
 		switch {
 		case err == nil && status/100 == 2:
 			return answer, nil
+		case err == nil && status == http.StatusServiceUnavailable && header.Get(HeaderOff) != "":
+			s.Health.APIOff.Add(1)
+			return apiAnswer{}, fmt.Errorf("%w: the channel is off", errRefused)
+		case err == nil && status == http.StatusServiceUnavailable && header.Get(HeaderKept) != "":
+			kept = true
+			last = fmt.Errorf("api answered %d, keeping the event", status)
 		case err == nil && status != http.StatusConflict && status != http.StatusTooManyRequests && status < 500:
-			// The API refused it for good (off, a bad call): trying again changes nothing.
+			// The API refused it for good (a bad call): trying again changes nothing.
 			s.Health.ForwardRefused.Add(1)
 			return apiAnswer{}, fmt.Errorf("%w: %d", errRefused, status)
 		case err == nil:
 			last = fmt.Errorf("api answered %d", status)
 		default:
+			if ctx.Err() != nil {
+				return apiAnswer{}, ctx.Err()
+			}
 			last = err
 		}
+	}
+	if kept {
+		s.Health.ForwardKept.Add(1)
+		return apiAnswer{}, fmt.Errorf("%w: %w", errKept, last)
 	}
 	s.Health.ForwardFailed.Add(1)
 	return apiAnswer{}, last
 }
 
-func (s *Server) post(ctx context.Context, body []byte) (apiAnswer, int, error) {
+// retryWait is the wait before try n (from 1): Retries first; then, for an event the API has not taken, LongRetry
+// until KeepFor has passed since the first try. False: tried long enough.
+func (s *Server) retryWait(n int, first time.Time, kept bool) (time.Duration, bool) {
+	if n <= len(s.Cfg.Retries) {
+		return s.Cfg.Retries[n-1], true
+	}
+	if kept || s.Now().Sub(first) >= s.Cfg.KeepFor {
+		return 0, false
+	}
+	return s.Cfg.LongRetry, true
+}
+
+func (s *Server) post(ctx context.Context, body []byte) (apiAnswer, int, http.Header, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Cfg.APITimeout)
 	defer cancel()
 	url := strings.TrimRight(s.Cfg.APIURL, "/") + InboundPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return apiAnswer{}, 0, err
+		return apiAnswer{}, 0, nil, err
 	}
 	unix := s.Now().Unix()
 	req.Header.Set("Content-Type", "application/json")
@@ -286,57 +402,94 @@ func (s *Server) post(ctx context.Context, body []byte) (apiAnswer, int, error) 
 	req.Header.Set("X-Gateway-Signature", Sign(s.Cfg.GatewaySecret, unix, body))
 	res, err := s.API.Do(req)
 	if err != nil {
-		return apiAnswer{}, 0, err
+		return apiAnswer{}, 0, nil, err
 	}
 	defer func() { _ = res.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(res.Body, MaxBody))
 	if err != nil {
-		return apiAnswer{}, 0, err
+		return apiAnswer{}, 0, nil, err
 	}
 	var answer apiAnswer
 	if res.StatusCode/100 == 2 {
 		if err := json.Unmarshal(data, &answer); err != nil {
-			return apiAnswer{}, 0, fmt.Errorf("an API answer that is not JSON: %w", err)
+			return apiAnswer{}, 0, nil, fmt.Errorf("an API answer that is not JSON: %w", err)
 		}
 	}
-	return answer, res.StatusCode, nil
+	return answer, res.StatusCode, res.Header, nil
 }
 
-// deliver sends replies to one person in order, each split to Messenger's length, the quick replies on the last
-// piece of the last one. A failure Meta may get over is tried again; it answers how many replies went out whole.
-func (s *Server) deliver(ctx context.Context, page Page, psid string, replies []meta.Reply, tag string) (int, error) {
-	unlock := s.sending.lock(page.ID, psid)
+// progress is what a delivery got out: the replies sent whole, and the messages (a reply's pieces) of all of them,
+// and how many of those went out, in order.
+type progress struct {
+	Whole, Parts, PartsSent int
+}
+
+// deliver sends replies to one person in order, each split to Messenger's length. The quick replies go on the last
+// message of the batch (Messenger shows them on the newest message only): those of the last reply that has any. A
+// failure Meta may get over is tried again, while ctx allows; it answers what went out.
+func (s *Server) deliver(ctx context.Context, page Page, psid string, replies []meta.Reply, tag string) (progress, error) {
+	var p progress
+	unlock, err := s.sending.lock(ctx, page.ID, psid)
+	if err != nil {
+		return p, err
+	}
 	defer unlock()
-	sent := 0
-	for _, r := range replies {
-		pieces := meta.Split(r.Text)
-		for i, text := range pieces {
-			out := meta.Reply{Text: text}
-			if i == len(pieces)-1 {
-				out.QuickReplies = quickReplies(r.QuickReplies)
-			}
-			if err := s.sendOne(ctx, page.Token, psid, out, tag); err != nil {
-				return sent, err
-			}
+	type piece struct {
+		reply int
+		text  string
+	}
+	var pieces []piece
+	var quick []meta.QuickReplyOut
+	for i, r := range replies {
+		for _, text := range meta.Split(r.Text) {
+			pieces = append(pieces, piece{reply: i, text: text})
 		}
-		if len(pieces) > 0 {
-			sent++
+		if len(r.QuickReplies) > 0 {
+			quick = r.QuickReplies
 		}
 	}
-	return sent, nil
+	p.Parts = len(pieces)
+	for j, pc := range pieces {
+		out := meta.Reply{Text: pc.text}
+		if j == len(pieces)-1 {
+			out.QuickReplies = quickReplies(quick)
+		}
+		if err := s.sendOne(ctx, page.Token, psid, out, tag); err != nil {
+			return p, err
+		}
+		p.PartsSent++
+		if j == len(pieces)-1 || pieces[j+1].reply != pc.reply {
+			p.Whole++
+		}
+	}
+	return p, nil
 }
 
+// sendOne sends one message, trying again what Meta may get over. A call starts only while CallTimeout is left of
+// ctx's time: one cut off by the deadline could be a message sent and not counted.
 func (s *Server) sendOne(ctx context.Context, token, psid string, r meta.Reply, tag string) error {
 	var err error
 	for try := 0; try <= len(s.Cfg.Retries); try++ {
 		if try > 0 && !wait(ctx, s.Cfg.Retries[try-1]) {
-			return err
+			return errors.Join(errOutOfTime, err)
+		}
+		if !s.hasTime(ctx) {
+			return errors.Join(errOutOfTime, err)
 		}
 		if _, err = s.Meta.Send(ctx, token, psid, r, tag); err == nil || !meta.Retryable(err) {
 			return err
 		}
 	}
 	return err
+}
+
+// hasTime is whether a whole call to Meta still fits in ctx's time.
+func (s *Server) hasTime(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) >= s.Cfg.CallTimeout
 }
 
 // quickReplies keeps Meta's limits: 13 at most, text ones with a title (20 characters) and a payload.
@@ -367,9 +520,13 @@ type sendCall struct {
 	Tag      string       `json:"tag,omitempty"`
 }
 
+// sendResult is what a send got out: the messages sent whole, the Messenger messages their texts made (a long one
+// is several) and how many of those went out, and why the rest did not.
 type sendResult struct {
-	Sent   int         `json:"sent"`
-	Failed *sendFailed `json:"failed,omitempty"`
+	Sent      int         `json:"sent"`
+	Parts     int         `json:"parts"`
+	PartsSent int         `json:"parts_sent"`
+	Failed    *sendFailed `json:"failed,omitempty"`
 }
 
 type sendFailed struct {
@@ -379,7 +536,8 @@ type sendFailed struct {
 }
 
 // send is the API's route out: signed like the calls the gateway makes to it. It answers 200 with what went out
-// and, when something did not, why (the API tells the agent: the 24 hours passed, the person can't be reached…).
+// and, when something did not, why (the API tells the agent: the 24 hours passed, the person can't be reached…),
+// within SendBudget, the wait for the person's other sends included.
 func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
 	if err != nil {
@@ -410,9 +568,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown page", http.StatusNotFound)
 		return
 	}
-	n, err := s.deliver(r.Context(), page, call.PSID, call.Messages, call.Tag)
-	s.Health.AgentSent.Add(int64(n))
-	out := sendResult{Sent: n}
+	ctx, cancel := context.WithTimeout(r.Context(), s.Cfg.SendBudget)
+	defer cancel()
+	p, err := s.deliver(ctx, page, call.PSID, call.Messages, call.Tag)
+	s.Health.AgentSent.Add(int64(p.Whole))
+	out := sendResult{Sent: p.Whole, Parts: p.Parts, PartsSent: p.PartsSent}
 	if err != nil {
 		f := &sendFailed{Kind: s.Health.sendFailed(err)}
 		var se *meta.Error
@@ -420,7 +580,8 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 			f.Code, f.Subcode = se.Code, se.Subcode
 		}
 		out.Failed = f
-		s.Log.Warn("message from the API not sent", "who", who(call.PageID, call.PSID), "sent", n, "kind", f.Kind)
+		s.Log.Warn("message from the API not sent", "who", who(call.PageID, call.PSID), "sent", p.Whole,
+			"parts_sent", p.PartsSent, "of", p.Parts, "kind", f.Kind)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
@@ -433,11 +594,9 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		depth += len(q)
 		capacity += cap(q)
 	}
-	ready := len(s.Cfg.AppSecret) > 0 && s.Cfg.VerifyToken != "" && len(s.Cfg.Pages) > 0 && s.Cfg.APIURL != "" &&
-		len(s.Cfg.GatewaySecret) > 0
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status": "ok", "ready": ready, "pages": len(s.Cfg.Pages),
+		"status": "ok", "ready": s.ready(), "pages": len(s.Cfg.Pages), "pending": s.pending.Load(),
 		"queue": map[string]int{"depth": depth, "capacity": capacity}, "counters": s.Health.snapshot(),
 	})
 }

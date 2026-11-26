@@ -72,10 +72,18 @@ func run(log *slog.Logger) error {
 		QueueSize:     256,
 		APITimeout:    75 * time.Second,
 		Retries:       []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second},
+		// Meta unsubscribes the app after an hour of failed deliveries, so the webhook always answers at once; an
+		// event the API can't take yet is kept and tried again that long.
+		KeepFor:   time.Hour,
+		LongRetry: time.Minute,
+		// Below WriteTimeout, so /v1/send always answers what went out.
+		SendBudget:  60 * time.Second,
+		CallTimeout: 10 * time.Second,
+		HoldFor:     15 * time.Minute,
 	}
 	srv := &gateway.Server{
 		Cfg:  cfg,
-		Meta: &meta.Client{HTTP: &http.Client{Timeout: 10 * time.Second}, Base: "https://graph.facebook.com", Version: version},
+		Meta: &meta.Client{HTTP: &http.Client{Timeout: cfg.CallTimeout}, Base: "https://graph.facebook.com", Version: version},
 		API:  &http.Client{},
 		Log:  log,
 	}
@@ -99,7 +107,7 @@ func run(log *slog.Logger) error {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      75 * time.Second, // an agent's message waits for Meta: 4 calls of 10 s, 22 s between
+		WriteTimeout:      75 * time.Second, // above SendBudget: an agent's send always gets its answer back
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
@@ -116,10 +124,18 @@ func run(log *slog.Logger) error {
 		return nil
 	case <-ctx.Done():
 	}
-	// SIGTERM (a deploy): no new webhook, then the queued events go to the API while there is time.
+	// SIGTERM (a deploy): no new event from here (503: Meta delivers it to the next process). The queued events go
+	// to the API while the HTTP server waits for the requests still running (an agent's send): both share the
+	// grace period, so a long send never leaves the queues without time.
 	shutdown, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
+	srv.Close()
+	drained := make(chan struct{})
+	go func() {
+		srv.Stop(shutdown)
+		close(drained)
+	}()
 	err := hs.Shutdown(shutdown)
-	srv.Stop(shutdown)
+	<-drained
 	return err
 }
