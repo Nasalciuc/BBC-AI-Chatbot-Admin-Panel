@@ -82,6 +82,7 @@ class Chat:
         # None back all the same), "unreadable" (its id stored before, and that row could not be read back).
         self.saves: dict[str, list[str]] = {}
         self.patch_ok = True
+        self.unreadable: set[str] = set()  # row ids whose read by id fails
 
     async def add_message(self, conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
         """As app.db.supabase.add_message: an id stored before is refused by the database and its row read back."""
@@ -98,6 +99,13 @@ class Chat:
             return None
         self.rows.append(row)
         return None if what == "lost" else row
+
+    async def get_message(self, message_id):
+        """As app.db.supabase.get_message: the row, None when there is none, raising when it could not be read
+        (self.unreadable)."""
+        if message_id in self.unreadable:
+            raise RuntimeError("the database did not answer")
+        return next((r for r in self.rows if r["id"] == message_id), None)
 
     async def recent(self, conversation_id, limit=5):
         return [{"role": r["role"], "content": r["content"], "created_at": r["created_at"]} for r in self.rows][-limit:]
@@ -116,6 +124,7 @@ class Chat:
         self.created = AsyncMock(return_value=self.conv)
         ps = [
             patch("app.db.supabase.add_message", new=self.add_message),
+            patch("app.db.supabase.get_message", new=self.get_message),
             patch("app.realtime.manager.manager.push", new=AsyncMock()),
             patch("app.db.supabase.latest_conversation_of_visitor", new=AsyncMock(return_value=self.latest)),
             patch("app.services.conversation_service.get_or_create_conversation", new=self.created),
@@ -624,8 +633,9 @@ async def test_an_agents_message_goes_out_through_the_gateway(redis, monkeypatch
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     from app.services.conversation_service import add_message
 
-    with patch("app.db.supabase.add_message", new=AsyncMock(side_effect=lambda c, r, t, m=None, x=0.0: {
-            "id": "r9", "role": r, "content": t})), patch("app.realtime.manager.manager.push", new=AsyncMock()):
+    with patch("app.db.supabase.add_message", new=AsyncMock(side_effect=lambda c, r, t, m=None, x=0.0, **kw: {
+            "id": kw.get("message_id") or "r9", "role": r, "content": t})), \
+            patch("app.realtime.manager.manager.push", new=AsyncMock()):
         await add_message(CONV, "agent", "Hi, I'm Ana. Which dates suit you?")
         await mc.drain(CONV)
     assert len(calls) == 1 and str(calls[0].url) == "https://gateway.example.test/v1/send"
@@ -977,6 +987,136 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
     notes = [r["content"] for r in c.rows if r["role"] == "system"]
     assert out["told"] == 1 and again["told"] == 0 and notes == [mc.NOT_SENT_RESTART] and gw.sent == []
     assert not (await redis.hgetall(mc.OUTBOX)) and mc.MESSENGER_HEALTH["cut_at_shutdown"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lands", [True, False])
+async def test_a_request_cancelled_while_its_message_is_written_down_leaves_nothing_to_tell(redis, monkeypatch, lands):
+    """CodeRabbit #288: the agent's request cancelled while the outbox's write is on its way, before its answer
+    came (the write landed, or not): the message is written down before it is stored, so it is not stored yet,
+    nothing goes out, and the next process's minute crosses out what was written without a word."""
+    import asyncio
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    gate = asyncio.Event()
+    real_hset = redis.hset
+
+    async def held_up(*a, **kw):
+        if lands:
+            await real_hset(*a, **kw)
+        await gate.wait()
+        return 1
+
+    c = Chat().start()
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw):
+            from app.services.conversation_service import add_message
+
+            monkeypatch.setattr(redis, "hset", held_up)
+            saving = asyncio.create_task(add_message(CONV, "agent", "Cancelled while written down"))
+            await asyncio.sleep(0.01)
+            saving.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await saving
+            monkeypatch.setattr(redis, "hset", real_hset)
+        assert c.rows == [] and gw.sent == [] and len(await redis.hgetall(mc.OUTBOX)) == (1 if lands else 0)
+        stopped = mc.BOOT
+        monkeypatch.setattr(mc, "BOOT", "the-next-process")
+        redis.kv.pop(f"msgr:alive:{stopped}")
+        out = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    assert out["told"] == 0 and c.rows == [] and not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_next_process(redis, monkeypatch):
+    """CodeRabbit #288: the agent's message stored, then their request cancelled before it is handed on (the live
+    push hangs): written down first, under its row's id, it is the next process's minute's to tell, once. Rule 5:
+    while its process is alive, or while its row can't be read, nothing is said yet."""
+    import asyncio
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+
+    async def hangs(*a, **kw):
+        await asyncio.sleep(30)
+
+    c = Chat().start()
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw), patch("app.realtime.manager.manager.push", new=hangs):
+            from app.services.conversation_service import add_message
+
+            saving = asyncio.create_task(add_message(CONV, "agent", "Stored, then the request cancelled"))
+            await asyncio.sleep(0.01)
+            saving.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await saving
+        assert [r["content"] for r in c.rows] == ["Stored, then the request cancelled"] and gw.sent == []
+        (left,) = [json.loads(v) for v in (await redis.hgetall(mc.OUTBOX)).values()]
+        assert left["state"] == "waiting" and left["row"] == c.rows[0]["id"]
+        assert (await mc.run_messenger_recover())["told"] == 0, "its process may still be on it"
+        stopped = mc.BOOT
+        monkeypatch.setattr(mc, "BOOT", "the-next-process")
+        redis.kv.pop(f"msgr:alive:{stopped}")
+        c.unreadable.add(c.rows[0]["id"])
+        assert (await mc.run_messenger_recover())["told"] == 0 and len(await redis.hgetall(mc.OUTBOX)) == 1
+        c.unreadable.clear()
+        out = await mc.run_messenger_recover()
+        again = await mc.run_messenger_recover()
+    finally:
+        c.stop()
+    notes = [r["content"] for r in c.rows if r["role"] == "system"]
+    assert out["told"] == 1 and again["told"] == 0 and notes == [mc.NOT_SENT_RESTART] and gw.sent == []
+    assert not await redis.hgetall(mc.OUTBOX)
+
+
+@pytest.mark.asyncio
+async def test_an_outbox_write_whose_answer_was_lost_is_taken_as_written(redis, monkeypatch):
+    """CodeRabbit #288: the outbox's write lands, then its answer is lost (a timeout, and Redis's cooldown with it):
+    the entry's id is kept, so the message is written down as sending before it goes and crossed out after, and the
+    next process's minute has no "not sent" to say about a message that went out. Rule 5: Redis not there at all, it
+    goes out without being written down (counted)."""
+    from redis.exceptions import TimeoutError as RedisTimeout
+
+    redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
+    conv = {"id": CONV, "metadata": {"chat_channel": "messenger", "messenger": {"page_id": PAGE, "psid": PSID}}}
+    real_hset = redis.hset
+    states: list = []
+
+    async def lands_then_times_out(key, field=None, value=None, **kw):
+        out = await real_hset(key, field, value, **kw)
+        states.append(json.loads(value)["state"])
+        if len(states) == 1:
+            raise RedisTimeout("Timeout reading from socket")
+        return out
+
+    c = Chat().start()
+    gw = Gateway([])
+    try:
+        with patch.object(mc, "send", new=gw), \
+                patch("app.db.supabase.get_conversation_simple", new=AsyncMock(return_value=conv)):
+            from app.services.conversation_service import add_message
+
+            monkeypatch.setattr(redis, "hset", lands_then_times_out)
+            await add_message(CONV, "agent", "Written down, its answer lost")
+            await mc.drain(CONV)
+            assert states == ["waiting", "sending"] and gw.sent == ["Written down, its answer lost"]
+            assert not await redis.hgetall(mc.OUTBOX) and mc.MESSENGER_HEALTH["outbox_unsaved"] == 1
+            # Rule 5: still cooling down, Redis is not tried for the next one: it goes out, not written down.
+            await add_message(CONV, "agent", "Redis away")
+            await mc.drain(CONV)
+            assert gw.sent[-1] == "Redis away" and states == ["waiting", "sending"]
+            assert mc.MESSENGER_HEALTH["outbox_unsaved"] == 2
+        stopped = mc.BOOT
+        monkeypatch.setattr(mc, "BOOT", "the-next-process")
+        redis.kv.pop(f"msgr:alive:{stopped}", None)
+        redis_client.set_client_for_tests(redis)  # the cooldown over
+        assert (await mc.run_messenger_recover())["told"] == 0
+    finally:
+        c.stop()
+    assert not [r for r in c.rows if r["role"] == "system"] and not await redis.hgetall(mc.OUTBOX)
 
 
 @pytest.mark.asyncio

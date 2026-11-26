@@ -1,5 +1,6 @@
 """Conversation service — business logic for conversations."""
 import logging
+import uuid
 from typing import Optional, Any
 from app.db import supabase as db
 
@@ -28,8 +29,21 @@ async def add_message(conversation_id: str, role: str, content: str,
     `message_id` (db.add_message): a row stored before under that id comes back
     as it was (a StoredBefore) and is published and handed on as a new one is;
     its consumers keep the first copy of an id."""
+    from app.services import messenger_channel
+
+    # An agent's message to a chat that may be on Messenger is written down
+    # BEFORE it is stored, under the id its row gets: a stop at any point after
+    # (a deploy, a cancelled request) leaves it to the next process's recovery
+    # minute, which tells the agent it was not sent once it finds the row (none:
+    # nothing to tell). Nothing while the channel is off.
+    entry: Optional[str] = None
+    if outbound and role == "agent" and messenger_channel.enabled():
+        message_id = message_id or str(uuid.uuid4())
+        entry = await messenger_channel.write_down(conversation_id, message_id)
     row = await db.add_message(conversation_id, role, content, model_used, cost,
                                **({"message_id": message_id} if message_id else {}))
+    if not row:
+        await messenger_channel.not_stored(entry)
     # The ONE place a stored message reaches the live stream. #220 published
     # agent, system and AI rows from their own call sites and never the
     # visitor's — five save paths, none pushed — so an operator with a live
@@ -49,7 +63,5 @@ async def add_message(conversation_id: str, role: str, content: str,
     # which never raises and counts what fails). `outbound=False`: a row that must not go out (what someone wrote
     # from the Page's inbox, a note for the agent). Nothing here while the channel is off.
     if row and outbound and role in ("ai", "agent", "system"):
-        from app.services import messenger_channel
-
-        await messenger_channel.outbound(conversation_id, role, row)
+        await messenger_channel.outbound(conversation_id, role, row, entry)
     return row

@@ -274,25 +274,23 @@ _LAST: dict[str, asyncio.Task] = {}
 _CLOSING = False
 
 
-async def outbound(conversation_id: str, role: str, row: dict) -> None:
+async def outbound(conversation_id: str, role: str, row: dict, entry: Optional[str] = None) -> None:
     """A row stored for the person in some chat (conversation_service.add_message): in a Messenger turn it joins
     the turn's answer; outside one, a Messenger chat's row goes out through the gateway, after the chat's previous
-    one. An agent's is written down first, before it is handed on (whatever the chat: where it goes is looked up
-    after), until it went out or they were told: a stop at any point after leaves it for the next process's minute.
-    Never raises: the row is saved whatever happens here."""
+    one. An agent's comes written down already (write_down, before it was stored: `entry`, None when Redis could not
+    take it), whatever the chat (where it goes is looked up after), until it went out or they were told: a stop at
+    any point leaves it for the next process's minute. Nothing here awaits before the delivery is in _LAST, so a
+    shutdown (drain_all) never misses one handed on. Never raises: the row is saved whatever happens here."""
     try:
         turn = _TURN.get()
         if turn is not None and turn.open and turn.conversation_id == conversation_id:
             turn.rows.append(row)
+            await _cross_out(entry)  # the turn's answer carries it
             return
         if not enabled():
+            await _cross_out(entry)
             return
         if _CLOSING:
-            await _not_started(conversation_id, role, None)
-            return
-        entry = await _write_down(conversation_id) if role == "agent" else None
-        if _CLOSING:
-            # The stop came while it was written down: nothing starts now.
             await _not_started(conversation_id, role, entry)
             return
         prev = _LAST.get(conversation_id)
@@ -310,7 +308,7 @@ async def _not_started(conversation_id: str, role: str, entry: Optional[str]) ->
     if await _target(conversation_id, role):
         MESSENGER_HEALTH["cut_at_shutdown"] += 1
         if role == "agent":
-            await _tell(entry or await _write_down(conversation_id), conversation_id, NOT_SENT_RESTART)
+            await _tell(entry or await write_down(conversation_id), conversation_id, NOT_SENT_RESTART)
         return
     await _cross_out(entry)
 
@@ -474,33 +472,47 @@ async def _tell(entry: Optional[str], conversation_id: str, note: str) -> None:
         await _mark_entry(entry, conversation_id, "untold", note)
 
 
-async def _write_down(conversation_id: str) -> Optional[str]:
-    """An agent's message handed on, written down until it went out or its agent was told: its id. None when
-    Redis could not take it (counted: a shutdown that cuts it then may leave its agent untold)."""
+async def write_down(conversation_id: str, row_id: Optional[str] = None) -> Optional[str]:
+    """An agent's message on its way, written down until it went out or its agent was told: its id. `row_id`: the
+    row it is written down for, before that row is stored (conversation_service.add_message): the recovery minute
+    tells the agent only once it finds the row stored (a stop before the insert, or an insert that failed, leaves
+    nothing to tell). The id comes back too when the write's answer was lost: it may be there, so it is taken as
+    there (marked "sending" before the message goes, crossed out after). None only when Redis was not there to take
+    it (counted: a shutdown that cuts it then may leave its agent untold)."""
     r = get_redis()
     if r is None:
         MESSENGER_HEALTH["outbox_unsaved"] += 1
         return None
     entry = uuid.uuid4().hex
+    data: dict[str, Any] = {"cid": conversation_id, "boot": BOOT, "state": "waiting", "at": time.time()}
+    if row_id:
+        data["row"] = row_id
     try:
         await r.set(f"msgr:alive:{BOOT}", "1", ex=ALIVE_S)
-        await r.hset(OUTBOX, entry, json.dumps({"cid": conversation_id, "boot": BOOT, "state": "waiting",
-                                                 "at": time.time()}))
-        return entry
+        await r.hset(OUTBOX, entry, json.dumps(data))
     except Exception as e:
         redis_failed("messenger outbox", e)
         MESSENGER_HEALTH["outbox_unsaved"] += 1
-        logger.warning(f"[messenger] conv {conversation_id}: an agent's message not written down: "
-                       f"{type(e).__name__}: {e}")
-        return None
+        logger.warning(f"[messenger] conv {conversation_id}: an agent's message maybe not written down (taken as "
+                       f"written): {type(e).__name__}: {e}")
+    return entry
+
+
+async def not_stored(entry: Optional[str]) -> None:
+    """An agent's message written down (write_down) whose row was not stored: nothing to send, nothing to tell."""
+    await _cross_out(entry)
+
+
+# A written-down delivery's own state is written through a Redis cooldown (another call's failure, process wide):
+# skipped, a message may go out with its entry still saying "waiting", or stay written down once it went out.
 
 
 async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, note: Optional[str] = None) -> bool:
     """Where a written-down delivery is: "sending" (with the gateway: maybe out from now on), "untold" (its note,
     kept here, not saved: the recovery minute saves it). True once written; False when it could not be (no entry,
     Redis gone or failing: logged)."""
-    r = get_redis()
-    if entry is None or r is None:
+    r = get_redis(even_cooling_down=True) if entry is not None else None
+    if r is None:
         return False
     data: dict[str, Any] = {"cid": conversation_id, "boot": BOOT, "state": state, "at": time.time()}
     if note:
@@ -517,8 +529,8 @@ async def _mark_entry(entry: Optional[str], conversation_id: str, state: str, no
 
 async def _cross_out(entry: Optional[str]) -> None:
     """A written-down delivery done with: it went out, or its agent was told."""
-    r = get_redis()
-    if entry is None or r is None:
+    r = get_redis(even_cooling_down=True) if entry is not None else None
+    if r is None:
         return
     try:
         await r.hdel(OUTBOX, entry)
@@ -576,6 +588,18 @@ async def _on_messenger(conversation_id: str) -> Optional[bool]:
         return None
     meta = conv.get("metadata") or {}
     return isinstance(meta, dict) and meta.get("chat_channel") == "messenger"
+
+
+async def _row_stored(row_id: str) -> Optional[bool]:
+    """Whether an agent's message written down before it was stored is in the chat: None when it can't be told now
+    (the read failed: rule 7), never a guess."""
+    from app.db import supabase as db
+
+    try:
+        return await db.get_message(row_id) is not None
+    except Exception as e:
+        logger.warning(f"[messenger] a written-down message's row not read: {type(e).__name__}: {e}")
+        return None
 
 
 async def _keep_target(conversation_id: str, page_id: str, psid: str) -> None:
@@ -1296,9 +1320,12 @@ async def _tell_left(r, until: float) -> int:
                     continue  # on its way in a live process
             worked += 1
             if state == "waiting":
-                # Written down before where it goes was looked up: a site chat's says nothing; a chat not read now
-                # is looked at again next minute (given up after OUTBOX_KEEP_S).
+                # Written down before where it goes was looked up, and before its row was stored: a site chat's says
+                # nothing, nor one whose row never was (the stop came before the insert, or the insert failed); a chat
+                # or a row not read now is looked at again next minute (given up after OUTBOX_KEEP_S).
                 on = await _on_messenger(cid)
+                if on is True and d.get("row"):
+                    on = await _row_stored(str(d["row"]))
                 if on is False:
                     await r.hdel(OUTBOX, entry)
                     continue
@@ -1306,8 +1333,8 @@ async def _tell_left(r, until: float) -> int:
                     if time.time() - at > OUTBOX_KEEP_S:
                         await r.hdel(OUTBOX, entry)
                         MESSENGER_HEALTH["outbox_given_up"] += 1
-                        logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat could not be read "
-                                     f"for {OUTBOX_KEEP_S // 3600} h: given up")
+                        logger.error(f"[messenger] conv {cid}: a written-down delivery whose chat or row could not be "
+                                     f"read for {OUTBOX_KEEP_S // 3600} h: given up")
                     continue
             note = d.get("note") or (NOT_SENT["unknown"] if state == "sending" else NOT_SENT_RESTART)
             if await _tell_agent(cid, str(note), _note_id(entry)):
