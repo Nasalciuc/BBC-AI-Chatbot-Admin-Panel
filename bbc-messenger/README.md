@@ -18,8 +18,12 @@ META_PAGE_ID_BBC=… META_PAGE_TOKEN_BBC=… META_PAGE_ID_BCT=… META_PAGE_TOKE
 API_URL=https://… MESSENGER_GATEWAY_SECRET=… go run .
 ```
 
-`GET /health` says `"ready": true` once every variable is set (never their values). Until then the webhook answers
-Meta 503 (Meta delivers again); Meta's check (`GET /webhook`) and `/health` still answer, for the setup.
+`GET /health` says `"ready": true` once the settings it needs are there (never their values): `META_APP_SECRET`,
+`META_VERIFY_TOKEN`, `META_APP_ID` (without it the app's own messages, coming back as echoes, would reach the API as
+the Page inbox's), at least one Page with its id and token (the second Page is not needed), `API_URL` and
+`MESSENGER_GATEWAY_SECRET`. Until then `POST /webhook` answers Meta 503 and Meta delivers again; `GET /webhook` and
+`/health` still answer, for the setup, and Meta's check of the webhook passes once `META_VERIFY_TOKEN` is the token
+given in the app's webhook settings.
 
 ## Test
 

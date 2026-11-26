@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,15 +165,16 @@ const (
 )
 
 // intake decides, under one lock, what a webhook takes. An event already taken (by key, for as long as Meta may
-// deliver one again) is a duplicate. A person with a refused event waits for it: their later events are refused
-// too until Meta delivers it again, so none of them can overtake it, whenever Meta's deliveries come. The rest go
-// to their worker, and only an event its queue took is marked taken (one refused is taken when Meta delivers it
-// again). One process's memory: the API checks again by Meta's message id, across restarts.
+// deliver one again) is a duplicate. A person with refused events waits for them, each in its place: the earliest
+// (Meta's time) must be taken first, then the next, and any other event of theirs is refused until they all are,
+// so none overtakes an earlier one, whichever Meta delivers first. The rest go to their worker, and only an event
+// its queue took is marked taken (one refused is taken when Meta delivers it again). One process's memory: the API
+// checks again by Meta's message id, across restarts.
 //
-// The order is kept within two bounds, past which Messenger staying up wins over it: a person waits HoldFor at most
-// (hold_expired; Meta unsubscribes an app whose deliveries fail for an hour, so no one's are refused near that
-// long), and at most mostHeld people wait at once (memory: hold_full). Past either, a later event of theirs may
-// reach the API before the refused one, which the API still answers once.
+// The order is kept within bounds, past which Messenger staying up wins over it: a refused event is waited for
+// HoldFor at most (hold_expired; Meta unsubscribes an app whose deliveries fail for an hour, so no one's are
+// refused near that long), at most mostHeld people wait at once and each for mostWaiting events (memory:
+// hold_full). Past them, a later event may reach the API before a refused one, which the API still answers once.
 type intake struct {
 	mu   sync.Mutex
 	ttl  time.Duration
@@ -182,7 +185,7 @@ type intake struct {
 	order    []stamp
 	head     int
 	holdFor  time.Duration
-	held     map[string]hold // person → their first event still to take
+	held     map[string][]refusal // person → their refused events still to take, earliest first
 	mostHeld int
 }
 
@@ -191,18 +194,24 @@ type stamp struct {
 	at  time.Time
 }
 
-type hold struct {
+// refusal is an event refused and still to take: its key, Meta's time (its place among the person's), and when it
+// was first refused (it is waited for HoldFor from then).
+type refusal struct {
 	key string
+	ts  int64
 	at  time.Time
 }
 
-// mostHeld is the most people who wait for a refused event at once; past it a refused batch still answers 503, and
-// its people are not held (counted).
-const mostHeld = 10_000
+// mostHeld is the most people who wait for refused events at once, and mostWaiting the most events one of them
+// waits for; past either a refused batch still answers 503, and what did not fit is not waited for (counted).
+const (
+	mostHeld    = 10_000
+	mostWaiting = 100
+)
 
 func newIntake(ttl time.Duration, most int, holdFor time.Duration) *intake {
-	return &intake{at: map[string]time.Time{}, ttl: ttl, most: most, holdFor: holdFor, held: map[string]hold{},
-		mostHeld: mostHeld}
+	return &intake{at: map[string]time.Time{}, ttl: ttl, most: most, holdFor: holdFor,
+		held: map[string][]refusal{}, mostHeld: mostHeld}
 }
 
 // person is one person on one Page: a hold's key.
@@ -210,20 +219,20 @@ func person(in meta.Inbound) string {
 	return in.PageID + "\x00" + in.PSID
 }
 
-// admission is one event of a delivery as the intake took it: its verdict, and whether a hold on its person that
-// outlived HoldFor was dropped (Meta never delivered that event again).
+// admission is one event of a delivery as the intake took it: its verdict, and how many of its person's refused
+// events that outlived HoldFor were dropped (Meta never delivered them again).
 type admission struct {
 	ev      meta.Inbound
 	v       verdict
-	expired bool
+	expired int
 }
 
 // admit is one delivery's check and queueing, as one step under the intake's lock. Each event in order is a
 // duplicate (left out), taken (enqueue took it, and only then is its key marked), or it stops the delivery
 // (refused: its queue was full or the gateway is closing; waiting: its person waits for an earlier event). In that
-// same step each person with an event in the rest, from the one that stopped it on, is held for their first event
-// there: no delivery made meanwhile, whenever it comes, can overtake it. unheld is how many people of the rest
-// could not be held (mostHeld reached).
+// same step each event of the rest, from the one that stopped it on, takes its place among its person's refused
+// ones: no delivery made meanwhile, whenever it comes, can overtake it. unheld is how many events of the rest could
+// not be waited for (mostHeld or mostWaiting reached).
 func (in *intake) admit(events []meta.Inbound, now time.Time, enqueue func(meta.Inbound) bool) (out []admission, unheld int) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -238,64 +247,82 @@ func (in *intake) admit(events []meta.Inbound, now time.Time, enqueue func(meta.
 	return out, 0
 }
 
-func (in *intake) admitLocked(ev meta.Inbound, now time.Time, enqueue func(meta.Inbound) bool) (v verdict, expired bool) {
+func (in *intake) admitLocked(ev meta.Inbound, now time.Time, enqueue func(meta.Inbound) bool) (v verdict, expired int) {
 	key, p := ev.Key(), person(ev)
 	if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
-		return duplicate, false
+		return duplicate, 0
 	}
-	if h, ok := in.held[p]; ok {
-		if now.Sub(h.at) >= in.holdFor {
-			delete(in.held, p)
-			expired = true
-		} else if h.key != key {
-			return waiting, false
-		}
+	q, expired := in.liveLocked(p, now)
+	if len(q) > 0 && q[0].key != key {
+		return waiting, expired // an earlier refused event of theirs is still to take
 	}
 	if !enqueue(ev) {
 		return refused, expired
 	}
-	delete(in.held, p)
+	if len(q) > 0 {
+		in.setLocked(p, q[1:]) // it was their earliest: the next one is now
+	}
 	in.markLocked(key, now)
 	return taken, expired
 }
 
-// holdLocked makes each person with an event in rest wait for their first one there, unless they already wait for
-// an earlier one. It answers how many people it could not hold.
+// liveLocked is a person's refused events still waited for, those past HoldFor dropped (how many).
+func (in *intake) liveLocked(p string, now time.Time) ([]refusal, int) {
+	q := in.held[p]
+	live := q[:0]
+	for _, r := range q {
+		if now.Sub(r.at) < in.holdFor {
+			live = append(live, r)
+		}
+	}
+	dropped := len(q) - len(live)
+	if dropped > 0 {
+		in.setLocked(p, live)
+	}
+	return live, dropped
+}
+
+func (in *intake) setLocked(p string, q []refusal) {
+	if len(q) == 0 {
+		delete(in.held, p)
+		return
+	}
+	in.held[p] = q
+}
+
+// holdLocked gives each event in rest its place among its person's refused events (by Meta's time; the same time,
+// after those already there), unless it was taken before or is there already. It answers how many it could not.
 func (in *intake) holdLocked(rest []meta.Inbound, now time.Time) (unheld int) {
-	var left map[string]bool
 	for _, ev := range rest {
 		key, p := ev.Key(), person(ev)
 		if t, ok := in.at[key]; ok && now.Sub(t) < in.ttl {
 			continue // taken before: a duplicate when Meta delivers the batch again
 		}
-		if h, ok := in.held[p]; ok && now.Sub(h.at) < in.holdFor {
+		q, ok := in.held[p]
+		if slices.ContainsFunc(q, func(r refusal) bool { return r.key == key }) {
 			continue
 		}
-		if len(in.held) >= in.mostHeld {
-			if left == nil {
-				left = map[string]bool{}
-			}
-			if !left[p] {
-				left[p] = true
-				unheld++
-			}
+		if (!ok && len(in.held) >= in.mostHeld) || len(q) >= mostWaiting {
+			unheld++
 			continue
 		}
-		in.held[p] = hold{key: key, at: now}
+		i := sort.Search(len(q), func(i int) bool { return q[i].ts > ev.Timestamp })
+		in.held[p] = slices.Insert(q, i, refusal{key: key, ts: ev.Timestamp, at: now})
 	}
 	return unheld
 }
 
-// forget drops what expired: keys past their time, holds past HoldFor.
-func (in *intake) forget(now time.Time) {
+// forget drops what expired: keys past their time, refused events past HoldFor (how many: Meta never delivered
+// them again, and their person may never write again to find out).
+func (in *intake) forget(now time.Time) (expired int) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	in.expireLocked(now)
-	for p, h := range in.held {
-		if now.Sub(h.at) >= in.holdFor {
-			delete(in.held, p)
-		}
+	for p := range in.held {
+		_, n := in.liveLocked(p, now)
+		expired += n
 	}
+	return expired
 }
 
 func (in *intake) markLocked(key string, now time.Time) {

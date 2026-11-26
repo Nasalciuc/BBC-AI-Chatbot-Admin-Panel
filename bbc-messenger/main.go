@@ -87,8 +87,7 @@ func run(log *slog.Logger) error {
 		API:  &http.Client{},
 		Log:  log,
 	}
-	if len(cfg.AppSecret) == 0 || cfg.VerifyToken == "" || len(cfg.Pages) == 0 || cfg.APIURL == "" ||
-		len(cfg.GatewaySecret) == 0 {
+	if !srv.Ready() {
 		log.Warn("not configured yet: the webhook refuses Meta until every variable is set (/health says ready)")
 	}
 

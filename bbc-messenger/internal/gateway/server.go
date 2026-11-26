@@ -96,7 +96,10 @@ func (s *Server) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.intake.forget(s.Now())
+				if n := s.intake.forget(s.Now()); n > 0 {
+					s.Health.HoldExpired.Add(int64(n))
+					s.Log.Warn("refused events never came again: no longer waited for", "expired", n)
+				}
 			}
 		}
 	}()
@@ -136,10 +139,13 @@ func (s *Server) isClosed() bool {
 	return s.closed
 }
 
-// ready is whether every setting the webhook and the way to the API need is there (never their values).
-func (s *Server) ready() bool {
-	return len(s.Cfg.AppSecret) > 0 && s.Cfg.VerifyToken != "" && len(s.Cfg.Pages) > 0 && s.Cfg.APIURL != "" &&
-		len(s.Cfg.GatewaySecret) > 0
+// Ready is whether every setting the webhook and the way to the API need is there (never their values): Meta's app
+// secret and verify token, the app's id (without it the app's own messages, coming back as echoes, would reach the
+// API as the Page inbox's, and Skye would leave each thread after her every reply), at least one Page with its id
+// and token, the API's address and the secret shared with it.
+func (s *Server) Ready() bool {
+	return len(s.Cfg.AppSecret) > 0 && s.Cfg.VerifyToken != "" && s.Cfg.AppID != "" && len(s.Cfg.Pages) > 0 &&
+		s.Cfg.APIURL != "" && len(s.Cfg.GatewaySecret) > 0
 }
 
 // Handler is the gateway's routes.
@@ -173,7 +179,7 @@ func (s *Server) verify(w http.ResponseWriter, r *http.Request) {
 // 200 within 5 seconds; the API's answer comes later, through the Send API). While a setting is missing nothing is
 // taken (503: Meta delivers it again once the gateway is set up).
 func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
-	if !s.ready() {
+	if !s.Ready() {
 		s.Health.NotReady.Add(1)
 		s.Log.Warn("webhook refused: not configured yet (/health says ready)")
 		http.Error(w, "not configured", http.StatusServiceUnavailable)
@@ -217,9 +223,10 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	results, unheld := s.intake.admit(ours, now, s.enqueue)
 	stop, last := taken, meta.Inbound{}
 	for _, a := range results {
-		if a.expired {
-			s.Health.HoldExpired.Add(1)
-			s.Log.Warn("a refused event never came again: the person's events are taken again", logAttrs(a.ev)...)
+		if a.expired > 0 {
+			s.Health.HoldExpired.Add(int64(a.expired))
+			s.Log.Warn("a refused event never came again: the person's events are taken again",
+				append(logAttrs(a.ev), "expired", a.expired)...)
 		}
 		switch a.v {
 		case duplicate:
@@ -234,8 +241,8 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if unheld > 0 {
 		s.Health.HoldFull.Add(int64(unheld))
-		s.Log.Error("too many people wait for a refused event: these do not, and a later event of theirs may "+
-			"overtake it", "people", unheld)
+		s.Log.Error("too many refused events waited for: these are not, and a later event may overtake them",
+			"events", unheld)
 	}
 	// What stopped the delivery: nothing more of it is taken now, and Meta delivers it again (what was taken comes
 	// back as duplicates), each person in the rest waiting for their first event there.
@@ -350,6 +357,10 @@ func (s *Server) forward(ctx context.Context, in meta.Inbound, site string) (api
 			if !wait(ctx, d) {
 				return apiAnswer{}, ctx.Err()
 			}
+			// A long retry starts no call once KeepFor is over (the wait may have taken it to the end).
+			if try > len(s.Cfg.Retries) && s.Now().Sub(first) >= s.Cfg.KeepFor {
+				break
+			}
 		}
 		answer, status, header, err := s.post(ctx, body)
 		switch {
@@ -383,15 +394,16 @@ func (s *Server) forward(ctx context.Context, in meta.Inbound, site string) (api
 }
 
 // retryWait is the wait before try n (from 1): Retries first; then, for an event the API has not taken, LongRetry
-// until KeepFor has passed since the first try. False: tried long enough.
+// while KeepFor is not over since the first try, the last wait cut to what is left of it. False: tried long enough.
 func (s *Server) retryWait(n int, first time.Time, kept bool) (time.Duration, bool) {
 	if n <= len(s.Cfg.Retries) {
 		return s.Cfg.Retries[n-1], true
 	}
-	if kept || s.Now().Sub(first) >= s.Cfg.KeepFor {
+	left := s.Cfg.KeepFor - s.Now().Sub(first)
+	if kept || left <= 0 {
 		return 0, false
 	}
-	return s.Cfg.LongRetry, true
+	return min(s.Cfg.LongRetry, left), true
 }
 
 func (s *Server) post(ctx context.Context, body []byte) (apiAnswer, int, http.Header, error) {
@@ -412,15 +424,21 @@ func (s *Server) post(ctx context.Context, body []byte) (apiAnswer, int, http.He
 		return apiAnswer{}, 0, nil, err
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode/100 != 2 {
+		// Its status and headers are the whole answer (HeaderKept, HeaderOff, a refusal): a body that breaks off
+		// changes none of it.
+		if _, err := io.Copy(io.Discard, io.LimitReader(res.Body, MaxBody)); err != nil {
+			s.Log.Warn("an API answer's body broke off", "status", res.StatusCode, "error", err.Error())
+		}
+		return apiAnswer{}, res.StatusCode, res.Header, nil
+	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, MaxBody))
 	if err != nil {
-		return apiAnswer{}, 0, nil, err
+		return apiAnswer{}, 0, nil, fmt.Errorf("an API answer cut short: %w", err)
 	}
 	var answer apiAnswer
-	if res.StatusCode/100 == 2 {
-		if err := json.Unmarshal(data, &answer); err != nil {
-			return apiAnswer{}, 0, nil, fmt.Errorf("an API answer that is not JSON: %w", err)
-		}
+	if err := json.Unmarshal(data, &answer); err != nil {
+		return apiAnswer{}, 0, nil, fmt.Errorf("an API answer that is not JSON: %w", err)
 	}
 	return answer, res.StatusCode, res.Header, nil
 }
@@ -436,11 +454,6 @@ type progress struct {
 // failure Meta may get over is tried again, while ctx allows; it answers what went out.
 func (s *Server) deliver(ctx context.Context, page Page, psid string, replies []meta.Reply, tag string) (progress, error) {
 	var p progress
-	unlock, err := s.sending.lock(ctx, page.ID, psid)
-	if err != nil {
-		return p, err
-	}
-	defer unlock()
 	type piece struct {
 		reply int
 		text  string
@@ -455,7 +468,13 @@ func (s *Server) deliver(ctx context.Context, page Page, psid string, replies []
 			quick = r.QuickReplies
 		}
 	}
+	// Counted before the wait for the person's other sends: one that never gets its turn still says how many.
 	p.Parts = len(pieces)
+	unlock, err := s.sending.lock(ctx, page.ID, psid)
+	if err != nil {
+		return p, err
+	}
+	defer unlock()
 	for j, pc := range pieces {
 		out := meta.Reply{Text: pc.text}
 		if j == len(pieces)-1 {
@@ -603,7 +622,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status": "ok", "ready": s.ready(), "pages": len(s.Cfg.Pages), "pending": s.pending.Load(),
+		"status": "ok", "ready": s.Ready(), "pages": len(s.Cfg.Pages), "pending": s.pending.Load(),
 		"queue": map[string]int{"depth": depth, "capacity": capacity}, "counters": s.Health.snapshot(),
 	})
 }
