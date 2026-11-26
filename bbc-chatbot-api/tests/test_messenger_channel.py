@@ -2007,6 +2007,18 @@ async def test_a_note_the_shutdown_could_not_wait_for_is_written_by_the_next_pro
     assert not (await redis.hgetall(mc.OUTBOX)) and mc.MESSENGER_HEALTH["told_later"] == 1
 
 
+async def _process_stops() -> None:
+    """The process goes, as at an exit: its saves still on their way past their callers (save_in_order goes on when
+    its caller is cancelled) go with it, stopped where they are while the test's mocks are still in, never resumed
+    later under the next process's state."""
+    import asyncio
+
+    left = list(mc._SAVES)
+    for task in left:
+        task.cancel()
+    await asyncio.gather(*left, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_next_process(redis, monkeypatch):
     """CodeRabbit #288: the outbox's write held up when the shutdown begins, then the note to the agent too slow:
@@ -2049,8 +2061,10 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
             saving.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await saving
+            await _process_stops()  # its note to the agent still hanging goes with it
             monkeypatch.setattr(redis, "hset", real_hset)
         assert not [r for r in c.rows if r["role"] == "system"]
+        assert not mc._SAVES, "nothing of the stopped process still running"
         stopped = mc.BOOT
         monkeypatch.setattr(mc, "BOOT", "the-next-process")
         monkeypatch.setattr(mc, "_CLOSING", False)
@@ -2140,10 +2154,12 @@ async def test_a_request_cancelled_once_its_message_is_stored_leaves_it_to_the_n
             saving.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await saving
-        assert [r["content"] for r in c.rows] == ["Stored, then the request cancelled"] and gw.sent == []
-        (left,) = [json.loads(v) for v in (await redis.hgetall(mc.OUTBOX)).values()]
-        assert left["state"] == "waiting" and left["row"] == c.rows[0]["id"]
-        assert (await mc.run_messenger_recover())["told"] == 0, "its process may still be on it"
+            assert [r["content"] for r in c.rows] == ["Stored, then the request cancelled"] and gw.sent == []
+            (left,) = [json.loads(v) for v in (await redis.hgetall(mc.OUTBOX)).values()]
+            assert left["state"] == "waiting" and left["row"] == c.rows[0]["id"]
+            assert (await mc.run_messenger_recover())["told"] == 0, "its process may still be on it"
+            await _process_stops()  # its save, still waiting for the insert's answer, goes with it
+        assert not mc._SAVES, "nothing of the stopped process still running"
         stopped = mc.BOOT
         monkeypatch.setattr(mc, "BOOT", "the-next-process")
         redis.kv.pop(f"msgr:alive:{stopped}")
