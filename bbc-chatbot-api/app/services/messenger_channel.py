@@ -984,12 +984,12 @@ async def _answer_earlier(event: InboundEvent) -> None:
         earlier = await _kept_event(r, k)
         if earlier is None:
             continue  # unreadable: the recovery gives it up
-        sending = await _send_state(r, k)
+        sending, mark = await _send_state_of(r, k)
         if sending == "on_its_way":
             MESSENGER_HEALTH["still_answering"] += 1
             raise StillAnswering()  # its replies are being sent: this one comes after them
         if sending != "none":
-            await _send_ended(k, _who(earlier), sending)
+            await _send_ended(k, _who(earlier), sending, mark)
             continue
         key = f"msgr:event:{k}"
         state, kept = await _claim(key, r)
@@ -1288,49 +1288,92 @@ def _drop_unsent(k: str, entry: Optional[tuple]) -> None:
 
 
 async def _send_state(r, k: str) -> str:
-    """Where the API's send of a kept event's replies is (SENDING_S): "none" (never begun, or known to have sent
-    nothing), "on_its_way" (begun lately: its process may still be at it; or before that by another process still
-    alive, which may know that nothing went out, for as long as its minutes could still clear it: ALIVE_S), "begun"
-    (begun and never over: its process stopped in it, or this one, which is not at it), "done" (over, and the event
-    not taken out of the inbox after). Redis failing raises."""
+    """Where the API's send of a kept event's replies is: _send_state_of without the mark read."""
+    return (await _send_state_of(r, k))[0]
+
+
+async def _send_state_of(r, k: str) -> tuple[str, str]:
+    """Where the API's send of a kept event's replies is (SENDING_S), and the mark read for it ("" for none): "none"
+    (never begun, or known to have sent nothing), "on_its_way" (begun lately: its process may still be at it; or
+    before that by another process still alive, which may know that nothing went out, for as long as its minutes could
+    still clear it: ALIVE_S), "begun" (begun and never over: its process stopped in it, or this one, which is not at
+    it: let go of only while that mark is still there, _send_ended), "done" (over, and the event not taken out of the
+    inbox after). Redis failing raises."""
     known = _UNSENT.get(k)  # what this process knew of the send before the read: never one it writes meanwhile
     raw = await r.get(_sending_key(k))
+    mark = str(raw or "")
     if raw is None or raw == "done":
         _drop_unsent(k, known)
-        return "none" if raw is None else "done"
-    if raw == SENT_BY_GATEWAY or str(raw).startswith(f"{SENT_BY_GATEWAY}:"):
+        return ("none" if raw is None else "done"), mark
+    if raw == SENT_BY_GATEWAY or mark.startswith(f"{SENT_BY_GATEWAY}:"):
         # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>"): on
         # its way while the gateway may still be sending them (SENDING_S, past the gateway's own 60 seconds), then
         # over, sent or not: never sent again by the API. A later event of the person's waits for it until then.
         _drop_unsent(k, known)
         at = 0.0
         try:
-            at = float(str(raw).partition(":")[2] or 0)
+            at = float(mark.partition(":")[2] or 0)
         except ValueError as e:
             logger.warning(f"[messenger] the gateway's right to send not readable, taken for one over: {e}")
-        return "on_its_way" if time.time() - at < SENDING_S else "done"
+        return ("on_its_way" if time.time() - at < SENDING_S else "done"), mark
     ended = _ENDED.get(k)
     if ended is not None and ended[0] == raw:
         _ENDED.pop(k, None)
-        return "done"  # this process's own send, over: only its end was not written
-    if (_UNSENT.get(k) or ("",))[0] == raw:
+        return "done", mark  # this process's own send, over: only its end was not written
+    own = _UNSENT.get(k)
+    if own is not None and own[0] == raw:
         # This process's own send of them, which sent nothing: the mark was left only because clearing it failed.
-        await r.eval(RELEASE_LUA, 1, _sending_key(k), raw)
-        _UNSENT.pop(k, None)
-        return "none"
-    head, _, owner = str(raw).partition(":")
+        # Cleared now, its event's answer written back first where it went meanwhile, in one step and only while the
+        # event is still in the inbox (_clear_unsent): the same replies go again from it, never from a second turn.
+        cleared = await _clear_unsent(r, k, mark, own[2])
+        if cleared > 0:
+            _drop_unsent(k, own)
+            return "none", ""
+        if cleared < 0:
+            # Let go of meanwhile (taken by another process for one begun): its mark still this one's, sent late by
+            # it, in the person's order, at its next minute (_settle_own, _send_late).
+            return "done", mark
+        return "on_its_way", mark  # another's mark by now: looked at again later
+    head, _, owner = mark.partition(":")
     since = 0.0  # unreadable: taken for one begun long ago
     try:
         since = float(head)
     except ValueError as e:
         logger.warning(f"[messenger] a send's mark not readable, taken for one begun long ago: {e}")
     if time.time() - since < SENDING_S:
-        return "on_its_way"
+        return "on_its_way", mark
     if owner and owner != BOOT and await r.exists(f"msgr:alive:{owner}"):
         # Its process lives: an old mark of its own is one it knows of (_UNSENT, _ENDED), and its minutes settle it
         # (_settle_own), however long Redis fails them. Never taken for a send begun while it is alive.
-        return "on_its_way"
-    return "begun"
+        return "on_its_way", mark
+    return "begun", mark
+
+
+# A send of this process known to have sent nothing (the call never reached the gateway), its mark left by a clear
+# that failed: the mark cleared (KEYS[2], only while it is still ARGV[2]) and the event's answer written back where
+# there is none (KEYS[3], ARGV[3] for ARGV[4] seconds), in one step and only while the event is still in the inbox
+# (KEYS[1], ARGV[1]): 1; -1 when it was let go of meanwhile (the mark kept: its process sends them late, in the
+# person's order, _send_late); 0 when the mark is not this one any more.
+CLEAR_UNSENT_LUA = """
+if redis.call('get', KEYS[2]) ~= ARGV[2] then
+  return 0
+end
+if not redis.call('zscore', KEYS[1], ARGV[1]) then
+  return -1
+end
+if not redis.call('get', KEYS[3]) then
+  redis.call('set', KEYS[3], ARGV[3], 'EX', ARGV[4])
+end
+redis.call('del', KEYS[2])
+return 1
+"""
+
+
+async def _clear_unsent(r, k: str, mark: str, replies: list) -> int:
+    """CLEAR_UNSENT_LUA for one send of this process that sent nothing: 1, -1 or 0. Redis failing raises (the mark and
+    what this process wrote down of it stay, for a later look)."""
+    return int(await r.eval(CLEAR_UNSENT_LUA, 3, INBOX, _sending_key(k), f"msgr:event:{k}", k, mark,
+                            json.dumps({"replies": replies, "by": "api"}), ANSWERED_S))
 
 
 async def _begin_send(r, event: InboundEvent, k: str, replies: list[dict]) -> Optional[str]:
@@ -1412,18 +1455,19 @@ async def _settle_own(r) -> None:
             await _keep_held_claim(r, key)
     if unwritten:
         return
-    for k, (mark, kept_event, replies) in list(_UNSENT.items()):
+    for k, entry in list(_UNSENT.items()):
+        mark, kept_event, replies = entry
         try:
-            if await r.zscore(INBOX, k) is not None:
-                # Still kept: its answer written back where it went meanwhile, its mark cleared (only while it is this
-                # one's), and the recovery sends the same replies again.
-                await _answer_back(r, k, replies)
-                await r.eval(RELEASE_LUA, 1, _sending_key(k), mark)
-                _UNSENT.pop(k, None)
-            elif await r.get(_sending_key(k)) == mark:
-                await _send_late(r, k, kept_event, replies, mark)
+            cleared = await _clear_unsent(r, k, mark, replies)
+            if cleared > 0:
+                # Still kept: its answer written back where it went meanwhile and its mark cleared, in one step with
+                # its place in the inbox (never after another process let it go), and the recovery sends the same
+                # replies again.
+                _drop_unsent(k, entry)
+            elif cleared < 0:
+                await _send_late(r, k, kept_event, replies, mark)  # let go of meanwhile, the mark still this one's
             else:
-                _UNSENT.pop(k, None)  # the mark ran out, or is another's: not this one's to send
+                _drop_unsent(k, entry)  # the mark ran out, or is another's: not this one's to send
         except Exception as e:
             redis_failed("messenger inbox", e)
             logger.warning(f"[messenger] a send's mark that sent nothing still not cleared: {type(e).__name__}: {e}")
@@ -1591,14 +1635,47 @@ async def _keep_pending(r, key: str, token: str) -> None:
             logger.warning(f"[messenger] an event's pending mark not renewed (tried again): {type(e).__name__}: {e}")
 
 
-async def _send_ended(k: str, who: Optional[str], sending: str) -> None:
+# An event whose send's mark read as begun by a process no longer alive (ARGV[1], the mark read) let go of: out of the
+# inbox and its person's there (KEYS[1], KEYS[2], member ARGV[2]), its JSON and tries gone (KEYS[3], KEYS[4]), only
+# while that mark is still there (KEYS[5]): 1; 0 when it changed meanwhile (its process, back, cleared it as one that
+# sent nothing, and the event is sent from its answer).
+RELEASE_BEGUN_LUA = """
+if redis.call('get', KEYS[5]) ~= ARGV[1] then
+  return 0
+end
+redis.call('zrem', KEYS[1], ARGV[2])
+redis.call('zrem', KEYS[2], ARGV[2])
+redis.call('del', KEYS[3], KEYS[4])
+return 1
+"""
+
+
+async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") -> None:
     """A kept event whose replies a send has had ("done", or "begun" by a process that stopped in it): never sent
-    again, out of the inbox. One begun and never over may be with the person, or not (counted)."""
-    if sending == "begun":
-        MESSENGER_HEALTH["recover_unsure"] += 1
-        logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with "
-                       "the person, never sent again")
-    await _release_event(k, who)
+    again, out of the inbox. One begun and never over may be with the person, or not (counted), and is let go of only
+    while its mark is still the one read (`mark`): its process, back meanwhile, may have cleared it as one that sent
+    nothing, and then the event stays, to be sent from its answer. Redis failing: left for a later pass (logged)."""
+    if sending != "begun" or not mark:
+        await _release_event(k, who)
+        return
+    r = get_redis(even_cooling_down=True)
+    if r is None:
+        return
+    try:
+        gone = await r.eval(RELEASE_BEGUN_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}", f"{INBOX}:tries:{k}",
+                            _sending_key(k), mark, k)
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] a kept event whose send's process stopped not let go of (looked at again): "
+                       f"{type(e).__name__}: {e}")
+        return
+    if not gone:
+        logger.info("[messenger] a kept event whose send's process seemed stopped is kept: its mark changed "
+                    "meanwhile")
+        return
+    MESSENGER_HEALTH["recover_unsure"] += 1
+    logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with the "
+                   "person, never sent again")
 
 
 async def _earlier_kept(r, event: InboundEvent) -> list[str]:
@@ -2103,14 +2180,14 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
         return "waiting"  # behind an earlier one of theirs this minute
     # Its replies sent already (the inbox not cleared after), or being sent, or left half sent by a process that
     # stopped: never sent again.
-    sending = await _send_state(r, k)
+    sending, mark = await _send_state_of(r, k)
     if sending == "on_its_way":
         MESSENGER_HEALTH["recover_waiting"] += 1
         if who is not None:
             waiting.add(who)
         return "waiting"
     if sending != "none":
-        await _send_ended(k, who, sending)
+        await _send_ended(k, who, sending, mark)
         return "answered"
     tries = await r.incr(f"{INBOX}:tries:{k}")
     await r.expire(f"{INBOX}:tries:{k}", INBOX_KEEP_S)

@@ -110,6 +110,34 @@ def rekeep(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def clear_unsent(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.CLEAR_UNSENT_LUA does."""
+    inbox, sending_key, event_key = keys
+    k, mark, answer, ex = args[0], args[1], args[2], int(args[3])
+    if (fake.kv.get(sending_key) if fake._alive(sending_key) else None) != mark:
+        return 0
+    if k not in fake._zset(inbox):
+        return -1
+    if not fake._alive(event_key):
+        fake.kv[event_key] = answer
+        fake._set_expiry(event_key, ex=ex)
+    fake.kv.pop(sending_key, None)
+    return 1
+
+
+def release_begun(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.RELEASE_BEGUN_LUA does."""
+    inbox, who, event_json, tries, sending_key = keys
+    mark, k = args[0], args[1]
+    if (fake.kv.get(sending_key) if fake._alive(sending_key) else None) != mark:
+        return 0
+    fake._zset(inbox).pop(k, None)
+    fake._zset(who).pop(k, None)
+    fake.kv.pop(event_json, None)
+    fake.kv.pop(tries, None)
+    return 1
+
+
 @pytest.fixture
 def redis():
     from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
@@ -124,6 +152,8 @@ def redis():
     r.register(mc.GIVE_TO_GATEWAY_LUA, give_to_gateway)
     r.register(mc.LAST_TAKEN_LUA, last_taken)
     r.register(mc.REKEEP_LUA, rekeep)
+    r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
+    r.register(mc.RELEASE_BEGUN_LUA, release_begun)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -2187,7 +2217,8 @@ def _blink_send_marks(redis, monkeypatch) -> dict:
         return str(key).startswith(f"{mc.INBOX}:sending:")
 
     async def eval_(script, numkeys, *keys_and_args):
-        if blinks["on"] and script == mc.RELEASE_LUA and sending(keys_and_args[0]):
+        clears = (mc.RELEASE_LUA, mc.CLEAR_UNSENT_LUA)
+        if blinks["on"] and script in clears and any(sending(k) for k in keys_and_args[:numkeys]):
             raise ResponseError("LOADING Redis is loading the dataset in memory")
         return await real_eval(script, numkeys, *keys_and_args)
 
@@ -2297,6 +2328,93 @@ async def test_a_send_that_sent_nothing_goes_from_its_process_after_another_let_
         await mc.run_messenger_recover()
     assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 2
     assert not mc._UNSENT and redis.kv[f"{mc.INBOX}:sending:m1"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_process_back_clears_its_mark_only_while_its_event_is_kept_else_sends_late(chat, redis, monkeypatch):
+    """CodeRabbit #288: as above, A cut off from Redis with a send it knows sent nothing; B lets the event go (taking
+    A's mark for a send begun) just as A, back, looks at it. A's look at the inbox and the clear of its mark are one
+    step: the event found gone, A keeps its mark and sends the replies late, once, never dropping what it knew with
+    no event left to send them from. Rule 5: the event still kept, A clears its mark and the recovery sends them
+    (test_a_send_that_sent_nothing_is_left_to_its_process_by_another_on_the_same_redis)."""
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    gw = Gateway([{"sent": 0, "failed": {"kind": "gateway"}}])
+    who = mc._who(event())
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    with patch.object(mc, "send", new=gw):
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1
+        a_knows = mc._UNSENT.copy()
+        assert a_knows, "its mark left by the failed clear, and known"
+        blinks["on"] = False
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        real_eval = redis.eval
+        let_go = {"on": True}
+
+        async def b_lets_it_go_first(script, numkeys, *keys_and_args):
+            if let_go["on"] and script in (mc.KEEP_ANSWER_LUA, mc.CLEAR_UNSENT_LUA):
+                let_go["on"] = False  # B lets the event go just before A's clear
+                await redis.zrem(mc.INBOX, "m1")
+                await redis.zrem(who, "m1")
+            return await real_eval(script, numkeys, *keys_and_args)
+
+        monkeypatch.setattr(redis, "eval", b_lets_it_go_first)
+        become("process-a", a_knows)  # A reaches Redis again
+        await mc.run_messenger_recover()
+        await mc.run_messenger_recover()
+    assert gw.sent == [reply, reply] and mc.MESSENGER_HEALTH["sent_late"] == 1 and len(chat.requests) == 2
+    assert not mc._UNSENT and redis.kv[f"{mc.INBOX}:sending:m1"] == "done" and "m1" not in redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mark_then", ["the_one_read", "cleared_meanwhile"])
+async def test_an_event_taken_for_one_whose_process_stopped_is_let_go_of_only_on_the_mark_read(redis, mark_then):
+    """CodeRabbit #288: process B reads A's mark as a send begun by a process that stopped, and before B lets the event
+    go, A, back, clears it as one that sent nothing (its answer written back): B never lets the event go then, so the
+    recovery sends its replies from the answer. Rule 5: the mark still the one read, the event is let go of
+    (counted)."""
+    k, mark = "m1", "1.0:process-a"
+    who = mc._who(event())
+    await redis.zadd(mc.INBOX, {k: 1.0})
+    await redis.zadd(who, {k: 1.0})
+    redis.kv[f"{mc.INBOX}:{k}"] = event().model_dump_json()
+    redis.kv[mc._sending_key(k)] = mark
+    if mark_then == "cleared_meanwhile":
+        redis.kv.pop(mc._sending_key(k))
+    await mc._send_ended(k, who, "begun", mark)
+    kept = mark_then == "cleared_meanwhile"
+    assert (k in redis.kv[mc.INBOX]) == kept and (f"{mc.INBOX}:{k}" in redis.kv) == kept
+    assert mc.MESSENGER_HEALTH["recover_unsure"] == (0 if kept else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer_then", ["gone", "there"])
+async def test_a_send_this_process_knows_sent_nothing_is_cleared_with_its_answer_written_back(redis, answer_then):
+    """CodeRabbit #288: a later event of the person's (or the recovery) looks at an earlier one whose send this process
+    knows sent nothing, its mark left by a clear that failed, and the earlier one's answer went from Redis meanwhile:
+    the mark is cleared with that answer written back, in one step, so the same replies go again from it, never from a
+    second turn. Rule 5: an answer there is never written over."""
+    k = "m1"
+    mark = f"{time.time() - 1000}:{mc.BOOT}"
+    replies = [{"text": "About: Hi"}]
+    await redis.zadd(mc.INBOX, {k: 1.0})
+    redis.kv[mc._sending_key(k)] = mark
+    mc._UNSENT[k] = (mark, event().model_dump_json(), replies)
+    theirs = json.dumps({"replies": [{"text": "Theirs"}], "by": "api"})
+    if answer_then == "there":
+        redis.kv["msgr:event:m1"] = theirs
+    assert await mc._send_state(redis, k) == "none"
+    assert mc._sending_key(k) not in redis.kv and not mc._UNSENT
+    expected = {"replies": replies, "by": "api"} if answer_then == "gone" else json.loads(theirs)
+    assert json.loads(redis.kv["msgr:event:m1"]) == expected
 
 
 @pytest.mark.asyncio
