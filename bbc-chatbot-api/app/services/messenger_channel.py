@@ -826,44 +826,103 @@ async def handle(event: InboundEvent, *, by: Literal["gateway", "api"] = "gatewa
     except Exception as e:
         await _forget(key, token)
         raise EventFailed(in_inbox) from e
-    if by == "gateway" and in_inbox and replies and not await _gateway_takes_send(event.key()):
-        # A pass of the recovery on this event (its claim lost mid-turn) took the right to send them first: its to
-        # send, and to let go of. The gateway gets none.
-        MESSENGER_HEALTH["duplicates"] += 1
-        await _remember(key, [], by, token, client)
+    if by == "gateway" and in_inbox and replies:
+        kept_now = await _give_to_gateway(key, event.key(), replies, token)
+        if kept_now == "theirs":
+            # The recovery's send of them began first (this event's mark lost meanwhile): its to send, and to let go
+            # of. The gateway gets none.
+            MESSENGER_HEALTH["duplicates"] += 1
+            return {"replies": []}
+    else:
+        kept_now = await _remember(key, replies, by, token, client)
+    if kept_now == "lost":
+        # Another delivery or pass took the event while this turn ran (its claim ran out): theirs to give or send,
+        # never given or sent from here beside theirs.
+        if by == "api":
+            raise AnswerNotKept(kept_now)
         return {"replies": []}
-    kept_now = await _remember(key, replies, by, token, client)
     if by == "api" and kept_now != "kept":
         # The recovery sends only an answer kept as the API's to send: a send known not to have gone out is made
         # again from it, never from a second turn. Not written (Redis failing): this process holds it, writes it at
-        # its next minute, and the event waits for it. Another delivery or pass took the event while this turn ran
-        # (its claim ran out): theirs to give or send, never sent from here beside theirs. A delivery from the
-        # gateway still gives its own: it took the right to send them (_gateway_takes_send), so a pass of the
-        # recovery never sends beside it, and its answer not written is held the same.
+        # its next minute, and the event waits for it.
         raise AnswerNotKept(kept_now)
-    if by == "gateway":
+    if by == "gateway" and not (kept_now == "kept" and in_inbox and replies and await _later_kept(event)):
+        # Kept and given to the gateway with a later event of the person's waiting in the inbox, it stays there,
+        # its replies on their way through the gateway (_send_state), so the later one never goes before them; the
+        # recovery lets go of it once the gateway's send is over.
         await _release_event(event.key(), _who(event))
     MESSENGER_HEALTH["replies"] += len(replies)
     return {"replies": replies}
 
 
-async def _gateway_takes_send(k: str) -> bool:
-    """A kept event's replies given back to the gateway take the right to send them, as the API's own sends take it
-    (_begin_send): a pass of the recovery on the same event never sends them beside the gateway. False when the
-    recovery took it first; True when it is the gateway's (now, or from an earlier delivery of the event). Redis
-    failing: True, the replies given all the same (logged)."""
+# A kept event's replies given back to the gateway, which takes the right to send them, and their answer kept, in one
+# step, only while the delivery still holds the event's claim (its token, or nothing): 1; 2 when the API's own send of
+# them began first (the gateway gets none: an answer with none is kept); 0 when another delivery or pass holds the
+# event, or answered it (nothing written).
+GIVE_TO_GATEWAY_LUA = """
+local v = redis.call('get', KEYS[1])
+if v and v ~= ARGV[1] then
+  return 0
+end
+local s = redis.call('get', KEYS[2])
+if s and string.sub(s, 1, 7) ~= 'gateway' then
+  redis.call('set', KEYS[1], ARGV[3], 'EX', ARGV[4])
+  return 2
+end
+redis.call('set', KEYS[2], ARGV[5], 'EX', ARGV[6])
+redis.call('set', KEYS[1], ARGV[2], 'EX', ARGV[4])
+return 1
+"""
+
+
+async def _give_to_gateway(key: str, k: str, replies: list, token: str) -> str:
+    """A kept event's replies given back to the gateway with the right to send them (rule 7: why, never a bare bool):
+    "kept" (the gateway sends them: a pass of the recovery never sends beside it, and reads the right as on its way
+    while the gateway may still be sending them, SENDING_S, then as over); "theirs" (the API's own send of them began
+    first: the gateway gets none); "lost" (another delivery or pass took the event while this turn ran: theirs, and
+    this delivery gets none, counted); "unkept" (Redis failing: given all the same, the answer held to write later,
+    _UNKEPT, counted); "no_redis"."""
     r = get_redis(even_cooling_down=True)
     if r is None:
-        return True
+        return "no_redis"
+    answer = json.dumps({"replies": replies, "by": "gateway"})
     try:
-        if await r.set(_sending_key(k), SENT_BY_GATEWAY, nx=True, ex=INBOX_KEEP_S):
-            return True
-        return await r.get(_sending_key(k)) == SENT_BY_GATEWAY
+        given = await r.eval(GIVE_TO_GATEWAY_LUA, 2, key, _sending_key(k), token, answer,
+                             json.dumps({"replies": [], "by": "gateway"}), ANSWERED_S,
+                             f"{SENT_BY_GATEWAY}:{time.time()}", INBOX_KEEP_S)
     except Exception as e:
         redis_failed("messenger inbox", e)
-        logger.warning(f"[messenger] a kept event's replies given to the gateway without their right to send: "
-                       f"{type(e).__name__}: {e}")
-        return True
+        _UNKEPT[key] = (token, answer)
+        MESSENGER_HEALTH["answer_unkept"] += 1
+        logger.warning(f"[messenger] a kept event's replies given to the gateway, their right and answer not written "
+                       f"(the answer held to write later): {type(e).__name__}: {e}")
+        return "unkept"
+    if not given:
+        MESSENGER_HEALTH["claim_lost"] += 1
+        logger.warning("[messenger] a delivery's turn ended after another delivery or pass took the event: it gives "
+                       "the gateway no replies beside theirs")
+        return "lost"
+    return "theirs" if int(given) == 2 else "kept"
+
+
+async def _later_kept(event: InboundEvent) -> bool:
+    """Whether a later event of this person's is in the inbox (its turn failed): it waits there behind this one. Redis
+    failing: False (logged), this one let go of as before."""
+    r = get_redis(even_cooling_down=True)
+    if r is None:
+        return False
+    k, who = event.key(), _who(event)
+    try:
+        mine = await r.zscore(INBOX, k)
+        if mine is None:
+            return False
+        for m in await r.zrangebyscore(who, mine, "+inf"):
+            if m != k and await r.zscore(INBOX, m) is not None:
+                return True
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] a person's later events not looked up: {type(e).__name__}: {e}")
+    return False
 
 
 async def _answer_earlier(event: InboundEvent) -> None:
@@ -1133,8 +1192,8 @@ _UNSENT: dict[str, str] = {}
 # never sent again). With _UNSENT, every old mark of a live process is one it knows of and settles itself: another
 # process waits on it while that process is alive (_send_state).
 _ENDED: dict[str, tuple[str, Optional[str]]] = {}
-# The right to send a kept event's replies, taken by its delivery from the gateway (handle): the gateway sends them,
-# and the API never does.
+# The right to send a kept event's replies, taken by its delivery from the gateway (handle, "gateway:<when>"), only
+# while that delivery holds the event's claim: the gateway sends them, and the API never does.
 SENT_BY_GATEWAY = "gateway"
 
 
@@ -1145,9 +1204,20 @@ async def _send_state(r, k: str) -> str:
     (begun and never over: its process stopped in it, or this one, which is not at it), "done" (over, and the event
     not taken out of the inbox after). Redis failing raises."""
     raw = await r.get(_sending_key(k))
-    if raw is None or raw in ("done", SENT_BY_GATEWAY):
+    if raw is None or raw == "done":
         _UNSENT.pop(k, None)
         return "none" if raw is None else "done"
+    if raw == SENT_BY_GATEWAY or str(raw).startswith(f"{SENT_BY_GATEWAY}:"):
+        # The gateway's right to send them, taken as its delivery's replies went back to it ("gateway:<when>"): on
+        # its way while the gateway may still be sending them (SENDING_S, past the gateway's own 60 seconds), then
+        # over, sent or not: never sent again by the API. A later event of the person's waits for it until then.
+        _UNSENT.pop(k, None)
+        at = 0.0
+        try:
+            at = float(str(raw).partition(":")[2] or 0)
+        except ValueError as e:
+            logger.warning(f"[messenger] the gateway's right to send not readable, taken for one over: {e}")
+        return "on_its_way" if time.time() - at < SENDING_S else "done"
     ended = _ENDED.get(k)
     if ended is not None and ended[0] == raw:
         _ENDED.pop(k, None)

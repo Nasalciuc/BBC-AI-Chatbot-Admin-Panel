@@ -59,16 +59,37 @@ def fresh(monkeypatch):
     yield
 
 
+def give_to_gateway(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.GIVE_TO_GATEWAY_LUA does."""
+    event_key, sending_key = keys
+    token, answer, none_given, ex, right, right_ex = args[0], args[1], args[2], int(args[3]), args[4], int(args[5])
+    held = fake.kv.get(event_key) if fake._alive(event_key) else None
+    if held is not None and held != token:
+        return 0
+    sending = fake.kv.get(sending_key) if fake._alive(sending_key) else None
+    if sending is not None and not sending.startswith("gateway"):
+        fake.kv[event_key] = none_given
+        fake._set_expiry(event_key, ex=ex)
+        return 2
+    fake.kv[sending_key] = right
+    fake._set_expiry(sending_key, ex=right_ex)
+    fake.kv[event_key] = answer
+    fake._set_expiry(event_key, ex=ex)
+    return 1
+
+
 @pytest.fixture
 def redis():
     from tests.fake_redis import compare_and_delete, compare_and_pexpire, compare_or_absent_and_set
 
     r = FakeRedis()
     # The recovery's lock, and an event's claim, renewed and let go only while still the pass's or the turn's own
-    # (conversation_lock's scripts); an event's answer written only over its turn's own claim, or nothing.
+    # (conversation_lock's scripts); an event's answer written only over its turn's own claim, or nothing, and given
+    # to the gateway with the right to send it only then.
     r.register(mc.RELEASE_LUA, compare_and_delete)
     r.register(mc.RENEW_LUA, compare_and_pexpire)
     r.register(mc.KEEP_ANSWER_LUA, compare_or_absent_and_set)
+    r.register(mc.GIVE_TO_GATEWAY_LUA, give_to_gateway)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
         yield r
@@ -1691,12 +1712,14 @@ async def test_a_recovery_with_the_gateway_down_sends_next_minute_without_a_seco
 
 
 def _refuse_answers(redis, monkeypatch, key: str = "") -> dict:
-    """Redis refusing an event's answer (all, or `key`'s) once while "on", a command refused (never a cooldown)."""
+    """Redis refusing an event's answer (all, or `key`'s: its write, or its giving to the gateway with the right to send
+    it) once while "on", a command refused (never a cooldown)."""
     real_eval = redis.eval
     refuse = {"on": True}
 
     async def eval_(script, numkeys, *keys_and_args):
-        if refuse["on"] and script == mc.KEEP_ANSWER_LUA and (not key or keys_and_args[0] == key):
+        answers = (mc.KEEP_ANSWER_LUA, mc.GIVE_TO_GATEWAY_LUA)
+        if refuse["on"] and script in answers and (not key or keys_and_args[0] == key):
             refuse["on"] = False
             raise ResponseError("OOM command not allowed when used memory > 'maxmemory'")
         return await real_eval(script, numkeys, *keys_and_args)
@@ -2129,6 +2152,36 @@ async def test_a_later_message_waits_while_an_earlier_one_is_still_being_answere
         out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
     assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
     assert mc.MESSENGER_HEALTH["recover_unsure"] == 1 and "m1" not in redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+async def test_a_later_message_waits_while_the_gateway_is_sending_an_earlier_ones_replies(chat, redis, monkeypatch):
+    """CodeRabbit #288: the person's first and second messages failed (both kept). The gateway delivers the first
+    again and its replies go back to it: the gateway takes the right to send them, and may still be sending them. The
+    first stays in the inbox, the second behind it: the recovery sends nothing of the second, and a delivery of it
+    from the gateway waits (409), until the gateway's send is over (SENDING_S). Then the first is let go of, never
+    sent by the API, and the second goes. Rule 5: with no later message waiting, a delivery from the gateway lets go
+    of its event at once (test_a_later_message_never_comes_before_an_earlier_one_whose_turn_failed)."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert set(redis.kv[mc.INBOX]) == {"m1", "m2"}
+    delivered = await mc.handle(event(mid="m1", text="First"))  # the gateway's, again
+    assert [r["text"] for r in delivered["replies"]] == ["About: First"]
+    assert set(redis.kv[mc.INBOX]) == {"m1", "m2"}, "the first stays while the gateway may be sending its replies"
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)  # both old enough for the recovery (their places kept as taken)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        assert out["waiting"] == 2 and gw.sent == [], "nothing of the second while the first may be on its way"
+        with pytest.raises(mc.StillAnswering):
+            await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)  # the gateway's send over
+        out = await mc.run_messenger_recover()
+    assert out["answered"] == 2 and gw.sent == ["About: Second"] and not redis.kv[mc.INBOX]
+    assert len(chat.requests) == 4, "two failed turns, then one turn each"
 
 
 @pytest.mark.asyncio
@@ -2633,7 +2686,7 @@ async def test_a_delivery_from_the_gateway_and_a_recovery_that_lost_its_claim_ne
     reply = "About: Hi, two seats to Istanbul in December?"
     assert [r["text"] for r in delivered["replies"]] == [reply], "the gateway sends them"
     assert gw.sent == [] and out["waiting"] == 1, "the recovery, ending after, sends nothing"
-    assert redis.kv[f"{mc.INBOX}:sending:m1"] == mc.SENT_BY_GATEWAY
+    assert redis.kv[f"{mc.INBOX}:sending:m1"].startswith(f"{mc.SENT_BY_GATEWAY}:")
     # The recovery's turn, ending after the delivery that took its event, never writes its answer over that one's.
     assert json.loads(redis.kv["msgr:event:m1"])["by"] == "gateway" and mc.MESSENGER_HEALTH["claim_lost"] == 1
 
@@ -2674,8 +2727,9 @@ async def test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_deliv
     """CodeRabbit #288: a delivery's turn (the first) runs past its claim, its renewal failing, and a delivery made
     again (the second) takes the event, its own claim under its own token, and is in its turn when the first ends.
     The first failing never clears the second's claim: a third delivery still waits (409). The first answering, before
-    the second or after it, never writes its answer over the second's claim or answer (claim_lost). Rule 5: the
-    second's answer is the one kept, and a delivery made again gets its replies, with no third turn."""
+    the second or after it, never writes its answer over the second's claim or answer (claim_lost), and gives the
+    gateway none: only the second's replies go back, once. Rule 5: the second's answer is the one kept, and a
+    delivery made again gets its replies, with no third turn."""
     import asyncio
 
     from tests.fake_redis import FakeClock
@@ -2717,14 +2771,14 @@ async def test_a_turn_whose_claim_ran_out_never_clears_or_answers_over_the_deliv
             await asyncio.wait_for(mc.handle(event()), 1)  # the second's claim is still there
     elif ends == "first_answers_before":
         first_go.set()
-        await asyncio.wait_for(first, 1)
+        assert (await asyncio.wait_for(first, 1))["replies"] == [], "its claim lost: it gives none"
         with pytest.raises(mc.StillAnswering):
             await asyncio.wait_for(mc.handle(event()), 1)  # the second's claim, never the first's answer
     second_go.set()
     assert [r["text"] for r in (await asyncio.wait_for(second, 1))["replies"]] == ["Answer 2"]
     if ends == "first_answers_after":
         first_go.set()
-        await asyncio.wait_for(first, 1)
+        assert (await asyncio.wait_for(first, 1))["replies"] == [], "its claim lost: it gives none"
     assert json.loads(redis.kv["msgr:event:m1"])["replies"] == [{"text": "Answer 2"}], "the second's answer is kept"
     assert mc.MESSENGER_HEALTH["claim_lost"] == (0 if ends == "first_fails" else 1)
     again = await mc.handle(event())
