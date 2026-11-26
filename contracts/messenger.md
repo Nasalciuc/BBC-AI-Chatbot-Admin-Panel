@@ -203,7 +203,9 @@ What the API does with an event:
   (`recover_unsure`). Either is let go of only while its mark is still the one read (its process, back meanwhile, may
   have cleared it, and the event is sent from its answer; or the gateway, given its replies again, sends them from
   then): kept so, or not known (Redis failing), its person's later events wait behind it; one begun lately, or by a process still alive, is on its way, and the event waits: every old
-  mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not. Only
+  mark of a live process is one it knows of and settles at each of its minutes, whether it holds the lock or not.
+  With the channel off no pass runs, and a process still holding such a mark keeps saying it is alive, so none
+  of them reads as a send begun once the channel is on again. Only
   a send that never reached the gateway clears its mark (compare and delete: only its own) and goes again, its
   event's answer written back first where it went meanwhile (its day over, or Redis let it go; never over another's
   claim or answer), so the same replies go, with no second turn; its mark
