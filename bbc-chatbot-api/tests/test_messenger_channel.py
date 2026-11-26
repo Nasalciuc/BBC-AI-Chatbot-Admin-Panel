@@ -998,10 +998,11 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
     import asyncio
 
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
-    gate = asyncio.Event()
+    gate, writing, noting = asyncio.Event(), asyncio.Event(), asyncio.Event()
     real_hset = redis.hset
 
     async def held_up(*a, **kw):
+        writing.set()
         await gate.wait()
         return await real_hset(*a, **kw)
 
@@ -1010,6 +1011,7 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
 
     async def notes_hang(conversation_id, role, content, model_used=None, cost=0.0, *, message_id=None):
         if role == "system":
+            noting.set()
             await asyncio.sleep(30)
         return await real(conversation_id, role, content, model_used, cost, message_id=message_id)
 
@@ -1020,14 +1022,15 @@ async def test_a_stop_while_an_agents_message_is_written_down_leaves_it_to_the_n
 
             monkeypatch.setattr(redis, "hset", held_up)
             saving = asyncio.create_task(add_message(CONV, "agent", "Written while the server stops"))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(writing.wait(), 1)  # its outbox write on its way when the stop begins
             assert (await mc.drain_all(0.05)) == {"left": 0}, "nothing was handed on yet"
             gate.set()
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(noting.wait(), 1)  # its note to the agent begun, and hanging
             # Written down; nothing started after (the stop had begun), and the agent's note hangs: the process goes.
             assert len((await redis.hgetall(mc.OUTBOX))) == 1 and gw.sent == [] and not saving.done()
             saving.cancel()
-            await asyncio.sleep(0)
+            with pytest.raises(asyncio.CancelledError):
+                await saving
             monkeypatch.setattr(redis, "hset", real_hset)
         assert not [r for r in c.rows if r["role"] == "system"]
         stopped = mc.BOOT
@@ -1220,10 +1223,12 @@ async def test_a_send_the_gateway_confirmed_says_nothing_when_the_stop_cuts_what
     redis.kv[f"msgr:conv:{CONV}"] = json.dumps({"page_id": PAGE, "psid": PSID})
     real_hdel = redis.hdel
     held = {"n": 0}
+    crossing = asyncio.Event()
 
     async def slow_first(key, *fields):
         held["n"] += 1
         if held["n"] == 1:
+            crossing.set()
             await asyncio.sleep(30)
         return await real_hdel(key, *fields)
 
@@ -1234,7 +1239,7 @@ async def test_a_send_the_gateway_confirmed_says_nothing_when_the_stop_cuts_what
 
             monkeypatch.setattr(redis, "hdel", slow_first)
             await add_message(CONV, "agent", "Sent, then the server stops")
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(crossing.wait(), 1)  # sent, and its crossing out begun, when the stop begins
             assert (await mc.drain_all(0.05)) == {"left": 1}
     finally:
         c.stop()
@@ -1431,8 +1436,17 @@ async def test_a_later_message_never_comes_before_an_earlier_one_whose_turn_fail
     with pytest.raises(mc.EventFailed):
         await mc.handle(event(mid="m1", text="First"))
     gw = Gateway([])
+    turn, at_second = chat.answer, []
+
+    async def watched(req, add_message):
+        if req.message == "Second":
+            at_second.append(list(gw.sent))  # what had gone out when the second turn began
+        return await turn(req, add_message)
+
+    chat.answer = watched
     with patch.object(mc, "send", new=gw):
         out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert at_second == [["About: First"]], "the first reply went out before the second turn began"
         assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"]
         assert [(r["role"], r["content"]) for r in chat.rows] == [
             ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
@@ -1582,9 +1596,13 @@ async def test_an_earlier_answer_is_sent_even_when_the_later_turn_then_fails(cha
     """CodeRabbit #288: m1 answered on m2's delivery, then m2's own turn fails. m1's replies went out before m2's
     turn, once, and are never lost with m2's failure; m2, delivered again, gets its own."""
     calls = {"n": 0}
+    gw = Gateway([])
+    at_second: list = []
 
     async def turn(req, add_message):
         calls["n"] += 1
+        if req.message == "Second":
+            at_second.append(list(gw.sent))  # what had gone out when m2's turn began
         if calls["n"] in (1, 3):  # m1's first try, then m2's first
             raise RuntimeError("database away")
         await add_message(req.conversation_id, "user", req.message)
@@ -1594,10 +1612,10 @@ async def test_an_earlier_answer_is_sent_even_when_the_later_turn_then_fails(cha
     chat.answer = turn
     with pytest.raises(mc.EventFailed):
         await mc.handle(event(mid="m1", text="First"))
-    gw = Gateway([])
     with patch.object(mc, "send", new=gw):
         with pytest.raises(mc.EventFailed) as failed:
             await mc.handle(event(mid="m2", text="Second", timestamp=200))
+        assert at_second == [["About: First"]], "m1's reply went out before m2's turn began, not after it failed"
         assert failed.value.kept and gw.sent == ["About: First"] and set(redis.kv[mc.INBOX]) == {"m2"}
         out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
         assert (await mc.run_messenger_recover())["answered"] == 0
@@ -1733,17 +1751,27 @@ async def test_the_agents_notes_are_told_a_part_at_a_time_and_the_events_still_g
     the same pass, even when the notes get no time at all."""
     await _fail_once(chat, redis)
     _turns(chat)
-    redis.kv[mc.OUTBOX] = {f"e{i}": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold",
-                                                 "note": f"Note {i}", "at": time.time()}) for i in range(5)}
+    # The first part (two deliveries a live process is on) stays: a pass that started over at cursor 0 every time
+    # would never reach the notes after it.
+    redis.kv["msgr:alive:alive-one"] = "1"
+    stays = {f"a{i}": json.dumps({"cid": CONV, "boot": "alive-one", "state": "waiting", "at": time.time()})
+             for i in range(2)}
+    notes = {f"e{i}": json.dumps({"cid": CONV, "boot": "gone-one", "state": "untold", "note": f"Note {i}",
+                                  "at": time.time()}) for i in range(5)}
+    redis.kv[mc.OUTBOX] = {**stays, **notes}
     monkeypatch.setattr(mc, "TELL_BATCH", 2)
     gw = Gateway([])
     with patch.object(mc, "send", new=gw):
         monkeypatch.setattr(mc, "TELL_BUDGET_S", 0.0)
         first = await mc.run_messenger_recover()
-        assert first["told"] == 0 and first["answered"] == 1 and len(await redis.hgetall(mc.OUTBOX)) == 5
+        assert first["told"] == 0 and first["answered"] == 1 and len(await redis.hgetall(mc.OUTBOX)) == 7
         monkeypatch.setattr(mc, "TELL_BUDGET_S", 30.0)
-        passes = [(await mc.run_messenger_recover())["told"] for _ in range(4)]
-    assert all(n <= 2 for n in passes) and sum(passes) == 5 and not await redis.hgetall(mc.OUTBOX)
+        assert (await mc.run_messenger_recover())["told"] == 0 and redis.kv[mc.OUTBOX_CURSOR] == "2"
+        # The next pass goes on from the cursor the last one kept: the second part's notes.
+        assert (await mc.run_messenger_recover())["told"] == 2
+        assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == ["Note 0", "Note 1"]
+        passes = [(await mc.run_messenger_recover())["told"] for _ in range(2)]
+    assert passes == [2, 1] and set(await redis.hgetall(mc.OUTBOX)) == set(stays)
     assert sorted(r["content"] for r in chat.rows if r["role"] == "system") == [f"Note {i}" for i in range(5)]
 
 

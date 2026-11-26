@@ -20,6 +20,9 @@ class FakeRedis:
         self.down = False
         # HSCAN's COUNT is a hint: Redis gives a small hash whole in one part, whatever the COUNT. True does that.
         self.scan_whole = False
+        # Each hash's fields in the places HSCAN walks (a field deleted leaves its place empty, as a bucket in Redis:
+        # a scan's later parts never move when earlier fields go).
+        self._places: dict[str, list[str]] = {}
         self.calls: list[str] = []
         self.scripts: dict[str, Any] = {}  # script text -> python function(keys, args)
 
@@ -250,15 +253,20 @@ class FakeRedis:
 
     async def hscan(self, key: str, cursor: int = 0, match: Optional[str] = None,
                     count: Optional[int] = None) -> tuple[int, dict[str, str]]:
-        """A part of the hash from `cursor` (here its place in the fields), about `count` fields (all of them with
-        scan_whole), and where the next part starts (0: none left)."""
+        """A part of the hash from `cursor` (here a place among its fields', which a field deleted leaves empty and
+        never moves), `count` places (all of them with scan_whole), and where the next part starts (0: none left).
+        As in Redis, a whole scan gives every field there from its start to its end, whatever went meanwhile."""
         self._check("hscan")
         if not self._alive(key):
+            self._places.pop(key, None)
             return 0, {}
-        items = list(self.kv[key].items())
-        n = len(items) if self.scan_whole else (count or 10)
-        after = cursor + n
-        return (after if after < len(items) else 0), dict(items[cursor:after])
+        h = self.kv[key]
+        places = self._places.setdefault(key, [])
+        known = set(places)
+        places.extend(f for f in h if f not in known)  # a field new since: a place after the others
+        n = len(places) if self.scan_whole else (count or 10)
+        end = min(int(cursor) + n, len(places))
+        return (end if end < len(places) else 0), {f: h[f] for f in places[int(cursor):end] if f in h}
 
     # ── lists ────────────────────────────────────────────────
     def _list(self, key: str) -> list:
