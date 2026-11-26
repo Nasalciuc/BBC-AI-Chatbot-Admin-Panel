@@ -1181,8 +1181,12 @@ async def _answer_these(r, found: list[str], unreadable: dict[str, str]) -> None
         if state == "done":
             if kept.get("by", "gateway") == "api":
                 raise StillAnswering()  # the recovery sends its replies: this one comes after them
-            # Answered through the gateway already: only its place in the inbox was left.
-            await _release_event(k, _who(earlier))
+            # Answered through the gateway already: only its place in the inbox was left, let go of only while no send
+            # of its replies is written down. Its delivery gave them to the gateway between the look at its send above
+            # and this claim: it stays, and this one waits for the gateway's send of them.
+            if not await _release_unsent(r, k, _who(earlier)):
+                MESSENGER_HEALTH["still_answering"] += 1
+                raise StillAnswering()
             continue
         token = str(kept.get("token") or "")
         try:
@@ -2059,6 +2063,20 @@ redis.call('del', KEYS[3], KEYS[4])
 return 1
 """
 
+# An event answered with nothing of its own left to send (the gateway's answer: its replies sent the other way, or
+# none), let go of the same way (KEYS[1..4], member ARGV[1]) only while no send of its replies is written down
+# (KEYS[5]: no gateway's right, no mark of the API's): 1; 0 when one is (its replies given to the gateway after its
+# send was looked at, or a send begun since): it stays, its send looked at again (on its way, or over).
+RELEASE_UNSENT_LUA = """
+if redis.call('exists', KEYS[5]) == 1 then
+  return 0
+end
+redis.call('zrem', KEYS[1], ARGV[1])
+redis.call('zrem', KEYS[2], ARGV[1])
+redis.call('del', KEYS[3], KEYS[4])
+return 1
+"""
+
 
 async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") -> Optional[bool]:
     """A kept event whose replies a send has had ("done": over, or the gateway's right to send them read as over;
@@ -2091,6 +2109,22 @@ async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") 
         logger.warning("[messenger] a kept event's replies were being sent when their process stopped: maybe with the "
                        "person, never sent again")
     return True
+
+
+async def _release_unsent(r, k: str, who: Optional[str]) -> bool:
+    """A kept event answered with nothing of its own left to send (the gateway's answer: sent the other way, or none)
+    out of the inbox, only while no send of its replies is written down, in one step (RELEASE_UNSENT_LUA): True once
+    it is let go of; False when one is (its delivery gave its replies to the gateway after its send was looked at, or
+    a send began since): it stays, and its person's later events wait for that send. Redis failing raises (rule 7:
+    never taken for either)."""
+    try:
+        return bool(await r.eval(RELEASE_UNSENT_LUA, 5, INBOX, who or f"{INBOX}:who:", f"{INBOX}:{k}",
+                                 f"{INBOX}:tries:{k}", _sending_key(k), k))
+    except Exception as e:
+        redis_failed("messenger inbox", e)
+        logger.warning(f"[messenger] an answered event not taken out of the inbox (looked at again): "
+                       f"{type(e).__name__}: {e}")
+        raise
 
 
 # A person's events kept before this one (ARGV[1]), oldest first, in one step: those whose place among the person's
@@ -2703,7 +2737,14 @@ async def _recover_one(r, k: str, waiting: set[str]) -> str:
             MESSENGER_HEALTH["recover_waiting"] += 1
             waiting.add(who)
             return "waiting"
-    await _release_event(k, who)
+        await _release_event(k, who)
+    elif not await _release_unsent(r, k, who):
+        # Nothing of its own to send (the gateway's answer, or none), and a send of its replies written down since
+        # its send was looked at above (its delivery gave them to the gateway meanwhile): it stays until that send is
+        # over (looked at again next minute), and its person's later events wait behind it.
+        MESSENGER_HEALTH["recover_waiting"] += 1
+        waiting.add(who)
+        return "waiting"
     MESSENGER_HEALTH["recovered"] += 1
     return "answered"
 

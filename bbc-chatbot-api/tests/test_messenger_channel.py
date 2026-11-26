@@ -192,6 +192,19 @@ def release_on_mark(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def release_unsent(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.RELEASE_UNSENT_LUA does."""
+    inbox, who, event_json, tries, sending_key = keys
+    k = args[0]
+    if fake._alive(sending_key):
+        return 0
+    fake._zset(inbox).pop(k, None)
+    fake._zset(who).pop(k, None)
+    fake.kv.pop(event_json, None)
+    fake.kv.pop(tries, None)
+    return 1
+
+
 def give_again(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.GIVE_AGAIN_LUA does."""
     sending_key, inbox, last_key = keys
@@ -235,6 +248,7 @@ def redis():
     r.register(mc.REKEEP_LUA, rekeep)
     r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
     r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
+    r.register(mc.RELEASE_UNSENT_LUA, release_unsent)
     r.register(mc.GIVE_AGAIN_LUA, give_again)
     redis_client.set_client_for_tests(r)
     with patch("config.settings.settings.redis_url", "redis://fake"):
@@ -4098,6 +4112,83 @@ async def test_a_later_message_waits_while_the_gateway_is_sending_an_earlier_one
         out = await mc.run_messenger_recover()
     assert out["answered"] == 2 and gw.sent == ["About: Second"] and not redis.kv[mc.INBOX]
     assert len(chat.requests) == 4, "two failed turns, then one turn each"
+
+
+def _given_after_the_look(redis, monkeypatch, *, replies: bool) -> None:
+    """The first's delivery from the gateway ends right after its send was looked at (none written then): its
+    answer kept as the gateway's, with the right to send its replies taken in the same step (GIVE_TO_GATEWAY_LUA), or,
+    with no replies, its answer alone (_remember)."""
+    real = mc._send_state_of
+    once = {"on": True}
+
+    async def look(r, k):
+        out = await real(r, k)
+        if k == "m1" and out[0] == "none" and once["on"]:
+            once["on"] = False
+            given = [{"text": "About: First"}] if replies else []
+            redis.kv["msgr:event:m1"] = json.dumps({"replies": given, "by": "gateway"})
+            if replies:
+                redis.kv[mc._sending_key("m1")] = f"gateway:{time.time()}:d1"
+        return out
+
+    monkeypatch.setattr(mc, "_send_state_of", look)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replies", [True, False], ids=["given_to_the_gateway", "none_to_send"])
+async def test_an_earlier_event_given_to_the_gateway_after_its_send_was_looked_at_keeps_the_later_one_waiting(
+        chat, redis, monkeypatch, replies):
+    """CodeRabbit #288: the person's first and second messages failed (both kept). The gateway delivers the second
+    again while its delivery of the first ends: the first's send looked at (none), then its replies given to the
+    gateway, then its claim read (answered, the gateway's). The first is let go of only while no send of its replies
+    is written down, in one step: the gateway's right there, it stays and the second waits (409), its turn never run
+    while the gateway may still be sending the first's; once that send is over, the first is let go of, never sent by
+    the API, and the second goes. Rule 5: an answer with nothing to send lets the first go at once, and the second
+    goes."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    _given_after_the_look(redis, monkeypatch, replies=replies)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        if replies:
+            with pytest.raises(mc.StillAnswering):
+                await mc.handle(event(mid="m2", text="Second", timestamp=200))
+            assert set(redis.kv[mc.INBOX]) == {"m1", "m2"} and len(chat.requests) == 2, "the second's turn never ran"
+            assert "msgr:event:m2" not in redis.kv
+            monkeypatch.setattr(mc, "GATEWAY_SENDING_S", -1.0)  # the gateway's send of the first's over
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert [r["text"] for r in out["replies"]] == ["About: Second"] and gw.sent == []
+    assert "m1" not in redis.kv[mc.INBOX] and len(chat.requests) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replies", [True, False], ids=["given_to_the_gateway", "none_to_send"])
+async def test_the_recovery_lets_go_of_an_event_the_gateway_answered_only_while_no_send_of_it_is_written_down(
+        chat, redis, monkeypatch, replies):
+    """CodeRabbit #288: the same, met by the recovery: its handle of the first reads the gateway's answer and gets no
+    replies to send. The first is let go of only while no send of its replies is written down: the gateway's right
+    there, it waits, and the second behind it, the API sending nothing of the second while the gateway may still be
+    sending the first's. Rule 5: an answer with nothing to send lets the first go, and the second is answered and sent
+    in the same pass."""
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    monkeypatch.setattr(mc, "RECOVER_AFTER_S", -1)  # both old enough for the recovery
+    _given_after_the_look(redis, monkeypatch, replies=replies)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.run_messenger_recover()
+        if replies:
+            assert out["waiting"] == 2 and gw.sent == [] and set(redis.kv[mc.INBOX]) == {"m1", "m2"}
+            assert len(chat.requests) == 2, "nothing of the second while the gateway may be sending the first's"
+            monkeypatch.setattr(mc, "GATEWAY_SENDING_S", -1.0)  # the gateway's send of the first's over
+            out = await mc.run_messenger_recover()
+    assert out["answered"] == 2 and gw.sent == ["About: Second"] and not redis.kv[mc.INBOX]
 
 
 async def _given_with_a_later_one_waiting(chat, redis) -> None:
