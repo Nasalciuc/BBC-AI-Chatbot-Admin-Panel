@@ -29,3 +29,24 @@ async def test_a_scan_begun_beside_another_never_moves_the_places_it_is_on():
     await r.hset("h", "e2", "c")
     assert await _whole_scan(r, "h") == {"e1": "b", "e2": "c"}
     assert await _whole_scan(r, "h", cursor_a, part_a) == {"e0": "a", "e1": "b", "e2": "c"}
+
+
+@pytest.mark.asyncio
+async def test_a_hash_made_again_after_it_expired_is_scanned_from_places_of_its_own():
+    """CodeRabbit #288: a hash that expired is no key at all, and the one made again under its name has none of its
+    places: its first part is its own first field, not an empty place left by a field of the hash before it. Rule 5:
+    in a hash still there, a field deleted keeps its place empty, and the places after it do not move."""
+    from tests.fake_redis import FakeClock
+
+    r = FakeRedis()
+    r.clock = FakeClock()
+    await r.hset("h", mapping={"e0": "a", "e1": "b", "e2": "c"})
+    assert await _whole_scan(r, "h") == {"e0": "a", "e1": "b", "e2": "c"}
+    await r.expire("h", 10)
+    r.clock.advance(11)
+    await r.hset("h", "x", "d")
+    assert await r.hscan("h", cursor=0, count=1) == (0, {"x": "d"})
+    await r.hset("h", "y", "e")
+    await r.hdel("h", "x")
+    assert await r.hscan("h", cursor=0, count=1) == (1, {})
+    assert await r.hscan("h", cursor=1, count=1) == (0, {"y": "e"})

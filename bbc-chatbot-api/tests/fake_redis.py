@@ -54,8 +54,10 @@ class FakeRedis:
     def _alive(self, key: str) -> bool:
         exp = self.expires.get(key)
         if exp is not None and self.clock() >= exp:
+            # An expired key is none at all: a hash made again under its name walks places of its own.
             self.kv.pop(key, None)
             self.expires.pop(key, None)
+            self._places.pop(key, None)
         return key in self.kv
 
     def _set_expiry(self, key: str, px: Optional[int] = None, ex: Optional[int] = None) -> None:
