@@ -9,7 +9,13 @@
 name: tests
 
 on:
+  # master on push (what was merged); a pull request through pull_request only. Both on every branch ran each job
+  # twice for one push to a pull request's branch: the two events have different refs (refs/heads/<branch> and
+  # refs/pull/<n>/merge), so the concurrency group below never folded them. The required checks (backend, admin,
+  # widget) come from the pull_request run, under the same names. A branch pushed with no pull request gets no run:
+  # open a draft pull request for one.
   push:
+    branches: [master]
   pull_request:
 
 # A second push to the same branch makes the first run pointless.
