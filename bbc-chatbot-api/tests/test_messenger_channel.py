@@ -98,6 +98,29 @@ def last_taken(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def earlier(fake: FakeRedis, keys: list, args: list) -> list:
+    """What messenger_channel.EARLIER_LUA does."""
+    inbox, who, last_key = keys
+    k, ex, besides = args[0], int(args[1]), set(args[2:])
+    mine = fake._zset(inbox).get(k)
+    out = []
+    for m, s in sorted(fake._zset(who).items(), key=lambda t: (t[1], t[0])):
+        if mine is not None and s >= mine:
+            break
+        if m == k or m in besides:
+            continue
+        if m in fake._zset(inbox):
+            out.append(m)
+        else:
+            fake._zset(who).pop(m, None)  # gone: only its place was left
+    if not out:
+        now = fake.wall()
+        if now > float(fake.kv.get(last_key) or 0 if fake._alive(last_key) else 0):
+            fake.kv[last_key] = repr(now)
+        fake._set_expiry(last_key, ex=ex)
+    return out
+
+
 def take(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.TAKE_LUA does."""
     inbox, who = keys
@@ -202,6 +225,7 @@ def redis():
     r.register(mc.GIVE_TO_GATEWAY_LUA, give_to_gateway)
     r.register(mc.LAST_TAKEN_LUA, last_taken)
     r.register(mc.TAKE_LUA, take)
+    r.register(mc.EARLIER_LUA, earlier)
     r.register(mc.REKEEP_LUA, rekeep)
     r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
     r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
@@ -3064,6 +3088,92 @@ async def test_a_take_read_before_a_send_began_and_written_after_it_still_stops_
                             mc.INBOX_KEEP_S, f"{at['t']}:process-a")
     assert back == -1, "never sent after a take written after its send began"
     assert "m1" not in redis.kv[mc.INBOX]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("put_back", ["after_the_later_one_passed", "before_it_looked"])
+async def test_a_later_event_that_passed_an_earlier_one_is_never_overtaken_by_its_late_send(chat, redis, monkeypatch,
+                                                                                            put_back):
+    """CodeRabbit #288: the person's second message is taken before process A's send of their first begins, and its
+    look for earlier events comes only after B let the first go (its process stalled in between). The look and the
+    second's passing are one step (EARLIER_LUA): the first gone, the second goes on, its passing the person's latest
+    take, so A's late send of the first, put back after it, finds it passed (-1, late_dropped) and never sends the
+    first's replies after the second's. Rule 5: the first put back before the second looks, the second waits behind
+    that late send (409), then goes after it."""
+    import asyncio
+
+    await _fail_once(chat, redis)
+    _turns(chat)
+    reply = "About: Hi, two seats to Istanbul in December?"
+    second = event(mid="m2", text="Second", timestamp=200)
+    sending, go_on = asyncio.Event(), asyncio.Event()
+    answers = [{"sent": 0, "failed": {"kind": "gateway"}}]
+    sent: list = []
+
+    async def gw(page_id, psid, messages, tag=None):
+        sent.append(messages[0]["text"])
+        if len(sent) == 2 and put_back == "before_it_looked":  # A's late send, on its way
+            sending.set()
+            await go_on.wait()
+        return answers.pop(0) if answers else {"sent": 1}
+
+    def become(boot, knows):
+        monkeypatch.setattr(mc, "BOOT", boot)
+        mc._UNSENT.clear()
+        mc._UNSENT.update(knows)
+
+    real_found = mc._earlier_kept
+    at_look, look = asyncio.Event(), asyncio.Event()
+    stall = {"on": True}
+
+    async def stalled(r, ev, *a):
+        if ev.mid == "m2" and stall["on"]:
+            stall["on"] = False
+            at_look.set()
+            await look.wait()  # the second's process stalls between its take and its look
+        return await real_found(r, ev, *a)
+
+    monkeypatch.setattr(mc, "_earlier_kept", stalled)
+    sending_s = mc.SENDING_S
+    with patch.object(mc, "send", new=gw):
+        become("process-b", {})
+        b = asyncio.create_task(mc.handle(second))  # taken now, before A's send of the first begins
+        await asyncio.wait_for(at_look.wait(), 1)
+        blinks = _blink_send_marks(redis, monkeypatch)
+        become("process-a", {})
+        assert (await mc.run_messenger_recover())["waiting"] == 1, "A's send of the first sent nothing"
+        monkeypatch.setattr(mc, "SENDING_S", -1.0)
+        a_knows = mc._UNSENT.copy()
+        redis.kv.pop("msgr:alive:process-a")  # A cut off from Redis past ALIVE_S
+        blinks["on"] = False
+        become("process-b", {})
+        await mc.run_messenger_recover()
+        assert "m1" not in redis.kv[mc.INBOX] and "m2" in redis.kv[mc.INBOX], "B let the first go"
+        monkeypatch.setattr(mc, "SENDING_S", sending_s)
+        if put_back == "after_the_later_one_passed":
+            look.set()
+            out = await asyncio.wait_for(b, 1)
+            assert [r["text"] for r in out["replies"]] == ["About: Second"]
+            become("process-a", a_knows)  # A reaches Redis again
+            await mc.run_messenger_recover()
+            assert sent == [reply], "never sent after the second's"
+            assert mc.MESSENGER_HEALTH["late_dropped"] == 1 and mc.MESSENGER_HEALTH["sent_late"] == 0
+            assert "m1" not in redis.kv[mc.INBOX]
+            return
+        become("process-a", a_knows)  # A reaches Redis again: the first put back, its late send on its way
+        late = asyncio.create_task(mc.run_messenger_recover())
+        await asyncio.wait_for(sending.wait(), 1)
+        become("process-b", {})
+        look.set()
+        try:
+            with pytest.raises(mc.StillAnswering):
+                await asyncio.wait_for(b, 1)  # behind the first's late send
+        finally:
+            go_on.set()
+        await asyncio.wait_for(late, 2)
+        out = await mc.handle(second)
+    assert sent == [reply, reply] and [r["text"] for r in out["replies"]] == ["About: Second"], "in order"
+    assert mc.MESSENGER_HEALTH["sent_late"] == 1 and "m1" not in redis.kv[mc.INBOX]
 
 
 @pytest.mark.asyncio

@@ -1114,6 +1114,12 @@ async def _later_kept(event: InboundEvent) -> Optional[bool]:
     return False
 
 
+# Rounds of a person's earlier events one event answers, or lets go of, before its own turn (_answer_earlier): each
+# round lets go of those it answered, so the next one finds none left, or one put back meanwhile (a late send of its
+# replies), behind which this one then waits.
+EARLIER_ROUNDS = 3
+
+
 async def _answer_earlier(event: InboundEvent) -> None:
     """The person's events taken before this one and not answered yet (in the inbox: their turn failed), answered
     now, oldest first, and their replies sent through the gateway before this one's turn (as the recovery sends
@@ -1122,15 +1128,34 @@ async def _answer_earlier(event: InboundEvent) -> None:
     this one waits (StillAnswering: the gateway tries again in a moment). One that fails again: this one fails too,
     and waits in the inbox behind it.
 
+    This one goes on only once one step finds none of them left and marks its passing (EARLIER_LUA): an earlier one
+    put back for a late send of its replies before that step makes this one wait behind it; one put back after it
+    finds this one passed (REKEEP_LUA: -1), and its replies are never sent after this one's.
+
     This one is in the inbox: Redis answered a moment ago. A cooldown since (another call's failure, process wide)
     never reads as "nothing earlier": they are looked up all the same, and Redis failing raises (this one fails, kept,
     and is delivered again)."""
     r = get_redis(even_cooling_down=True)
     if r is None:
         raise RuntimeError("redis not there to look up the person's earlier events")
-    for k in await _earlier_kept(r, event):
+    unreadable: set[str] = set()
+    for _ in range(EARLIER_ROUNDS):
+        found = await _earlier_kept(r, event, unreadable)
+        if not found:
+            return
+        await _answer_these(r, found, unreadable)
+    MESSENGER_HEALTH["still_answering"] += 1
+    raise StillAnswering()  # earlier ones still there: the gateway tries again in a moment
+
+
+async def _answer_these(r, found: list[str], unreadable: set[str]) -> None:
+    """One round of _answer_earlier: each of `found` (oldest first) answered and its replies sent, or let go of, or
+    this one made to wait (StillAnswering) or to fail behind it. One unreadable is left to the recovery to give up
+    (put in `unreadable`: never waited for)."""
+    for k in found:
         earlier = await _kept_event(r, k)
         if earlier is None:
+            unreadable.add(k)
             continue  # unreadable: the recovery gives it up
         sending, mark = await _send_state_of(r, k)
         if sending == "on_its_way":
@@ -2021,27 +2046,60 @@ async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") 
     return True
 
 
-async def _earlier_kept(r, event: InboundEvent) -> list[str]:
-    """The keys of this person's events taken before this one and not answered yet, oldest first: a place among the
-    person's lower than this one's, never the same (two takes never get one, TAKE_LUA; one found with it is not taken
-    for an earlier one, so two events never each answer the other first). Redis failing raises (logged): the event
+# A person's events kept before this one (ARGV[1]), oldest first, in one step: those whose place among the person's
+# (KEYS[2]) is lower than this one's in the inbox (KEYS[1]; every one when this one is not there), never the same one
+# (two takes never get it, TAKE_LUA; one found with it is never earlier, so two events never each answer the other
+# first), each still in the inbox, besides those in ARGV[3..] (unreadable: left to the recovery). A place whose event
+# is gone (answered, given up) is dropped in the same step, so a putting back (REKEEP_LUA) never lands between the look
+# and the drop. None left: this one's passing marked as the person's latest take (KEYS[3]), now on Redis's clock, for
+# ARGV[2] seconds, so an earlier one put back after this for a late send of its replies finds it (-1).
+EARLIER_LUA = """
+local mine = redis.call('zscore', KEYS[1], ARGV[1])
+mine = mine and tonumber(mine) or nil
+local besides = {}
+for i = 3, #ARGV do
+  besides[ARGV[i]] = true
+end
+local out = {}
+local places = redis.call('zrange', KEYS[2], 0, -1, 'WITHSCORES')
+for i = 1, #places, 2 do
+  local m, s = places[i], tonumber(places[i + 1])
+  if mine ~= nil and s >= mine then
+    break
+  end
+  if m ~= ARGV[1] and not besides[m] then
+    if redis.call('zscore', KEYS[1], m) then
+      out[#out + 1] = m
+    else
+      redis.call('zrem', KEYS[2], m)
+    end
+  end
+end
+if #out == 0 then
+  local t = redis.call('TIME')
+  local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+  if now > tonumber(redis.call('get', KEYS[3]) or '0') then
+    redis.call('set', KEYS[3], now, 'EX', ARGV[2])
+  else
+    redis.call('expire', KEYS[3], ARGV[2])
+  end
+end
+return out
+"""
+
+
+async def _earlier_kept(r, event: InboundEvent, unreadable: Optional[set[str]] = None) -> list[str]:
+    """The keys of this person's events taken before this one and not answered yet, oldest first, besides the
+    `unreadable` ones; none left, this one's passing marked (EARLIER_LUA). Redis failing raises (logged): the event
     fails and is delivered again, never answered past an earlier one it could not look up."""
-    k, who = event.key(), _who(event)
-    out: list[str] = []
     try:
-        mine = await r.zscore(INBOX, k)
-        for m, place in await r.zrangebyscore(who, "-inf", "+inf" if mine is None else mine, withscores=True):
-            if m == k or (mine is not None and place >= mine):
-                continue
-            if await r.zscore(INBOX, m) is None:
-                await r.zrem(who, m)  # answered or given up: only its place here was left
-                continue
-            out.append(m)
+        found = await r.eval(EARLIER_LUA, 3, INBOX, _who(event), _last_key(event), event.key(), INBOX_KEEP_S,
+                             *sorted(unreadable or ()))
     except Exception as e:
         redis_failed("messenger inbox", e)
         logger.warning(f"[messenger] a person's earlier events not looked up: {type(e).__name__}: {e}")
         raise
-    return out
+    return [str(m) for m in (found or [])]
 
 
 async def _kept_event(r, k: str) -> Optional[InboundEvent]:
