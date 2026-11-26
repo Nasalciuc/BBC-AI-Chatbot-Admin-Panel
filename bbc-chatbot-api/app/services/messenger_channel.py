@@ -1410,11 +1410,32 @@ end
 return 1
 """
 
+# The event's place in the inbox (KEYS[1]) and among its person's (KEYS[2]), member ARGV[1]: the one it has when it is
+# there already (a delivery made again, the recovery's), or its take's time (ARGV[2]), made a microsecond later than
+# the person's latest one there when that one has the same time or a later one. Two takes of the person's that read
+# the same microsecond of Redis's clock still have an order, the one whose take ran first before the other: an event
+# is never taken for an earlier one of an event taken before it (_earlier_kept).
+TAKE_LUA = """
+local s = redis.call('zscore', KEYS[1], ARGV[1])
+if not s then
+  s = tonumber(ARGV[2])
+  local last = redis.call('zrange', KEYS[2], -1, -1, 'WITHSCORES')
+  if last[2] and tonumber(last[2]) >= s then
+    s = tonumber(last[2]) + 0.000001
+  end
+  redis.call('zadd', KEYS[1], s, ARGV[1])
+end
+redis.call('zadd', KEYS[2], s, ARGV[1])
+redis.call('expire', KEYS[2], ARGV[3])
+return 1
+"""
+
 
 async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
-    """The event in the inbox until it is answered, and among its person's there, by when it was first taken: True
-    once it is there; False when Redis could not take it (counted: one that fails then is not answered later). With
-    `client` given (the recovery's: the event is in the inbox already), Redis failing raises."""
+    """The event in the inbox until it is answered, and among its person's there, by when it was first taken (in the
+    order the takes ran, TAKE_LUA): True once it is there; False when Redis could not take it (counted: one that fails
+    then is not answered later). With `client` given (the recovery's: the event is in the inbox already), Redis
+    failing raises."""
     r = client if client is not None else get_redis()
     if r is None:
         MESSENGER_HEALTH["not_kept"] += 1
@@ -1427,12 +1448,7 @@ async def _keep_event(event: InboundEvent, client: Any = None) -> bool:
         # First, so an event taken is never one a late send of an earlier one's replies could pass (_send_late).
         await r.eval(LAST_TAKEN_LUA, 1, _last_key(event), repr(now), INBOX_KEEP_S)
         await r.set(f"{INBOX}:{k}", event.model_dump_json(), ex=INBOX_KEEP_S)
-        taken = await r.zscore(INBOX, k)
-        if taken is None:
-            taken = now
-            await r.zadd(INBOX, {k: taken})
-        await r.zadd(_who(event), {k: taken})
-        await r.expire(_who(event), INBOX_KEEP_S)
+        await r.eval(TAKE_LUA, 2, INBOX, _who(event), k, repr(now), INBOX_KEEP_S)
         return True
     except Exception as e:
         redis_failed("messenger inbox", e)
@@ -1962,15 +1978,16 @@ async def _send_ended(k: str, who: Optional[str], sending: str, mark: str = "") 
 
 
 async def _earlier_kept(r, event: InboundEvent) -> list[str]:
-    """The keys of this person's events taken before this one and not answered yet, oldest first. Redis failing
-    raises (logged): the event fails and is delivered again, never answered past an earlier one it could not look
-    up."""
+    """The keys of this person's events taken before this one and not answered yet, oldest first: a place among the
+    person's lower than this one's, never the same (two takes never get one, TAKE_LUA; one found with it is not taken
+    for an earlier one, so two events never each answer the other first). Redis failing raises (logged): the event
+    fails and is delivered again, never answered past an earlier one it could not look up."""
     k, who = event.key(), _who(event)
     out: list[str] = []
     try:
         mine = await r.zscore(INBOX, k)
-        for m in await r.zrangebyscore(who, "-inf", "+inf" if mine is None else mine):
-            if m == k:
+        for m, place in await r.zrangebyscore(who, "-inf", "+inf" if mine is None else mine, withscores=True):
+            if m == k or (mine is not None and place >= mine):
                 continue
             if await r.zscore(INBOX, m) is None:
                 await r.zrem(who, m)  # answered or given up: only its place here was left

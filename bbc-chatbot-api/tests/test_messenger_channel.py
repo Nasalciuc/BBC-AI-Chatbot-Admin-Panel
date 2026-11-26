@@ -97,6 +97,22 @@ def last_taken(fake: FakeRedis, keys: list, args: list) -> int:
     return 1
 
 
+def take(fake: FakeRedis, keys: list, args: list) -> int:
+    """What messenger_channel.TAKE_LUA does."""
+    inbox, who = keys
+    k, at, ex = args[0], float(args[1]), int(args[2])
+    place = fake._zset(inbox).get(k)
+    if place is None:
+        place = at
+        last = max(fake._zset(who).values(), default=None)
+        if last is not None and last >= place:
+            place = last + 0.000001  # a microsecond after the person's latest: taken after it
+        fake._zset(inbox)[k] = place
+    fake._zset(who)[k] = place
+    fake._set_expiry(who, ex=ex)
+    return 1
+
+
 def rekeep(fake: FakeRedis, keys: list, args: list) -> int:
     """What messenger_channel.REKEEP_LUA does."""
     sending_key, last_key, inbox, who, event_key = keys
@@ -184,6 +200,7 @@ def redis():
     r.register(mc.KEEP_ANSWER_LUA, compare_or_absent_and_set)
     r.register(mc.GIVE_TO_GATEWAY_LUA, give_to_gateway)
     r.register(mc.LAST_TAKEN_LUA, last_taken)
+    r.register(mc.TAKE_LUA, take)
     r.register(mc.REKEEP_LUA, rekeep)
     r.register(mc.CLEAR_UNSENT_LUA, clear_unsent)
     r.register(mc.RELEASE_ON_MARK_LUA, release_on_mark)
@@ -3517,6 +3534,37 @@ async def test_a_later_message_never_comes_before_an_earlier_one_whose_turn_fail
     assert gw.sent == ["About: First"]
     # Rule 5: another person's message does not wait for this person's.
     assert (await mc.handle(event(mid="q1", psid="PSID-8", text="Hello")))["replies"] == [{"text": "About: Hello"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("takes", ["in_the_same_microsecond", "a_moment_apart"])
+async def test_two_takes_that_read_the_same_microsecond_keep_the_order_they_ran_in(chat, redis, takes):
+    """CodeRabbit #288: the person's first and second messages both failed (kept), their takes reading the same
+    microsecond of Redis's clock. The gateway delivers the first again: the second, taken after it, is never taken for
+    an earlier one of the first's, so its turn is never answered before the first's (TAKE_LUA: its place a microsecond
+    after the first's). Rule 5: takes a moment apart on the clock itself, the same."""
+    at = {"t": 1_800_000_000.5}
+    redis.wall = lambda: at["t"]  # Redis's clock stands still between the two takes
+    _turns(chat, fail_first=2)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+    if takes == "a_moment_apart":
+        at["t"] += 0.00001
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m2", text="Second", timestamp=200))  # the first answered before it, failed again
+    turn, turns = chat.answer, []
+
+    async def watched(req, add_message):
+        turns.append(req.message)
+        return await turn(req, add_message)
+
+    chat.answer = watched
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        out = await mc.handle(event(mid="m1", text="First"))  # the gateway's, again
+    assert turns == ["First"] and gw.sent == [], "the second's turn never answered before the first's"
+    assert [r["text"] for r in out["replies"]] == ["About: First"]
+    assert redis.kv[mc.INBOX]["m1"] < redis.kv[mc.INBOX]["m2"], "the second's place after the first's"
 
 
 @pytest.mark.asyncio
