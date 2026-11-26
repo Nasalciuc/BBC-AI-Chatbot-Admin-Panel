@@ -694,12 +694,16 @@ async def _answer_earlier(event: InboundEvent) -> None:
     them), so this one never comes before them and none of theirs is lost if this one fails. One being answered
     elsewhere, or answered with its replies still to send (the gateway could not be reached, or a send is on its way):
     this one waits (StillAnswering: the gateway tries again in a moment). One that fails again: this one fails too,
-    and waits in the inbox behind it."""
-    r = get_redis()
+    and waits in the inbox behind it.
+
+    This one is in the inbox: Redis answered a moment ago. A cooldown since (another call's failure, process wide)
+    never reads as "nothing earlier": they are looked up all the same, and Redis failing raises (this one fails, kept,
+    and is delivered again)."""
+    r = get_redis(even_cooling_down=True)
     if r is None:
-        return
-    for k in await _earlier_kept(event):
-        earlier = await _kept_event(k)
+        raise RuntimeError("redis not there to look up the person's earlier events")
+    for k in await _earlier_kept(r, event):
+        earlier = await _kept_event(r, k)
         if earlier is None:
             continue  # unreadable: the recovery gives it up
         sending = await _send_state(r, k)
@@ -710,7 +714,7 @@ async def _answer_earlier(event: InboundEvent) -> None:
             await _send_ended(k, _who(earlier), sending)
             continue
         key = f"msgr:event:{k}"
-        state, kept = await _claim(key)
+        state, kept = await _claim(key, r)
         if state == "pending":
             MESSENGER_HEALTH["still_answering"] += 1
             raise StillAnswering()
@@ -735,10 +739,11 @@ async def _answer_earlier(event: InboundEvent) -> None:
         await _release_event(k, _who(earlier))
 
 
-async def _claim(key: str) -> tuple[str, dict]:
+async def _claim(key: str, client: Any = None) -> tuple[str, dict]:
     """("new", {}) for an event not seen, ("pending", {}) while it is being answered, ("done", {"replies", "by"})
-    after."""
-    r = get_redis()
+    after. With Redis down an event is answered without its mark (counted); with `client` given (a person's earlier
+    event, answered for a later one that is kept), Redis failing raises: never answered without its mark."""
+    r = client if client is not None else get_redis()
     if r is None:
         MESSENGER_HEALTH["no_dedupe"] += 1
         return "new", {}
@@ -750,6 +755,9 @@ async def _claim(key: str) -> tuple[str, dict]:
         raw = await r.get(key)
     except Exception as e:
         redis_failed("messenger dedupe", e)
+        if client is not None:
+            logger.warning(f"[messenger] an earlier event's mark not read: {type(e).__name__}: {e}")
+            raise
         MESSENGER_HEALTH["no_dedupe"] += 1
         logger.warning(f"[messenger] an event answered without its dedupe: {type(e).__name__}: {e}")
         return "new", {}
@@ -767,8 +775,13 @@ async def _claim(key: str) -> tuple[str, dict]:
     return "done", kept if isinstance(kept, dict) else {"replies": [], "by": "gateway"}
 
 
+# What an event's mark and its place in the inbox say once it was answered is written through a cooldown too
+# (another call's failure, process wide, while Redis may answer): skipped, the event would stay in the inbox marked
+# for no one, and the recovery would answer it, and send its replies, a second time. Redis down, each fails (logged).
+
+
 async def _remember(key: str, replies: list, by: str) -> None:
-    r = get_redis()
+    r = get_redis(even_cooling_down=True)
     if r is None:
         return
     try:
@@ -779,7 +792,7 @@ async def _remember(key: str, replies: list, by: str) -> None:
 
 
 async def _forget(key: str) -> None:
-    r = get_redis()
+    r = get_redis(even_cooling_down=True)
     if r is None:
         return
     try:
@@ -820,7 +833,7 @@ async def _keep_event(event: InboundEvent) -> bool:
 
 async def _release_event(k: str, who: Optional[str] = None) -> None:
     """Out of the inbox, and out of its person's there when they are known: answered (or given up)."""
-    r = get_redis()
+    r = get_redis(even_cooling_down=True)
     if r is None:
         return
     try:
@@ -890,13 +903,10 @@ async def _send_ended(k: str, who: Optional[str], sending: str) -> None:
     await _release_event(k, who)
 
 
-async def _earlier_kept(event: InboundEvent) -> list[str]:
+async def _earlier_kept(r, event: InboundEvent) -> list[str]:
     """The keys of this person's events taken before this one and not answered yet, oldest first. Redis failing
     raises (logged): the event fails and is delivered again, never answered past an earlier one it could not look
     up."""
-    r = get_redis()
-    if r is None:
-        return []
     k, who = event.key(), _who(event)
     out: list[str] = []
     try:
@@ -915,12 +925,9 @@ async def _earlier_kept(event: InboundEvent) -> list[str]:
     return out
 
 
-async def _kept_event(k: str) -> Optional[InboundEvent]:
+async def _kept_event(r, k: str) -> Optional[InboundEvent]:
     """An event kept in the inbox, as the gateway handed it over; None when it is gone, or there and unreadable
     (logged: the recovery gives it up). Redis failing raises (logged): one not read is never taken for one gone."""
-    r = get_redis()
-    if r is None:
-        return None
     try:
         raw = await r.get(f"{INBOX}:{k}")
     except Exception as e:

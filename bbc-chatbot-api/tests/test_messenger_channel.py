@@ -1278,6 +1278,78 @@ async def test_an_earlier_event_that_could_not_be_read_keeps_the_later_one_behin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["kept", "found", "down"])
+async def test_a_cooldown_after_the_later_event_is_kept_never_lets_it_past_an_earlier_one(chat, redis, monkeypatch,
+                                                                                         when):
+    """CodeRabbit #288: another call's failure starts Redis's cooldown (process wide) right after m2 is kept, or right
+    after m1 is found before it: m1 is still answered and sent first, then m2 (the inbox looked at all the same), and
+    both are written done. Rule 5: Redis really failing then, m2 fails, kept, its turn not run."""
+    _turns(chat, fail_first=1)
+    with pytest.raises(mc.EventFailed):
+        await mc.handle(event(mid="m1", text="First"))
+
+    def cool():
+        if when == "down":
+            redis.down = True
+        else:
+            redis_client.redis_failed("another call", ConnectionError("reset by peer"))
+
+    real_keep, real_found = mc._keep_event, mc._earlier_kept
+
+    async def kept_then(ev):
+        out = await real_keep(ev)
+        if ev.mid == "m2" and when in ("kept", "down"):
+            cool()
+        return out
+
+    async def found_then(*a):
+        out = await real_found(*a)
+        if when == "found":
+            cool()
+        return out
+
+    monkeypatch.setattr(mc, "_keep_event", kept_then)
+    monkeypatch.setattr(mc, "_earlier_kept", found_then)
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        if when == "down":
+            with pytest.raises(mc.EventFailed) as failed:
+                await mc.handle(event(mid="m2", text="Second", timestamp=200))
+            assert failed.value.kept and gw.sent == [] and not [r for r in chat.rows if r["content"] == "Second"]
+            return
+        out = await mc.handle(event(mid="m2", text="Second", timestamp=200))
+    assert redis_client.get_redis() is None, "the cooldown is on"
+    assert gw.sent == ["About: First"] and [r["text"] for r in out["replies"]] == ["About: Second"]
+    assert [(r["role"], r["content"]) for r in chat.rows] == [
+        ("user", "First"), ("ai", "About: First"), ("user", "Second"), ("ai", "About: Second")]
+    assert not redis.kv[mc.INBOX] and json.loads(redis.kv["msgr:event:m2"])["by"] == "gateway"
+
+
+@pytest.mark.asyncio
+async def test_an_event_answered_in_a_cooldown_is_never_answered_again_by_the_recovery(chat, redis):
+    """A cooldown begun during the turn (another call's failure, process wide, while Redis answers): the event's mark
+    and its place in the inbox are written all the same, so the recovery finds nothing left and never sends the person
+    a second answer."""
+    async def turn(req, add_message):
+        redis_client.redis_failed("another call", ConnectionError("reset by peer"))
+        await add_message(req.conversation_id, "user", req.message)
+        row = await add_message(req.conversation_id, "ai", f"About: {req.message}")
+        return ChatResponse(conversation_id=req.conversation_id, message=row["content"], type="ai", model_used="x")
+
+    chat.answer = turn
+    out = await mc.handle(event())
+    assert not redis.kv[mc.INBOX]
+    assert json.loads(redis.kv["msgr:event:m1"]) == {"replies": out["replies"], "by": "gateway"}
+    redis_client.set_client_for_tests(redis)  # the cooldown over
+    gw = Gateway([])
+    with patch.object(mc, "send", new=gw):
+        assert (await mc.run_messenger_recover())["answered"] == 0
+        # Delivered again by the gateway: the same replies, no second turn.
+        assert (await mc.handle(event()))["replies"] == out["replies"]
+    assert gw.sent == [] and len(chat.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_earlier_answer_is_sent_even_when_the_later_turn_then_fails(chat, redis):
     """CodeRabbit #288: m1 answered on m2's delivery, then m2's own turn fails. m1's replies went out before m2's
     turn, once, and are never lost with m2's failure; m2, delivered again, gets its own."""
