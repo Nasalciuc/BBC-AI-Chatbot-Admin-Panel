@@ -75,7 +75,7 @@ test('one window, one event: the run ends when it goes or the page is hidden, an
   assert.match(w, /if \(!shown\(open\.el\)\) finish\(closeHow\(open\.run\.gesture, now\), now\)\s*return/)
   assert.match(w, /onHidden = \(\) => \{\s*if \(document\.visibilityState !== 'visible' && open\) finish\('page_hidden'/)
   // A quote form in the page itself is no window: only a dialog, a floating box with the ×, or something fixed.
-  assert.match(w, /if \(el\.querySelector\(CLOSE\)\) return floating\(el\) \? el : null/)
+  assert.match(w, /if \(el\.querySelector\(CLOSE\)\) return floating\(el\) \? \{ el, box: el \} : null/)
   assert.match(w, /const CLOSE = '\[data-qd-close\]'/)
 })
 
@@ -137,4 +137,27 @@ test('the registry keeps the window left and the quiet as short words, and when 
   assert.match(awayToken(T, T + 61_000), /^[a-z][a-z_]{0,31}(:[a-z0-9_]{1,24}){0,2}$/)
   const v = src('visits.ts')
   assert.match(v, /events = addEvent\(events, awayToken\(pageStart, now\)\)\s*sendLast\(\)/)
+})
+
+test('a full-screen dialog holds its backdrop: a press outside the box with the form is on it (CodeRabbit #291)', () => {
+  const w = src('quoteWindow.ts')
+  // The dialog wrapper, and the box in it: the one with the ×, else the part that holds the form; a panel-sized dialog
+  // is the box itself.
+  assert.match(w, /if \(modal\) return \{ el: modal, box: boxOf\(form, modal\) \}/)
+  assert.match(w, /if \(!coversScreen\(w\)\) return w/)
+  // Outside the window, or inside it but outside the box, by the pointer's place; a click the keyboard made is nowhere.
+  assert.match(w, /else if \(!inOpen\(e\.target\) \|\| outside\(e, open\.box\)\) gesture\('backdrop'\)/)
+  assert.match(w, /if \(!\(e instanceof MouseEvent\) \|\| \(e\.type === 'click' && e\.detail === 0\)\) return false/)
+})
+
+test('a window a send went out of stays sent when the tab comes back to it (CodeRabbit #291)', () => {
+  const w = src('quoteWindow.ts')
+  // Hidden with a send gone out: the same window, still shown when the tab is back, is the same run's.
+  assert.match(w, /if \(how === 'page_hidden' && o\.run\.sent\) sentHidden = o\.el/)
+  assert.match(w, /if \(sentHidden && !shown\(sentHidden\)\) sentHidden = null/)
+  assert.match(w, /open = \{ \.\.\.w, run: \{ \.\.\.newRun\(now\), sent: w\.el === sentHidden \} \}/)
+  // The message that takes no branch: a window that was not sent starts unsent, also the same one shown again.
+  assert.deepEqual(newRun(T).sent, false)
+  assert.ok(closedFromRun({ ...newRun(T), sent: false }, 'close_button', T + 1000))
+  assert.equal(closedFromRun({ ...newRun(T), sent: true }, 'close_button', T + 1000), null)
 })

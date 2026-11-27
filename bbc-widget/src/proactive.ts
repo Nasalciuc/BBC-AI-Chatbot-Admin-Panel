@@ -1111,7 +1111,9 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       // The second chance is the row beside a refused form, never any other moment (triggers.ts rowMoment); so is test
       // 1's form-only round, for a visitor the test runs for (its row, `after_card`).
       if ((rowOnly || formOnly) && !rowMoment(trigger, quote)) return
-      if (formOnly && !formLeftArm()) return
+      // Read again at every tick, not only at the run's start: the off arm's "no" spends the visit's chance (FORM_KEY
+      // 'used'), and an answer on its way holds it ('asked'), so the row is never asked twice (CodeRabbit #291).
+      if (formOnly && (!formLeftArm() || !formLeftOpenNow())) return
       // E1: no card over a popup of the site; it comes once the popup closes (the quote moment looks past the
       // quote form's own modal).
       const pressedForm = press?.form ?? null

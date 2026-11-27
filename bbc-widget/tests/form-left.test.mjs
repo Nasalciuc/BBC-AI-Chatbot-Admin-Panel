@@ -36,7 +36,8 @@ test('the arm is the server’s word on /chat/live: three arms, anything else no
   noteFormLeftArm(undefined)
   assert.equal(formLeftArm(), null)
   assert.deepEqual(formLeftProps(), {})
-  assert.match(src('live.ts'), /if \(res\.ok\) noteFormLeftArm\(cfg\.form_left\)/)
+  // Only for the visitor it was asked for: an id changed meanwhile keeps its own (CodeRabbit #291).
+  assert.match(src('live.ts'), /if \(res\.ok && ensureVisitorId\(\) === visitorId\) noteFormLeftArm\(cfg\.form_left\)/)
   // Every PostHog event carries it, as the agent-first test's side.
   assert.match(src('posthog.ts'), /\{ \.\.\.agentTestProps\(\), \.\.\.formLeftProps\(\), \.\.\.properties \}/)
 })
@@ -104,7 +105,9 @@ test('the form-only round: a used moment, the pause or the closed note leave tes
   // Once a visit (its own key) and once in 24 h.
   assert.match(hook, /function formLeftOpenNow\(\): boolean \{\s+return !ssGet\(FORM_KEY\) && formLeftCapOpen\(\)\s+\}/)
   // In that round only the row beside a refused form may come, for a visitor the test runs for, asked as after_card.
-  assert.match(hook, /if \(\(rowOnly \|\| formOnly\) && !rowMoment\(trigger, quote\)\) return\n\s+if \(formOnly && !formLeftArm\(\)\) return/)
+  // Read at every tick: after the off arm's "no" (FORM_KEY 'used') or with an answer on its way ('asked'), never again
+  // (CodeRabbit #291: the off arm was asked once a second while the row's moment held).
+  assert.match(hook, /if \(\(rowOnly \|\| formOnly\) && !rowMoment\(trigger, quote\)\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(formOnly && \(!formLeftArm\(\) \|\| !formLeftOpenNow\(\)\)\) return/)
   assert.match(hook, /const afterCard = formOnly && trigger === 'quote'/)
   assert.match(hook, /\.\.\.\(afterCard \? \{ after_card: true \} : \{\}\),\n\s+\}, OFFER_TIMEOUT_MS/)
 })

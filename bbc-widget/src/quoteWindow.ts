@@ -38,15 +38,17 @@ function floating(el: Element): boolean {
   return false
 }
 
-/** The window a quote form sits in, or null for a form in the page itself. */
-function windowOf(form: HTMLFormElement): Element | null {
+/** The window a quote form sits in, and the box in it that holds the form (boxOf), or null for a form in the page
+ *  itself. */
+function windowOf(form: HTMLFormElement): { el: Element; box: Element } | null {
   const modal = form.closest(MODAL)
-  if (modal) return modal
+  if (modal) return { el: modal, box: boxOf(form, modal) }
   for (let el = form.parentElement; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
     // The box that holds the window's own ×, when it floats over the page; a page section that happens to hold the
-    // modal's × somewhere inside it does not float, and is no window.
-    if (el.querySelector(CLOSE)) return floating(el) ? el : null
-    if (fixed(el)) return el
+    // modal's × somewhere inside it does not float, and is no window. That box is the window's panel itself.
+    if (el.querySelector(CLOSE)) return floating(el) ? { el, box: el } : null
+    // Something fixed over the page may cover the whole screen and hold its backdrop too, as a dialog may.
+    if (fixed(el)) return { el, box: boxOf(form, el) }
   }
   return null
 }
@@ -63,16 +65,51 @@ function shown(el: Element): boolean {
   }
 }
 
-/** The quote window open on the page now, or null. */
-function openWindow(): Element | null {
+/** `el` covers (nearly) the whole screen, as a backdrop does. */
+function coversScreen(el: Element): boolean {
+  try {
+    const r = el.getBoundingClientRect()
+    return r.width >= window.innerWidth * 0.9 && r.height >= window.innerHeight * 0.9
+  } catch {
+    return false
+  }
+}
+
+/** The box inside the window that holds the form: the nearest one that also holds the window's ×, else the window's
+ *  own part that holds the form. A dialog that covers the whole screen holds its backdrop too (CodeRabbit #291): a
+ *  press inside the dialog but outside this box is on the backdrop. The window itself when nothing narrower holds it. */
+function boxOf(form: HTMLFormElement, w: Element): Element {
+  // A dialog the size of a panel is the panel: only one that covers the screen holds a backdrop of its own.
+  if (!coversScreen(w)) return w
+  let part: Element = form
+  for (let el = form.parentElement; el && el !== w; el = el.parentElement) {
+    if (el.querySelector(CLOSE)) return el
+    part = el
+  }
+  return part
+}
+
+/** The quote window open on the page now (and the box in it that holds the form), or null. */
+function openWindow(): { el: Element; box: Element } | null {
   try {
     for (const form of Array.from(document.querySelectorAll('form'))) {
       if (form.closest('#bbc-widget-root') || !quoteForm(form)) continue
       const w = windowOf(form)
-      if (w && shown(w)) return w
+      if (w && shown(w.el)) return w
     }
   } catch { /* a page it cannot read has no window */ }
   return null
+}
+
+/** A press outside `box`, by where the pointer was: a click the keyboard made (no pointer, `detail` 0) is nowhere. */
+function outside(e: Event, box: Element): boolean {
+  if (!(e instanceof MouseEvent) || (e.type === 'click' && e.detail === 0)) return false
+  try {
+    const r = box.getBoundingClientRect()
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom
+  } catch {
+    return false
+  }
 }
 
 type Listener = (c: QuoteWindowClosed) => void
@@ -94,12 +131,17 @@ export function lastQuoteWindowClosed(): QuoteWindowClosed | null {
 /** Starts watching (once per page; a second call starts over). */
 export function startQuoteWindow(): void {
   stopQuoteWindow()
-  let open: { el: Element; run: WindowRun } | null = null
+  let open: { el: Element; box: Element; run: WindowRun } | null = null
+  // A window a send went out of, when the page was hidden with it still open (CodeRabbit #291): back in view, the same
+  // window still shown is the same run's, so it stays sent and its close is no window left. Forgotten once it is no
+  // longer shown: the next time it shows, it is a new quote.
+  let sentHidden: Element | null = null
 
   const finish = (how: CloseHow, at: number) => {
     const o = open
     open = null
     if (!o) return
+    if (how === 'page_hidden' && o.run.sent) sentHidden = o.el
     const c = closedFromRun(o.run, how, at)
     if (!c) return
     last = c
@@ -115,8 +157,9 @@ export function startQuoteWindow(): void {
       return
     }
     if (document.visibilityState !== 'visible') return
-    const el = openWindow()
-    if (el) open = { el, run: newRun(now) }
+    if (sentHidden && !shown(sentHidden)) sentHidden = null
+    const w = openWindow()
+    if (w) open = { ...w, run: { ...newRun(now), sent: w.el === sentHidden } }
   }
   const inOpen = (t: EventTarget | null) => !!open && t instanceof Node && open.el.contains(t)
   const inWidget = (t: EventTarget | null) => t instanceof Element && !!t.closest('#bbc-widget-root')
@@ -128,7 +171,7 @@ export function startQuoteWindow(): void {
     if (!open || inWidget(e.target)) return
     const el = e.target instanceof Element ? e.target : null
     if (el && inOpen(el) && el.closest(CLOSE)) gesture('close_button')
-    else if (!inOpen(e.target)) gesture('backdrop')
+    else if (!inOpen(e.target) || outside(e, open.box)) gesture('backdrop')
   }
   const onKey = (e: KeyboardEvent) => { if (open && e.key === 'Escape') gesture('escape') }
   const onFocus = (e: Event) => { if (open && inOpen(e.target) && isField(e.target)) open.run = { ...open.run, focused: true } }
