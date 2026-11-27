@@ -18,7 +18,7 @@ import { getUtm } from './utm'
 import { noteVisit } from './visitCount'
 import { offCapture, onCapture } from './visitTap'
 import {
-  MAX_STEPS, addEvent, afterSent, cardAfter, cardConfirmed, cardStillOn, cardToKeep, eventToken, keptCardFor,
+  MAX_STEPS, addEvent, afterSent, awayToken, cardAfter, cardConfirmed, cardStillOn, cardToKeep, eventToken, keptCardFor,
   newPageId, readSentMark, snapshotTimer, visitBody, whenRegistryOn, type SentMark, type VisitCard,
 } from './visitsRead'
 
@@ -197,11 +197,18 @@ export function startVisits({ apiUrl, site }: { apiUrl: string; site: string }):
     } else {
       if (seenFrom !== null) seenMs += now - seenFrom
       seenFrom = null
+      // When the page went out of view, among its events (awayToken), before the snapshot that carries them.
+      events = addEvent(events, awayToken(pageStart, now))
       sendLast()
     }
   }
   const onPageHide = () => {
-    if (seenFrom !== null) seenMs += Date.now() - seenFrom
+    const now = Date.now()
+    // Still in view when it went (no visibilitychange came first): that moment is the page's away too.
+    if (seenFrom !== null) {
+      seenMs += now - seenFrom
+      events = addEvent(events, awayToken(pageStart, now))
+    }
     seenFrom = null
     sendLast()
   }

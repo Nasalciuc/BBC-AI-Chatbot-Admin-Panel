@@ -78,6 +78,7 @@
  *
  * Pure: proactive.ts measures the page and asks; this decides (node-testable).
  */
+import type { CloseHow } from './quoteWindowRead'
 
 /** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
 export type Trigger = 'kayak' | 'ads' | 'social' | 'quote' | 'reader' | 'exit'
@@ -386,6 +387,66 @@ export function keysOnSite(active: Element | null): boolean {
 export function pauseRunning(pauseUntil: string | null, nowMs: number): boolean {
   const until = Number(pauseUntil)
   return Number.isFinite(until) && until > nowMs
+}
+
+/** Why the moments do not start on a page at all (proactive_quiet, test 1 step 1; "Testul 1", 27 Nov): every reason
+ *  that holds, not only the first `return` — so the visitors no card could reach are counted by cause. `hasChat`: a
+ *  conversation exists (Widget's `allowed` is false); `tabUsed`: this visit's moment was used (proactive.ts DONE_KEY);
+ *  `pause`: the 24 h after "Not now" or ✕; `noteClosed`: the 10 s note closed with ✕. The row's second chance
+ *  (`rowOnly`, rowAgainOpen) comes over a conversation and a used moment: only the pause and the note hold it. */
+export type QuietReason = 'chat' | 'tab_used' | 'pause' | 'note_closed'
+
+export function quietReasons(s: {
+  hasChat: boolean; tabUsed: boolean; pause: boolean; noteClosed: boolean; rowOnly: boolean
+}): QuietReason[] {
+  const out: QuietReason[] = []
+  if (!s.rowOnly && s.hasChat) out.push('chat')
+  if (!s.rowOnly && s.tabUsed) out.push('tab_used')
+  if (s.pause) out.push('pause')
+  if (s.noteClosed) out.push('note_closed')
+  return out
+}
+
+/** Why the form_left moment would not come after a quote window was left (proactive_quiet with `scope: form_left`):
+ *  every reason that holds. Counted from step 1, before the moment exists, so `quote_window_closed` less these is who
+ *  the card could reach.
+ *    unmounted / page_hidden  the window went without the visitor closing it, or with the page out of view
+ *    not_in_view              the page is out of view now
+ *    site_popup               a popup of the site covers the page (E1)
+ *    typing                   a keystroke in a field of the site in the last TYPING_QUIET_S
+ *    chat_open                the chat panel is open
+ *    chat                     a conversation exists (a chat already open stops it, as the plan says)
+ *    already_used             the moment came in this visit, or to this visitor in the last 24 h
+ *    no_visitor_id            no visitor id: no arm, so no card (the server's rule too)
+ *  No `submitting` (a window a send went out of is no window left) and no `arm_off` (the arm is the server's, on
+ *  proactive_eligible as for every moment). */
+export type FormLeftReason =
+  | 'unmounted' | 'page_hidden' | 'not_in_view' | 'site_popup' | 'typing' | 'chat_open' | 'chat' | 'already_used'
+  | 'no_visitor_id'
+
+export interface FormLeftCheck {
+  how: CloseHow
+  pageVisible: boolean
+  sitePopup: boolean
+  /** Seconds since the visitor last typed in a field of the site (not the chat), or null. */
+  sinceSiteTypingS: number | null
+  chatOpen: boolean
+  hasChat: boolean
+  alreadyUsed: boolean
+  visitorId: boolean
+}
+
+export function formLeftBlocks(c: FormLeftCheck): FormLeftReason[] {
+  const out: FormLeftReason[] = []
+  if (c.how === 'unmounted' || c.how === 'page_hidden') out.push(c.how)
+  if (!c.pageVisible && c.how !== 'page_hidden') out.push('not_in_view')
+  if (c.sitePopup) out.push('site_popup')
+  if (c.sinceSiteTypingS !== null && c.sinceSiteTypingS < TYPING_QUIET_S) out.push('typing')
+  if (c.chatOpen) out.push('chat_open')
+  if (c.hasChat) out.push('chat')
+  if (c.alreadyUsed) out.push('already_used')
+  if (!c.visitorId) out.push('no_visitor_id')
+  return out
 }
 
 /** "Not now" closes the card or the panel and never reaches the server (the server's reply lists end

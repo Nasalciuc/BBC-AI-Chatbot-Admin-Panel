@@ -7,6 +7,7 @@ import { setTurnstileSiteKey } from './turnstile'
 import { TRANSCRIPT_EXPORT_V0, preconnect } from './api'
 import { exposeRoutes } from './page-globals'
 import { startPostHog } from './posthog'
+import { startQuoteWindow, stopQuoteWindow } from './quoteWindow'
 import { startSiteSignals, stopSiteSignals } from './siteSignals'
 import { noteVisit } from './visitCount'
 import { startVisits } from './visits'
@@ -61,6 +62,9 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
   // The visit registry (visits.ts): this page's snapshots, from its start, when the API says the registry is on.
   // Never in the CRM's embedded chat: that is an agent's screen, not a visit.
   const stopVisits = embedded ? null : startVisits({ apiUrl, site: brand.id })
+  // The site's quote window left without a send (quoteWindow.ts, test 1): after the site's signals, whose events it
+  // reads. Never in the CRM's chat either.
+  if (!embedded) startQuoteWindow()
 
   // The widget's stylesheet (src/styles.ts): scoped to #bbc-widget-root, with its own reset.
   if (!document.getElementById('bbc-widget-css')) {
@@ -128,6 +132,8 @@ if ((window as any).__BBC_WIDGET_LOADED__) {
       stopSiteSignals()
       // The registry's timers, listeners and capture tap go with the widget (CodeRabbit #282, round 3).
       stopVisits?.()
+      // The quote window's watch too (quoteWindow.ts).
+      stopQuoteWindow()
       ;(window as any).__BBC_WIDGET_TEARDOWN__ = undefined
       ;(window as any).__BBC_WIDGET_LOADED__ = false
     }

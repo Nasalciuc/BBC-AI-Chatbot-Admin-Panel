@@ -24,7 +24,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexWaitLeftMs, holdAlex, noteAlexAnswer, noteAlexShown, noteSide } from './agentTest'
 import {
-  ensureVisitorId, fetchProactiveOffer, offerMeasures, type ContactTestSide, type OfferConfirm, type OfferTiming,
+  ensureVisitorId, fetchProactiveOffer, getVisitorId, offerMeasures, type ContactTestSide, type OfferConfirm,
+  type OfferTiming,
 } from './api'
 import { rowField, type ChannelKind, type ChatButton, type RowField } from './channel'
 import brand from './config'
@@ -32,6 +33,7 @@ import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { cardAsideWatch, watchPopups } from './overlay'
 import { posthog, posthogSessionEntry } from './posthog'
+import { onQuoteWindowClosed, quoteForm } from './quoteWindow'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
   withKinds, type FieldKind, type SiteEvent,
@@ -39,12 +41,13 @@ import {
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
-  adKeyword, adVisit, blockedPath, givesMomentBack, givesRowBack, inViewBeforeStartMs, keywordNamesPlace, offAfter, pauseRunning,
-  pickTrigger, readOff, rowAgainOpen, rowMoment,
+  adKeyword, adVisit, blockedPath, formLeftBlocks, givesMomentBack, givesRowBack, inViewBeforeStartMs, keywordNamesPlace,
+  offAfter, pauseRunning, pickTrigger, quietReasons, readOff, rowAgainOpen, rowMoment,
   quoteClick, readingMoment, replyKind, socialVisit, worksOnPressedForm, type OpeningTrigger, type PageState,
   type QuoteState, type Trigger,
 } from './triggers'
 import { getUtm, namesWhereFrom, sourceToAdd } from './utm'
+import { isReturning } from './visitCount'
 
 /** Where the opening shows: a card above the button (phones), the panel (computers), or the row beside the
  *  site's refused quote form (D1, ADR-4a). */
@@ -313,13 +316,8 @@ function scriptTiming(): { script_req_s?: number; script_dl_ms?: number } {
   }
 }
 
-/** A form the site asks for a quote with: form.qf on buybusinessclass.com, or one labelled as a quote. */
-export function quoteForm(el: Element | null): HTMLFormElement | null {
-  const form = el?.closest('form') as HTMLFormElement | null
-  if (!form) return null
-  if (form.classList.contains('qf')) return form
-  return /quote|offer/i.test(form.getAttribute('aria-label') || '') ? form : null
-}
+// A form the site asks for a quote with (form.qf, or one labelled as a quote): the quote window's watch reads the same.
+export { quoteForm }
 
 /** Calls `onWork(at)` each time the visitor works on the site's quote form on this page, pressed or not:
  *  a keystroke, focus, change or click inside it (not in the widget), or the site saying so (bbc-signals,
@@ -417,10 +415,15 @@ export interface Proactive {
   aside: boolean
 }
 
-export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored = null }: {
+/** proactive_quiet for the moments of this page (quietReasons): once a page, however often the hook runs again. */
+let pageQuietSent = false
+
+export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored = null, embedded = false }: {
   apiUrl: string
   step: string
   allowed: boolean
+  /** The CRM's iframe: an agent's screen, no visit, so nothing is measured (the moments never come there either). */
+  embedded?: boolean
   /** The row's second chance may come on this page (triggers.ts rowAgainOpen), also for a visitor with a conversation
    *  (`allowed` is false then: the card's chat they left without a contact is that conversation). Never in the CRM's
    *  iframe. */
@@ -442,6 +445,46 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
   const engagedRef = useRef(false)
   const stepRef = useRef(step)
   stepRef.current = step
+  const allowedRef = useRef(allowed)
+  allowedRef.current = allowed
+
+  // proactive_quiet with `scope: form_left` (test 1, step 1): after each quote window left (quoteWindow.ts), every
+  // reason the form_left moment would not come (triggers.ts formLeftBlocks). Nothing when none holds: those are the
+  // visitors the card can reach (quote_window_closed less these). Typing counts outside the quote form only: a visitor
+  // who typed in the window and closed it is one who left it.
+  useEffect(() => {
+    if (embedded) return
+    let typedAt: number | null = null
+    const onType = (e: Event) => {
+      const t = e.target
+      if (!(t instanceof HTMLElement) || t.closest('#bbc-widget-root') || quoteForm(t)) return
+      if (t.matches('input, textarea, select') || t.isContentEditable) typedAt = Date.now()
+    }
+    const cap: AddEventListenerOptions = { capture: true, passive: true }
+    document.addEventListener('keydown', onType, cap)
+    document.addEventListener('input', onType, cap)
+    const off = onQuoteWindowClosed((c) => {
+      const now = Date.now()
+      const reasons = formLeftBlocks({
+        how: c.how,
+        pageVisible: document.visibilityState === 'visible',
+        sitePopup: pagePopups.open(),
+        sinceSiteTypingS: typedAt === null ? null : (now - typedAt) / 1000,
+        chatOpen: stepRef.current !== 'buttons',
+        hasChat: !allowedRef.current,
+        alreadyUsed: false,
+        visitorId: !!getVisitorId(),
+      })
+      if (reasons.length) {
+        posthog?.capture('proactive_quiet', { scope: 'form_left', reasons, returning: isReturning(), site: brand.id })
+      }
+    })
+    return () => {
+      off()
+      document.removeEventListener('keydown', onType, cap)
+      document.removeEventListener('input', onType, cap)
+    }
+  }, [embedded])
 
   // The visitor opened the chat themselves (the corner button) before any moment: not this visit. A moment only
   // asked for ('asked': its answer still on its way) gives way to it, as to the site's stop below, so an answer
@@ -502,8 +545,19 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     // (triggers.ts rowAgainOpen): this run then watches for that moment alone, also over a conversation the visitor
     // has (the card's chat they left without a contact).
     const rowOnly = rowAgain && rowAgainNow()
-    if (!rowOnly && (!allowed || ssGet(DONE_KEY))) return
-    if (ssGet(NOTE_CLOSED_KEY) || pauseRunning(lsGet(PAUSE_KEY), Date.now())) return
+    // Every reason the moments don't start on this page, gathered before the first one returns (proactive_quiet,
+    // test 1 step 1): the visitors no card could reach, by cause. Once a page.
+    const quiet = quietReasons({
+      hasChat: !allowed, tabUsed: !!ssGet(DONE_KEY), pause: pauseRunning(lsGet(PAUSE_KEY), Date.now()),
+      noteClosed: !!ssGet(NOTE_CLOSED_KEY), rowOnly,
+    })
+    if (quiet.length) {
+      if (!embedded && !pageQuietSent) {
+        pageQuietSent = true
+        posthog?.capture('proactive_quiet', { reasons: quiet, returning: isReturning(), site: brand.id })
+      }
+      return
+    }
 
     let disposed = false
     let fired = false

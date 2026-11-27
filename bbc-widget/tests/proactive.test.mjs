@@ -760,8 +760,10 @@ test('the connection to the API opens when the widget starts, once, as the anony
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
   // One moment per visit, and the row's second chance alone after a card that brought no contact (rowAgainOpen,
   // after-card.test.mjs): the pause and the closed note hold both.
-  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowOnly = rowAgain && rowAgainNow\(\)\n\s+if \(!rowOnly && \(!allowed \|\| ssGet\(DONE_KEY\)\)\) return\n\s+if \(ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
-  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,\s+\}\)/)
+  // Every reason is gathered before the one return (proactive_quiet, test 1; triggers.ts quietReasons, which holds the
+  // rules: a conversation and a used moment hold all but the row's second chance, the pause and the note hold both).
+  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowOnly = rowAgain && rowAgainNow\(\)\n(?:\s*\/\/[^\n]*\n)*\s+const quiet = quietReasons\(\{\s+hasChat: !allowed, tabUsed: !!ssGet\(DONE_KEY\), pause: pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\),\s+noteClosed: !!ssGet\(NOTE_CLOSED_KEY\), rowOnly,\s+\}\)\n\s+if \(quiet\.length\) \{[\s\S]*?\n\s+return\n\s+\}/)
+  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening, embedded,\s+\}\)/)
   assert.match(buttons, /onClick=\{\(\) => \{ markNoteClosed\(\); onDismissAttention\?\.\(\) \}\}/)
   // The card replaces the note for the rest of the visit.
   assert.match(widget, /showAttention=\{showAttention && !sessionActive && !proactive\.quiet\}/)
@@ -991,8 +993,9 @@ test('few messages sit by the buttons and the composer, never under an empty ban
 test('the site goes with the offer and with every proactive event, so BBC and BCT are never mixed', () => {
   const captures = hook.match(/posthog\?\.capture\('proactive_[a-z_]+', \{[\s\S]*?\}\)/g) || []
   // The five of the moments, the note's proactive_shown and proactive_note_unanswered, the popup the card waited
-  // for (E1), and the pill after "Not now" (C2): shown, closed, opened.
-  assert.equal(captures.length, 11)
+  // for (E1), the pill after "Not now" (C2): shown, closed, opened, and the two quiets of test 1 (the page's moments,
+  // and the form_left moment after a window left).
+  assert.equal(captures.length, 13)
   for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
   assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
 })

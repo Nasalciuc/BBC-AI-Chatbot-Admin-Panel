@@ -27,6 +27,10 @@ export const VISIT_EVENTS: Readonly<Record<string, readonly string[]>> = {
   proactive_popup_held: ['popup_held'],
   proactive_note_unanswered: ['note_unanswered'],
   proactive_quote_unrecognized: ['quote_unrecognized'],
+  // Test 1 (27 Nov): the quote window left without a send, and why the moments did not start (`scope`: form_left
+  // after a window left; none for the page's moments).
+  quote_window_closed: ['quote_left', 'how'],
+  proactive_quiet: ['quiet', 'scope'],
   live_hello_shown: ['hello', 'where'],
   live_hello_replied: ['hello_yes', 'where'],
   live_hello_dismissed: ['hello_no', 'where'],
@@ -60,6 +64,13 @@ export function eventToken(event: string, props: Record<string, unknown> | undef
     parts.push(s)
   }
   return parts.join(':')
+}
+
+/** The page went out of view `nowMs - pageStartMs` after it loaded (test 1, 27 Nov): "away:<seconds>", so the registry
+ *  shows whether the visitor left the tab before or after their contact. Whole seconds, at most a day. */
+export function awayToken(pageStartMs: number, nowMs: number): string {
+  const s = Math.max(0, Math.min(86_400, Math.round((nowMs - pageStartMs) / 1000)))
+  return `away:${Number.isFinite(s) ? s : 0}`
 }
 
 /** The page's events with one more: the same one again counts ("chat_msg*3"), at most MAX_EVENTS. */
