@@ -50,6 +50,7 @@ import {
 } from './triggers'
 import { getUtm, namesWhereFrom, sourceToAdd } from './utm'
 import { isReturning } from './visitCount'
+import { visitGet, visitSet } from './visitGuard'
 
 /** Where the opening shows: a card above the button (phones), the panel (computers), or the row beside the
  *  site's refused quote form (D1, ADR-4a). */
@@ -149,8 +150,10 @@ const PILL_CLOSED_KEY = 'bbc_pill_closed'
 const PHONE = '(max-width: 767px)'
 const QUOTE_TEXT = /get (?:a )?free quote/i
 
-function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
-function ssSet(k: string, v: string) { try { sessionStorage.setItem(k, v) } catch { /* storage off: the guard lives in memory only */ } }
+// The visit's guards: sessionStorage, with this page's memory beneath it when the browser refuses storage
+// (visitGuard.ts), so a guard written here holds for the rest of the page (CodeRabbit #291).
+function ssGet(k: string): string | null { return visitGet(k) }
+function ssSet(k: string, v: string) { visitSet(k, v) }
 function lsGet(k: string): string | null { try { return localStorage.getItem(k) } catch { return null } }
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v) } catch { /* storage off */ } }
 function lsRemove(k: string) { try { localStorage.removeItem(k) } catch { /* storage off */ } }

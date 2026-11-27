@@ -151,3 +151,46 @@ test('the card shows the server’s buttons; "Yes, chat now" goes as the wait bu
   assert.match(chat, /sendMessage\(first, o\.firstButton \? \{ button: o\.firstButton \} : yesOptions\(o, first\)\)/)
   assert.match(chat, /if \(o\.trigger === 'form_left' && o\.buttons\?\.length\) \{/)
 })
+
+test('with sessionStorage refused, the visit’s guards hold on the page: the off arm’s "no" is not asked again (CodeRabbit #291)', async () => {
+  const { visitGet, visitSet, resetVisitGuardForTests } = await import('../src/visitGuard.ts')
+  const FORM_KEY = 'bbc_proactive_form'
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  const use = (s) => Object.defineProperty(globalThis, 'sessionStorage', {
+    configurable: true,
+    get: () => { if (s === 'refused') throw new Error('SecurityError'); return s },
+  })
+  try {
+    // Refused outright (site data blocked): the off arm's answer writes 'used', and formLeftOpenNow reads it back.
+    use('refused')
+    resetVisitGuardForTests()
+    assert.equal(visitGet(FORM_KEY), null)
+    visitSet(FORM_KEY, 'used')
+    assert.equal(visitGet(FORM_KEY), 'used')
+    // Readable but not writable (a private window's quota): the page's memory still answers.
+    const store = new Map()
+    use({ getItem: (k) => store.get(k) ?? null, setItem: () => { throw new Error('QuotaExceededError') } })
+    resetVisitGuardForTests()
+    visitSet(FORM_KEY, 'asked')
+    assert.equal(visitGet(FORM_KEY), 'asked')
+    // Writable again: the browser keeps it, and the page's memory gives way (an answer freed as '' is free).
+    use({ getItem: (k) => store.get(k) ?? null, setItem: (k, v) => { store.set(k, String(v)) } })
+    visitSet(FORM_KEY, '')
+    assert.equal(store.get(FORM_KEY), '')
+    assert.equal(visitGet(FORM_KEY), '')
+    // The message that takes no branch: storage that works keeps the guard itself, the page's memory stays empty.
+    resetVisitGuardForTests()
+    visitSet(FORM_KEY, 'shown')
+    assert.equal(store.get(FORM_KEY), 'shown')
+    store.delete(FORM_KEY)
+    assert.equal(visitGet(FORM_KEY), null)
+  } finally {
+    if (had) Object.defineProperty(globalThis, 'sessionStorage', had)
+    else delete globalThis.sessionStorage
+    resetVisitGuardForTests()
+  }
+  // Every guard of the hook goes through it, the form-only round's among them.
+  assert.match(hook, /function ssGet\(k: string\): string \| null \{ return visitGet\(k\) \}/)
+  assert.match(hook, /function ssSet\(k: string, v: string\) \{ visitSet\(k, v\) \}/)
+  assert.doesNotMatch(hook, /sessionStorage\.(getItem|setItem|removeItem)/)
+})
