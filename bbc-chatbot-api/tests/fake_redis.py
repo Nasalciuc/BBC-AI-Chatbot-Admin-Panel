@@ -3,21 +3,45 @@
 Strings with NX/PX/EX and expiry, sets, sorted sets, hashes, lists, counters, pipelines and the
 Lua scripts the app sends (matched by text, never run). `down = True` makes every call
 raise ConnectionError, as a Redis that does not answer would. A test whose code sends a
-script the fake does not know fails loudly instead of passing on a guess.
+script the fake does not know fails loudly instead of passing on a guess. Expiries run on
+`clock` (time.monotonic), or on a test's own FakeClock: a lease then runs out only when the
+test moves the clock, however slow the machine.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+
+class FakeClock:
+    """A clock that moves only when told (FakeRedis.clock): advance(seconds)."""
+
+    def __init__(self, start: Optional[float] = None) -> None:
+        self.now = time.monotonic() if start is None else start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeRedis:
     def __init__(self) -> None:
         self.kv: dict[str, Any] = {}
         self.expires: dict[str, float] = {}
+        self.clock: Callable[[], float] = time.monotonic
+        # What TIME answers: Redis's own wall clock, the one its callers read alike whatever their own clocks say (a
+        # test sets its own, beside the clocks it gives its processes).
+        self.wall: Callable[[], float] = time.time
         self.down = False
+        # HSCAN's COUNT is a hint: Redis gives a small hash whole in one part, whatever the COUNT. True does that.
+        self.scan_whole = False
+        # Each hash's fields in the places HSCAN walks, kept for the hash's life (a field deleted leaves its place
+        # empty, as a bucket in Redis): no scan's parts ever move, whatever went since, or which scans began beside it.
+        self._places: dict[str, list[str]] = {}
         self.calls: list[str] = []
         self.scripts: dict[str, Any] = {}  # script text -> python function(keys, args)
 
@@ -29,22 +53,31 @@ class FakeRedis:
 
     def _alive(self, key: str) -> bool:
         exp = self.expires.get(key)
-        if exp is not None and time.monotonic() >= exp:
+        if exp is not None and self.clock() >= exp:
+            # An expired key is none at all: a hash made again under its name walks places of its own.
             self.kv.pop(key, None)
             self.expires.pop(key, None)
+            self._places.pop(key, None)
         return key in self.kv
 
     def _set_expiry(self, key: str, px: Optional[int] = None, ex: Optional[int] = None) -> None:
         if px is not None:
-            self.expires[key] = time.monotonic() + px / 1000.0
+            self.expires[key] = self.clock() + px / 1000.0
         elif ex is not None:
-            self.expires[key] = time.monotonic() + ex
+            self.expires[key] = self.clock() + ex
         else:
             self.expires.pop(key, None)
 
     def register(self, script: str, fn) -> None:
         """Teach the fake what a script does: fn(fake, keys, args) -> result."""
         self.scripts[script] = fn
+
+    async def time(self) -> tuple[int, int]:
+        """TIME, as redis-py gives it: (seconds, microseconds) on Redis's own clock (`wall`)."""
+        self._check("time")
+        now = self.wall()
+        seconds = int(now)
+        return seconds, int((now - seconds) * 1_000_000)
 
     # ── strings ──────────────────────────────────────────────
     async def set(self, key: str, value: Any, nx: bool = False, xx: bool = False,
@@ -65,6 +98,7 @@ class FakeRedis:
         self._check("delete")
         n = 0
         for k in keys:
+            self._places.pop(k, None)
             if self._alive(k):
                 self.kv.pop(k, None)
                 self.expires.pop(k, None)
@@ -94,7 +128,7 @@ class FakeRedis:
         if not self._alive(key):
             return -2
         exp = self.expires.get(key)
-        return -1 if exp is None else max(0, int(exp - time.monotonic()))
+        return -1 if exp is None else max(0, int(exp - self.clock()))
 
     async def incr(self, key: str, amount: int = 1) -> int:
         self._check("incr")
@@ -229,6 +263,36 @@ class FakeRedis:
         self._check("hget")
         return self.kv[key].get(field) if self._alive(key) else None
 
+    async def hdel(self, key: str, *fields: str) -> int:
+        self._check("hdel")
+        if not self._alive(key):
+            return 0
+        n = sum(1 for f in fields if self.kv[key].pop(str(f), None) is not None)
+        if not self.kv[key]:
+            # As Redis: a hash with no field left is no key at all (and no expiry).
+            self.kv.pop(key, None)
+            self.expires.pop(key, None)
+            self._places.pop(key, None)
+        return n
+
+    async def hscan(self, key: str, cursor: int = 0, match: Optional[str] = None,
+                    count: Optional[int] = None) -> tuple[int, dict[str, str]]:
+        """A part of the hash from `cursor` (here a place among its fields', which a field deleted leaves empty and
+        never moves), `count` places (all of them with scan_whole), and where the next part starts (0: none left).
+        As in Redis, a whole scan gives every field there from its start to its end, whatever went meanwhile and
+        whatever other scans began beside it: a scan from 0 moves no place another scan is on."""
+        self._check("hscan")
+        if not self._alive(key):
+            self._places.pop(key, None)
+            return 0, {}
+        h = self.kv[key]
+        places = self._places.setdefault(key, [])
+        known = set(places)
+        places.extend(f for f in h if f not in known)  # a field new since: a place after the others
+        n = len(places) if self.scan_whole else (count or 10)
+        end = min(int(cursor) + n, len(places))
+        return (end if end < len(places) else 0), {f: h[f] for f in places[int(cursor):end] if f in h}
+
     # ── lists ────────────────────────────────────────────────
     def _list(self, key: str) -> list:
         if not self._alive(key):
@@ -314,6 +378,17 @@ def compare_and_delete(fake: FakeRedis, keys: list[str], args: list[str]) -> int
         fake.expires.pop(key, None)
         return 1
     return 0
+
+
+def compare_or_absent_and_set(fake: FakeRedis, keys: list[str], args: list[str]) -> int:
+    """What messenger_channel.KEEP_ANSWER_LUA does: the value set, with its expiry in seconds, while the key holds the
+    token or holds nothing."""
+    key, token, value, ex = keys[0], args[0], args[1], int(args[2])
+    if fake._alive(key) and fake.kv.get(key) != token:
+        return 0
+    fake.kv[key] = value
+    fake._set_expiry(key, ex=ex)
+    return 1
 
 
 def compare_and_pexpire(fake: FakeRedis, keys: list[str], args: list[str]) -> int:

@@ -29,6 +29,7 @@ from app.api.cron import router as cron_router
 from app.api.canary import router as canary_router
 from app.api.security_bans import router as security_bans_router
 from app.api.live_bot import router as live_bot_router
+from app.api.channels import router as channels_router
 from app.security.auth import get_current_user
 from app.security.request_logger import RequestLoggerMiddleware
 from app.security.ban_guard import BanGuardMiddleware
@@ -90,6 +91,9 @@ app.include_router(cron_router, prefix="/api", tags=["cron"])
 # An agent's own bot in "On the site now": PUBLIC with the agent's bot key as a bearer (the bot calls it, not a
 # panel session). Before the admin routers: /api/live/bot/* is never a panel route.
 app.include_router(live_bot_router, prefix="/api", tags=["live-bot"])
+
+# Other channels' gateways (Facebook Messenger: bbc-messenger): PUBLIC, each call signed by its gateway.
+app.include_router(channels_router, prefix="/api", tags=["channels"])
 
 # Auth: PUBLIC login, protected invite (auth dependency inside the route)
 app.include_router(auth_router)
@@ -176,8 +180,43 @@ async def startup() -> None:
     app.state.log_flush_task = asyncio.create_task(run_flush_forever(), name="log_flush")
 
 
+# How long a shutdown waits for the Messenger recovery to stop before the answers its process holds are written.
+RECOVER_STOP_S = 5.0
+
+
+async def _stop_messenger_recover() -> None:
+    """The scheduler's Messenger recovery (scheduler_messenger_recover) stopped and waited for, RECOVER_STOP_S at most:
+    a turn of it still on its way could hold an answer Redis refused after the held ones are written (write_held), and
+    that one would go with the process. A turn stops at once, its rows' inserts on their way included (each row's save
+    goes on by itself, messenger_channel.save_in_order, and a row stored after the turn stopped joins no answer). Not
+    stopped in time, it is in some wait that outlasts a cancel, and stops after it: a turn cancelled never reaches its
+    answer's keeping, so it holds none after the flush (its event's claim runs out, and the next process answers it).
+    Logged."""
+    import asyncio
+
+    task = next((t for t in getattr(app.state, "scheduler_tasks", []) if t.get_name() == "scheduler_messenger_recover"),
+                None)
+    if task is None or task.done():
+        return
+    task.cancel()
+    _, pending = await asyncio.wait({task}, timeout=RECOVER_STOP_S)
+    if pending:
+        logger.warning(f"[messenger] shutdown: the recovery not stopped within {RECOVER_STOP_S:.0f} s (a wait that "
+                       f"outlasts a cancel): it stops after it, holding no answer")
+
+
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # First, while the database and Redis still answer: the Messenger messages on their way get a few seconds to go
+    # out, and each agent whose message did not is told so in the chat (app.services.messenger_channel).
+    from app.services import messenger_channel
+
+    await messenger_channel.drain_all()
+    # Then the recovery stopped (a few seconds at most), so no turn of it holds an answer after the flush below; and
+    # the event answers Redis did not take as their turn ended written now, so the next process never answers them a
+    # second time.
+    await _stop_messenger_recover()
+    await messenger_channel.write_held()
     flags_task = getattr(app.state, "flags_task", None)
     if flags_task is not None:
         flags_task.cancel()

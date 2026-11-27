@@ -10,7 +10,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
+from typing import Any, Callable, Optional
 
 import httpx
 from postgrest import SyncPostgrestClient
@@ -487,14 +487,67 @@ async def get_or_create_conversation(
         return None
 
 
+class StoredBefore(dict):
+    """The row an earlier insert with the same id stored (add_message with message_id): found, nothing stored now."""
+
+
+async def get_message(message_id: str) -> Optional[dict]:
+    """One message by its id; None when there is none. Raises when it could not be read, so "not there" is never
+    told from "not known" by a None (rule 7)."""
+    db = get_client()
+    res = await _run_sync(lambda: db.table("messages").select("*").eq("id", message_id).limit(1).execute(),
+                          label="messages")
+    return res.data[0] if res.data else None
+
+
+def _stored(on_stored: Optional[Callable[[dict], None]], row: dict, conversation_id: str) -> None:
+    """add_message's caller told the row is stored, never at the save's cost."""
+    if on_stored is None:
+        return
+    try:
+        on_stored(row)
+    except Exception as e:
+        logger.error(f"add_message: the caller's on_stored failed conv={conversation_id}: {type(e).__name__}: {e}")
+
+
+async def _place_if_stored(landing: "asyncio.Future", on_stored: Callable[[dict], None], conversation_id: str) -> None:
+    """add_message's caller cancelled while its insert was on its way: the database may store the row all the same.
+    A chat's row with a place to take is saved by a piece of work no request's or turn's cancel reaches
+    (conversation_service.add_message, messenger_channel.save_in_order), so this is that work itself stopped (its
+    loop closing). Its answer is waited for once, and a row stored is given its place (on_stored) before the cancel
+    goes on. No row for an answer, or a second cancel while it waits: nothing placed (an agent's message stays written
+    down for the next process's minute; a turn's event is answered again)."""
+    try:
+        res = await asyncio.shield(landing)
+    except Exception as e:
+        logger.warning(f"add_message: a cancelled caller's insert not known stored conv={conversation_id}: "
+                       f"{type(e).__name__}: {e}")
+        res = None
+    row = res.data[0] if res is not None and res.data else None
+    if row:
+        _stored(on_stored, row, conversation_id)
+
+
 async def add_message(
     conversation_id: str,
     role: str,
     content: str,
     model_used: Optional[str] = None,
     cost: float = 0.0,
+    *,
+    message_id: Optional[str] = None,
+    on_stored: Optional[Callable[[dict], None]] = None,
 ) -> Optional[dict]:
-    """Insert a message. Never loses a message."""
+    """Insert a message. Never loses a message.
+
+    `message_id`: the row's id, fixed by the caller from what the message is (a Messenger event and its part), so
+    an insert made again finds the row an earlier one stored, its answer lost included: that row comes back as a
+    StoredBefore, and nothing is stored twice. None back: not stored, or not known to be (it could not be read):
+    the caller tries again later.
+
+    `on_stored`: called with the row the moment it is known stored (or found stored before), before anything else
+    is awaited here: a caller's place in an order (a chat's Messenger sends) follows the order rows were stored.
+    Never raises into the save."""
     try:
         db = get_client()
         if role == "ai":
@@ -510,9 +563,43 @@ async def add_message(
         payload: dict = {"conversation_id": conversation_id, "role": role, "content": content, "cost": cost}
         if model_used:
             payload["model_used"] = model_used
-        res = await _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False, label="messages")
+        if message_id:
+            payload["id"] = message_id
+        try:
+            insert = _run_sync(lambda: db.table("messages").insert(payload).execute(), idempotent=False,
+                               label="messages")
+            if on_stored is None:
+                res = await insert
+            else:
+                # A row with a place to take (a chat's Messenger order), saved by work no request's cancel reaches: one
+                # that stops anyway (its loop closing) while its insert is on its way waits for the answer first, so a
+                # row the database stored is placed before that work's hold on the order goes (never inserted again:
+                # idempotent=False).
+                landing = asyncio.ensure_future(insert)
+                try:
+                    res = await asyncio.shield(landing)
+                except asyncio.CancelledError:
+                    await _place_if_stored(landing, on_stored, conversation_id)
+                    raise
+        except Exception as e:
+            # By the database's code only (23505 on the id, the table's one unique key): its text quotes the row.
+            if not message_id or _error_code(e) != "23505":
+                raise
+            logger.info(f"add_message: message {message_id} stored before, conv={conversation_id} role={role} "
+                        f"({_loggable_code(_error_code(e))})")
+            before = await get_message(message_id)
+            if before is None:
+                logger.error(f"add_message: message {message_id} refused as stored before, then not found "
+                             f"conv={conversation_id}")
+                return None
+            _stored(on_stored, before, conversation_id)
+            # The insert whose answer was lost never moved the chat's clocks: they catch up to the row's time now,
+            # never back from a newer message's.
+            await _touch_conversation_activity(conversation_id, role, before.get("created_at"), catch_up=True)
+            return StoredBefore(before)
         row = res.data[0] if res.data else None
         if row:
+            _stored(on_stored, row, conversation_id)
             await _touch_conversation_activity(
                 conversation_id, role, row.get("created_at")
             )
@@ -535,7 +622,7 @@ _ACTIVITY_CLOCKS: dict[str, tuple[str, ...]] = {
 
 
 async def _touch_conversation_activity(
-    conversation_id: str, role: str, created_at: Optional[str]
+    conversation_id: str, role: str, created_at: Optional[str], *, catch_up: bool = False
 ) -> None:
     """Keep the conversation's activity clocks current (migration 024).
 
@@ -543,15 +630,26 @@ async def _touch_conversation_activity(
     `messages` would be one extra query per row on every 5-second list poll,
     so the answer is cached on the conversation and refreshed here.
 
+    `catch_up`: a row found stored before (add_message: its insert's answer
+    was lost, so that insert never moved the clocks). Each clock moves to the
+    row's own time only while it is unset or earlier, in the UPDATE itself:
+    a newer message's time is never put back. No time on the row: nothing.
+
     Never fatal: a message must not be lost because a denormalised timestamp
     failed to write, and the columns may not exist yet if the code deploys
     ahead of the migration.
     """
     fields = _ACTIVITY_CLOCKS.get(role)
-    if not fields or not _supervisor_columns_available():
+    if not fields or not _supervisor_columns_available() or (catch_up and not created_at):
         return
     stamp = created_at or datetime.now(timezone.utc).isoformat()
     try:
+        if catch_up:
+            db = get_client()
+            for f in fields:
+                await _run_sync(lambda f=f: db.table("conversations").update({f: stamp}).eq("id", conversation_id)
+                                .or_(f'{f}.is.null,{f}.lt."{stamp}"').execute(), label="conv_activity")
+            return
         await update_conversation(conversation_id, {f: stamp for f in fields})
     except Exception as e:
         logger.warning(
@@ -1437,6 +1535,22 @@ async def get_conversation_simple(conv_id: str) -> Optional[dict]:
                 pass
         logger.error(f"get_conversation_simple error: {e}")
         return None
+
+
+async def get_conversation_metadata(conv_id: str) -> Optional[dict]:
+    """A chat's id and metadata (where it answers to: Messenger's outbound); None when there is no such chat. A read
+    that fails is logged and RAISED, never None: the caller tells "no chat" from "couldn't look" (rule 7), because
+    it drops a delivery on the first and keeps it for later on the second."""
+    def _q():
+        return get_client().table("conversations").select("id, metadata").eq("id", conv_id).limit(1).execute()
+
+    try:
+        res = await _run_sync(_q, label="conv_metadata")
+    except Exception as e:
+        logger.error(f"get_conversation_metadata failed conv={conv_id}: {type(e).__name__}: {e}")
+        raise
+    rows = res.data or []
+    return rows[0] if rows else None
 
 
 async def get_blind_inputs(conv_id: str) -> Optional[dict]:
@@ -4043,7 +4157,7 @@ async def increment_chats_served(agent: dict) -> None:
         logger.warning(f"increment_chats_served error (non-blocking): {e}")
 
 
-async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") -> list[dict]:
+async def _rows_with_last_message(build, base_columns: str, *, paged: str = "", label: str = "other") -> list[dict]:
     """build(columns) → rows, with last_user_message_at (migration 024) when
     the activity clocks exist: a message is presence too, and the presence
     rule reads it. A database without the column is a normal case, not a
@@ -4052,14 +4166,14 @@ async def _rows_with_last_message(build, base_columns: str, *, paged: str = "") 
 
     paged="<label>": every matching row, page after page by id (_select_after),
     for a read that must not stop at PostgREST's 1000; the builder then orders
-    the rows by id."""
+    the rows by id. label: _run_sync's telemetry bucket for a read of one page."""
     with_clock = _supervisor_columns_available()
     columns = base_columns + (", last_user_message_at" if with_clock else "")
 
     async def read(cols: str) -> list[dict]:
         if paged:
             return await _select_after(lambda: build(cols), label=paged)
-        res = await _run_sync(lambda: build(cols).execute())
+        res = await _run_sync(lambda: build(cols).execute(), label=label)
         return res.data or []
 
     try:
@@ -7185,4 +7299,30 @@ async def first_chat_of_visit(visitor_id: str, since_iso: str, until_iso: str) -
         logger.warning(f"[visit-registry] a visit's chat not read: {type(e).__name__} {_error_code(e) or e}")
         return None
     rows = [r for r in (res.data or []) if isinstance(r, dict) and r.get("id") and r.get("created_at")]
+    return rows[0] if rows else {}
+
+
+# ── Facebook Messenger (app/services/messenger_channel.py, contracts/messenger.md) ────────────────────────────────
+
+
+async def latest_conversation_of_visitor(visitor_id: str) -> Optional[dict]:
+    """The newest conversation of a visitor, whatever its status (id, status, mode, assigned_agent_id, updated_at,
+    created_at, metadata, and last_user_message_at where migration 024's clocks exist: a database without them is
+    read without it, as the chats list is): {} when there is none, None when the database could not say (rule 7). A
+    Messenger thread goes on in the chat it had, closed or not, as the widget's does with the chat it keeps."""
+    db_client = get_client()
+    try:
+        rows = await _rows_with_last_message(
+            lambda columns: db_client.table("conversations")
+            .select(columns)
+            .eq("visitor_id", visitor_id)
+            .order("created_at", desc=True)
+            .limit(1),
+            "id, status, mode, assigned_agent_id, updated_at, created_at, metadata",
+            label="messenger",
+        )
+    except Exception as e:
+        logger.warning(f"[messenger] a thread's chat not read: {type(e).__name__} {_error_code(e) or e}")
+        return None
+    rows = [r for r in rows if isinstance(r, dict) and r.get("id")]
     return rows[0] if rows else {}

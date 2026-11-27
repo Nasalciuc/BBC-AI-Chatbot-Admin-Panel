@@ -729,6 +729,12 @@ async def _post_sale_reply(conversation_id: str, message: str) -> ChatResponse:
     return _post_sale_response(conversation_id, ack, row)
 
 
+# What a client writing to an agent who holds the chat is told (never stored): the first time, and after. Named so
+# another channel can tell them apart (app.services.messenger_channel sends the first, not each "sent").
+QUEUED_FIRST = "One moment please, connecting you with a specialist..."
+QUEUED_AGAIN = "Your message has been sent to the specialist."
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
@@ -1002,11 +1008,7 @@ async def chat(
                 from app.services.handoff import _handoff_phrase_recently_sent
 
                 already = await _handoff_phrase_recently_sent(req.conversation_id)
-                queued_msg = (
-                    "Your message has been sent to the specialist."
-                    if already
-                    else "One moment please, connecting you with a specialist..."
-                )
+                queued_msg = QUEUED_AGAIN if already else QUEUED_FIRST
                 return ChatResponse(
                     conversation_id=req.conversation_id,
                     message=queued_msg,
@@ -1144,17 +1146,25 @@ async def chat(
             role="user",
             content=clean_message,
         )
-        await conversation_service.add_message(
+        _cached_row = await conversation_service.add_message(
             conversation_id=req.conversation_id,
             role="ai",
             content=_cached_response,
             model_used="cache",
             cost=0.0,
         )
+        # What the client is given is what was stored, as for the pipeline's answer: the output guard ran on it in
+        # add_message, for this conversation (a cached answer was guarded for the one it was made in). Not stored:
+        # guarded here, so it never goes out raw.
+        _cached_said = _cached_row.get("content") if isinstance(_cached_row, dict) else None
+        if not isinstance(_cached_said, str):
+            from app.ai.output_guard import guard_ai_text
+
+            _cached_said = await guard_ai_text(_cached_response, conversation_id=req.conversation_id) or ""
         logger.info(f"[{req.conversation_id}] Cache HIT — skipped pipeline")
         return ChatResponse(
             conversation_id=req.conversation_id,
-            message=_cached_response,
+            message=_cached_said,
             streaming=False,
             type="ai",
             model_used="cache",
