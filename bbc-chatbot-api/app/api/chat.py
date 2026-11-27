@@ -88,12 +88,13 @@ class ChatInitRequest(BaseModel):
         return None
 
 
-_PROACTIVE_TRIGGERS = ("kayak", "ads", "social", "quote", "reader", "exit", "note")
+_PROACTIVE_TRIGGERS = ("kayak", "ads", "social", "quote", "reader", "exit", "note", "form_left")
 
 
 class ProactiveInit(BaseModel):
-    # "note": the visitor tapped the note beside the button (app/services/proactive).
-    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
+    # "note": the visitor tapped the note beside the button (app/services/proactive); "form_left": test 1's card after
+    # the quote window was closed unsent.
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note", "form_left"]
     # The words /offer used: how the note asked its first question (app/services/
     # note_bandit), the quote card that offered the chat instead of the form
     # (proactive.CONTACT), the row beside the refused form (ROW) or the Kayak
@@ -312,9 +313,15 @@ async def chat_live(payload: LivePassRequest, request: Request):
 
     # The owner's test (app.services.agent_first_test): Alex's side is never listed, so no agent greets it. The
     # visit registry still takes its visits (live=False: a pass for the registry only, "enabled" stays false).
+    from app.services import proactive
+
     side = agent_first_test.side(payload.visitor_id)
+    # Test 1 (proactive.form_left): this visitor's arm, on every answer while the test runs, so the widget's events carry
+    # it from the page's start, also for the visitors who never see a card. Nothing while it is off.
+    _fl = proactive.form_left_arm(payload.visitor_id)
+    form_left = {"form_left": _fl} if _fl else {}
     if side == agent_first_test.ALEX and not visit_registry.registry_enabled():
-        return JSONResponse({"enabled": False, "test": side}, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"enabled": False, "test": side, **form_left}, headers={"Cache-Control": "no-store"})
     # The address as the rate limiter reads it (X-Forwarded-For, then the peer): a cf-connecting-ip header is the
     # client's to write unless the edge is Cloudflare, and the limit on new ids would not hold.
     out = await widget_pass(payload.visitor_id, payload.live_pass, client_ip(request, prefer_cf=False),
@@ -328,12 +335,12 @@ async def chat_live(payload: LivePassRequest, request: Request):
         _country = (request.headers.get("cf-ipcountry") or "").strip().upper()
         if len(_country) == 2 and _country.isalpha() and _country not in ("XX", "T1"):
             out = {**out, "country": _country}
-    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+    return JSONResponse({**out, **form_left}, headers={"Cache-Control": "no-store"})
 
 
 class ProactiveOfferRequest(BaseModel):
     visitor_id: str = Field(..., min_length=8, max_length=64)
-    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note"]
+    trigger: Literal["kayak", "ads", "social", "quote", "reader", "exit", "note", "form_left"]
     trip: Optional[TripContext] = None
     # The brand the visitor is on (bbc | bct), so the card names it. Anything
     # else is dropped, never a 422: the card then speaks for BBC.
@@ -353,6 +360,32 @@ class ProactiveOfferRequest(BaseModel):
     # The widget opens the contact field with the yes's answer (the owner's contact test, 22 Nov:
     # app.services.contact_field_test): only such a widget takes part. Anything but true is false.
     opens_field: bool = False
+    # Test 1 (proactive.form_left): how the widget saw the quote window close, from where it read it, and whether the
+    # visitor was in a field or typed (yes/no, never a value): `left`, kept to those keys and words. `after_card`: the
+    # row beside a refused form asked for after a card or in the pause (the widget's form-only round), answered by
+    # the test's arms. Anything else is dropped, never a 422.
+    left: Optional[dict] = None
+    after_card: bool = False
+
+    @field_validator("left", mode="before")
+    @classmethod
+    def _known_left_or_none(cls, v):
+        if not isinstance(v, dict):
+            return None
+        out: dict = {}
+        if v.get("how") in ("close_button", "escape", "backdrop"):
+            out["how"] = v["how"]
+        if v.get("source") in ("site", "dom"):
+            out["source"] = v["source"]
+        for k in ("focused", "typed"):
+            if isinstance(v.get(k), bool):
+                out[k] = v[k]
+        return out or None
+
+    @field_validator("after_card", mode="before")
+    @classmethod
+    def _after_card_true_or_false(cls, v):
+        return v is True
 
     @field_validator("trip", mode="before")
     @classmethod
@@ -432,10 +465,24 @@ async def proactive_offer(
         await proactive.c4_running()
         if payload.trigger == "kayak" and payload.c4 == "early" else True
     )
+    _team_online = is_within_team_hours()
+    # Test 1's B card promises "about a minute" only with an agent online now (card_words.wait_answer's rule): read only
+    # for that moment, in the team's hours. Not known: no minute promised, counted.
+    _agent_online = False
+    if payload.trigger == proactive.FORM_LEFT and _team_online and proactive.form_left_arm(payload.visitor_id) == "b":
+        try:
+            from config.settings import settings
+            _agent_online = bool(
+                await db.get_available_agents(tunnel="sales", timeout_seconds=settings.agent_timeout_seconds)
+            )
+        except Exception as e:  # noqa: silent — logged and counted; nobody known online means no minute promised
+            proactive.PROACTIVE_HEALTH["form_left_agents_unknown"] += 1
+            logger.warning(f"[proactive] form_left: agents online unknown ({type(e).__name__})")
     out = proactive.offer(
         payload.visitor_id, payload.trigger, payload.trip, payload.site, payload.refused,
         lang=payload.lang, device=payload.device, place=payload.place, c4=payload.c4,
-        c4_open=_c4_open, team_online=is_within_team_hours(), opens_field=payload.opens_field,
+        c4_open=_c4_open, team_online=_team_online, opens_field=payload.opens_field,
+        after_card=payload.after_card, agent_online=_agent_online, how=(payload.left or {}).get("how"),
     )
     if out.get("show") and payload.trigger == "kayak" and payload.c4:
         await proactive.c4_count(payload.c4)

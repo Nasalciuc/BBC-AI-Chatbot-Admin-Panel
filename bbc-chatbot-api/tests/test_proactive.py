@@ -1700,6 +1700,9 @@ class TestHealth:
             payload = await health_detail()
         assert set(payload["proactive"]) == {
             "offers", "shown", "opened", "open_failures", "seed_errors", "last_seed_error_at",
+            # Test 1 (form_left, tests/test_proactive_form_left.py).
+            "form_left_offers", "form_left_off", "form_left_shown", "form_left_words_missing", "form_left_how",
+            "form_left_agents_unknown",
         }
 
 
