@@ -340,7 +340,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       visitorId = makeVisitorId()
       try { localStorage.setItem('bbc_visitor_id', visitorId) } catch {}
       clearVisitorToken()  // PR-12: the old token proves the old id only
-      forgetFormLeftArm()  // test 1: the arm was the last visitor's (CodeRabbit #291)
+      forgetFormLeftArm()  // test 1: the arm was the last visitor's
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }
