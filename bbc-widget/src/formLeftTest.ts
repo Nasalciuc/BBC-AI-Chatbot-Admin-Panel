@@ -43,6 +43,13 @@ export function noteFormLeftArm(v: unknown): void {
   else ssRemove(ARM_KEY)
 }
 
+/** The visitor id changed on this page (a form for someone else, Widget.tsx): the arm the last visitor got is not
+ *  this one's, so none, on this page's events and for its moment, until /chat/live names theirs (CodeRabbit #291). */
+export function forgetFormLeftArm(): void {
+  armInPage = null
+  ssRemove(ARM_KEY)
+}
+
 /** The visit's arm, or null (the test off, or no answer yet on this visit). */
 export function formLeftArm(): FormLeftArm | null {
   if (armInPage !== undefined) return armInPage

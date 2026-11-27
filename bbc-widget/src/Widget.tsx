@@ -6,6 +6,7 @@ import { armChime, playChime } from './chime'
 import { readPageContext } from './pageContext'
 import { apiFetch, clearVisitorToken, ensureVisitorId, ensureVisitorToken, getVisitorId, makeVisitorId, saveVisitorToken } from './api'
 import brand from './config'
+import { forgetFormLeftArm } from './formLeftTest'
 import { usePhoneSheet } from './phoneSheet'
 import { posthog, posthogSessionId } from './posthog'
 import {
@@ -339,6 +340,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
       visitorId = makeVisitorId()
       try { localStorage.setItem('bbc_visitor_id', visitorId) } catch {}
       clearVisitorToken()  // PR-12: the old token proves the old id only
+      forgetFormLeftArm()  // test 1: the arm was the last visitor's (CodeRabbit #291)
       try { localStorage.removeItem('bbc_conv_id') } catch {}
       try { localStorage.removeItem('bbc_conv_ts') } catch {}
     }

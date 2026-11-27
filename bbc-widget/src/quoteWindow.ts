@@ -205,10 +205,24 @@ export function startQuoteWindow(): void {
       } else kept = { ...kept, run: k.run }
     }
   }
-  const onHidden = () => {
-    if (document.visibilityState !== 'visible' && open) finish('page_hidden', Date.now())
+  // A kept run left unsent (its send failed once the page was back, before the window was looked at again) ends when
+  // the page goes out of view, as an open one does; one whose send stands keeps waiting (CodeRabbit #291). Before the
+  // open run's finish, which may keep a run of its own: each run is reported once.
+  const hideKept = () => {
+    if (!kept || kept.run.sent) return
+    const k = kept
+    kept = null
+    report(k.run, 'page_hidden', Date.now())
   }
-  const onPageHide = () => { if (open) finish('page_hidden', Date.now()) }
+  const onHidden = () => {
+    if (document.visibilityState === 'visible') return
+    hideKept()
+    if (open) finish('page_hidden', Date.now())
+  }
+  const onPageHide = () => {
+    hideKept()
+    if (open) finish('page_hidden', Date.now())
+  }
 
   const cap: AddEventListenerOptions = { capture: true, passive: true }
   document.addEventListener('pointerdown', onPointer, cap)

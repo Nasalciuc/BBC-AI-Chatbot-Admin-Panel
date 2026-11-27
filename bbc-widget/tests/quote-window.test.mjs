@@ -73,7 +73,8 @@ test('one window, one event: the run ends when it goes or the page is hidden, an
   // finish takes the run away before it reports, so a second call for the same window reports nothing.
   assert.match(w, /const finish = \(how: CloseHow, at: number\) => \{\s*const o = open\s*open = null\s*if \(!o\) return/)
   assert.match(w, /if \(!shown\(open\.el\)\) finish\(closeHow\(open\.run\.gesture, now\), now\)\s*return/)
-  assert.match(w, /onHidden = \(\) => \{\s*if \(document\.visibilityState !== 'visible' && open\) finish\('page_hidden'/)
+  assert.match(w, /onHidden = \(\) => \{\s*if \(document\.visibilityState === 'visible'\) return\s*hideKept\(\)\s*if \(open\) finish\('page_hidden', Date\.now\(\)\)\s*\}/)
+  assert.match(w, /onPageHide = \(\) => \{\s*hideKept\(\)\s*if \(open\) finish\('page_hidden', Date\.now\(\)\)\s*\}/)
   // A quote form in the page itself is no window: only a dialog, a floating box with the ×, or something fixed.
   assert.match(w, /if \(el\.querySelector\(CLOSE\)\) return floating\(el\) \? \{ el, box: el \} : null/)
   assert.match(w, /const CLOSE = '\[data-qd-close\]'/)
@@ -187,4 +188,17 @@ test('a send that fails while the tab is hidden leaves the window unsent: left t
   const w = src('quoteWindow.ts')
   assert.match(w, /if \(open\) open\.run = runAfterSiteEvent\(open\.run, e\.name\)\s*else if \(kept\) \{\s*const k = keptAfterSiteEvent\(kept\.run, e\.name, document\.visibilityState === 'visible'\)/)
   assert.match(w, /if \(k\.ended\) \{\s*const at = kept\.at\s*kept = null\s*report\(k\.run, 'page_hidden', at\)\s*\} else kept = \{ \.\.\.kept, run: k\.run \}/)
+})
+
+test('a kept run left unsent ends when the page goes out of view again; one still sent waits (CodeRabbit #291)', () => {
+  const w = src('quoteWindow.ts')
+  // Its send failed once the page was back, before the window was looked at again, then the page went: reported once,
+  // as left with the page, and taken away first, so the open run's finish (which may keep a run of its own) is apart.
+  assert.match(w, /const hideKept = \(\) => \{\s*if \(!kept \|\| kept\.run\.sent\) return\s*const k = kept\s*kept = null\s*report\(k\.run, 'page_hidden', Date\.now\(\)\)\s*\}/)
+  // The message that takes no branch: a kept run whose send stands says nothing (closedFromRun is null for it anyway),
+  // and an unsent one is the window left.
+  const sent = runAfterSiteEvent(newRun(T), 'quote_form_submitting')
+  assert.equal(closedFromRun(sent, 'page_hidden', T + 2000), null)
+  const failed = keptAfterSiteEvent(sent, 'quote_form_failed', true).run
+  assert.equal(closedFromRun(failed, 'page_hidden', T + 2000)?.refused, true)
 })

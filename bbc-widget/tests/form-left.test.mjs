@@ -9,8 +9,8 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, capOpen, formLeftArm, formLeftCapOpen, formLeftProps, noteFormLeftArm,
-  noteFormLeftShown, readArm, resetFormLeftForTests,
+  FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, capOpen, forgetFormLeftArm, formLeftArm, formLeftCapOpen, formLeftProps,
+  noteFormLeftArm, noteFormLeftShown, readArm, resetFormLeftForTests,
 } from '../src/formLeftTest.ts'
 import { FORM_LEFT_WITHIN_S, TYPING_QUIET_S, formLeftBlocks, pickFormLeft, pickTrigger, readOff } from '../src/triggers.ts'
 import { readConfig } from '../src/liveRead.ts'
@@ -193,4 +193,23 @@ test('with sessionStorage refused, the visit’s guards hold on the page: the of
   assert.match(hook, /function ssGet\(k: string\): string \| null \{ return visitGet\(k\) \}/)
   assert.match(hook, /function ssSet\(k: string, v: string\) \{ visitSet\(k, v\) \}/)
   assert.doesNotMatch(hook, /sessionStorage\.(getItem|setItem|removeItem)/)
+})
+
+test('a visitor id changed on the page forgets the last visitor’s arm, until /chat/live names the new one’s (CodeRabbit #291)', () => {
+  resetFormLeftForTests()
+  noteFormLeftArm('b')
+  assert.equal(formLeftArm(), 'b')
+  forgetFormLeftArm()
+  assert.equal(formLeftArm(), null)
+  assert.deepEqual(formLeftProps(), {})
+  // The new visitor's own answer gives them theirs.
+  noteFormLeftArm('a')
+  assert.equal(formLeftArm(), 'a')
+  // The message that takes no branch: the same visitor keeps the arm the answers named.
+  resetFormLeftForTests()
+  noteFormLeftArm('off')
+  assert.equal(formLeftArm(), 'off')
+  resetFormLeftForTests()
+  // Forgotten where the id changes (a form for someone else), with the token that proved the old id.
+  assert.match(src('Widget.tsx'), /visitorId = makeVisitorId\(\)[\s\S]{0,200}?clearVisitorToken\(\)[^\n]*\n\s+forgetFormLeftArm\(\)/)
 })
