@@ -9,8 +9,8 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, capOpen, forgetFormLeftArm, formLeftArm, formLeftCapOpen, formLeftProps,
-  noteFormLeftArm, noteFormLeftShown, readArm, resetFormLeftForTests,
+  FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, VISITOR_ID_KEY, capOpen, formLeftArm, formLeftCapOpen, formLeftProps,
+  noteFormLeftArm, noteFormLeftShown, readArm, readHeldArm, readShown, resetFormLeftForTests,
 } from '../src/formLeftTest.ts'
 import { FORM_LEFT_WITHIN_S, TYPING_QUIET_S, formLeftBlocks, pickFormLeft, pickTrigger, readOff } from '../src/triggers.ts'
 import { readConfig } from '../src/liveRead.ts'
@@ -21,6 +21,20 @@ const src = (f) => readFileSync(join(here, '..', 'src', f), 'utf8')
 const T = 1_700_000_000_000
 const DAY = 24 * 60 * 60 * 1000
 
+// A browser for formLeftTest.ts in node: localStorage (shared by its tabs) and one tab's sessionStorage, as Maps.
+const fakeStore = (m) => ({
+  getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)) }, removeItem: (k) => { m.delete(k) },
+})
+function inBrowser(local, session, run) {
+  const had = ['localStorage', 'sessionStorage'].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)])
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: fakeStore(local) })
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: fakeStore(session) })
+  try { run() } finally {
+    for (const [k, d] of had) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k] }
+    resetFormLeftForTests()
+  }
+}
+
 test('the arm is the server’s word on /chat/live: three arms, anything else none, and the test off clears it', () => {
   for (const a of ['off', 'a', 'b']) assert.equal(readArm(a), a)
   for (const bad of ['A', 'on', '', null, undefined, 1, {}]) assert.equal(readArm(bad), null)
@@ -29,34 +43,40 @@ test('the arm is the server’s word on /chat/live: three arms, anything else no
   assert.equal(readConfig({ enabled: false, form_left: 'x' }).form_left, undefined)
   // The message that takes no branch: an answer without the key (the test off) carries no arm.
   assert.equal(readConfig({ enabled: false }).form_left, undefined)
-  resetFormLeftForTests()
-  noteFormLeftArm('a')
-  assert.equal(formLeftArm(), 'a')
-  assert.deepEqual(formLeftProps(), { experiment: FORM_LEFT_TEST_ID, form_left: 'a' })
-  noteFormLeftArm(undefined)
-  assert.equal(formLeftArm(), null)
-  assert.deepEqual(formLeftProps(), {})
-  // Only for the visitor it was asked for: an id changed meanwhile keeps its own (CodeRabbit #291).
-  assert.match(src('live.ts'), /if \(res\.ok && ensureVisitorId\(\) === visitorId\) noteFormLeftArm\(cfg\.form_left\)/)
+  inBrowser(new Map([[VISITOR_ID_KEY, 'v1']]), new Map(), () => {
+    resetFormLeftForTests()
+    noteFormLeftArm('a', 'v1')
+    assert.equal(formLeftArm(), 'a')
+    assert.deepEqual(formLeftProps(), { experiment: FORM_LEFT_TEST_ID, form_left: 'a' })
+    noteFormLeftArm(undefined, 'v1')
+    assert.equal(formLeftArm(), null)
+    assert.deepEqual(formLeftProps(), {})
+  })
+  // Kept with the visitor it was asked for; an id changed meanwhile keeps its own (CodeRabbit #291).
+  assert.match(src('live.ts'), /if \(res\.ok && ensureVisitorId\(\) === visitorId\) noteFormLeftArm\(cfg\.form_left, visitorId\)/)
+  // The same key api.ts keeps the visitor id under.
+  assert.match(src('api.ts'), new RegExp(`const VISITOR_KEY = '${VISITOR_ID_KEY}'`))
   // Every PostHog event carries it, as the agent-first test's side.
   assert.match(src('posthog.ts'), /\{ \.\.\.agentTestProps\(\), \.\.\.formLeftProps\(\), \.\.\.properties \}/)
 })
 
 test('one card of the test per visitor in 24 h: a second within them does not come, after them it does', () => {
   assert.equal(FORM_LEFT_EVERY_MS, DAY)
-  assert.equal(capOpen(null, T), true)
-  assert.equal(capOpen(String(T), T + 1), false)
-  assert.equal(capOpen(String(T), T + DAY - 1), false)
-  assert.equal(capOpen(String(T), T + DAY), true)
-  // A value that is not a time, or one in the future (a clock moved back), is no card.
-  assert.equal(capOpen('soon', T), true)
-  assert.equal(capOpen('', T), true)
-  assert.equal(capOpen(String(T + 60_000), T), true)
-  resetFormLeftForTests()
-  noteFormLeftShown(T)
-  assert.equal(formLeftCapOpen(T + 1000), false)
-  assert.equal(formLeftCapOpen(T + DAY + 1), true)
-  resetFormLeftForTests()
+  const shown = { at: T, visitorId: 'v1' }
+  assert.equal(capOpen(null, T, 'v1'), true)
+  assert.equal(capOpen(shown, T + 1, 'v1'), false)
+  assert.equal(capOpen(shown, T + DAY - 1, 'v1'), false)
+  assert.equal(capOpen(shown, T + DAY, 'v1'), true)
+  // One in the future (a clock moved back) is no card; a value that is not "<ms>:<visitor>" is none either.
+  assert.equal(capOpen({ at: T + 60_000, visitorId: 'v1' }, T, 'v1'), true)
+  assert.deepEqual(readShown(`${T}:v1`), shown)
+  for (const bad of [null, '', String(T), 'soon:v1', `${T}:`, `:v1`]) assert.equal(readShown(bad), null)
+  inBrowser(new Map([[VISITOR_ID_KEY, 'v1']]), new Map(), () => {
+    resetFormLeftForTests()
+    noteFormLeftShown(T)
+    assert.equal(formLeftCapOpen(T + 1000), false)
+    assert.equal(formLeftCapOpen(T + DAY + 1), true)
+  })
 })
 
 const clear = (over = {}) => formLeftBlocks({
@@ -195,21 +215,39 @@ test('with sessionStorage refused, the visit’s guards hold on the page: the of
   assert.doesNotMatch(hook, /sessionStorage\.(getItem|setItem|removeItem)/)
 })
 
-test('a visitor id changed on the page forgets the last visitor’s arm, until /chat/live names the new one’s (CodeRabbit #291)', () => {
-  resetFormLeftForTests()
-  noteFormLeftArm('b')
-  assert.equal(formLeftArm(), 'b')
-  forgetFormLeftArm()
-  assert.equal(formLeftArm(), null)
-  assert.deepEqual(formLeftProps(), {})
-  // The new visitor's own answer gives them theirs.
-  noteFormLeftArm('a')
-  assert.equal(formLeftArm(), 'a')
-  // The message that takes no branch: the same visitor keeps the arm the answers named.
-  resetFormLeftForTests()
-  noteFormLeftArm('off')
-  assert.equal(formLeftArm(), 'off')
-  resetFormLeftForTests()
-  // Forgotten where the id changes (a form for someone else), with the token that proved the old id.
-  assert.match(src('Widget.tsx'), /visitorId = makeVisitorId\(\)[\s\S]{0,200}?clearVisitorToken\(\)[^\n]*\n\s+forgetFormLeftArm\(\)/)
+test('the arm and the 24 h are the visitor’s: another id has neither, in every tab, and gets them back with its id (CodeRabbit #291)', () => {
+  assert.deepEqual(readHeldArm('b:v1'), { arm: 'b', visitorId: 'v1' })
+  for (const bad of [null, '', 'b', 'x:v1', 'b:']) assert.equal(readHeldArm(bad), null)
+  // Another visitor's card is none of this one's.
+  assert.equal(capOpen({ at: T, visitorId: 'v1' }, T + 1000, 'v2'), true)
+  assert.equal(capOpen({ at: T, visitorId: 'v1' }, T + 1000, null), true)
+  const local = new Map([[VISITOR_ID_KEY, 'v1']])
+  const tab1 = new Map()
+  inBrowser(local, tab1, () => {
+    noteFormLeftArm('b', 'v1')
+    noteFormLeftShown(T)
+    assert.equal(formLeftArm(), 'b')
+    assert.equal(formLeftCapOpen(T + 1000), false)
+    // A form for someone else gives the browser another id (Widget.tsx): this tab's arm and 24 h are not theirs.
+    local.set(VISITOR_ID_KEY, 'v2')
+    assert.equal(formLeftArm(), null)
+    assert.deepEqual(formLeftProps(), {})
+    assert.equal(formLeftCapOpen(T + 1000), true)
+  })
+  // Another tab, opened before the change: its own sessionStorage, its page memory gone, the browser's id the new one.
+  inBrowser(local, new Map(tab1), () => {
+    assert.equal(formLeftArm(), null)
+    assert.equal(formLeftCapOpen(T + 1000), true)
+    // The message that takes no branch: back to the id they were for, the same arm and the same 24 h.
+    local.set(VISITOR_ID_KEY, 'v1')
+    assert.equal(formLeftArm(), 'b')
+    assert.equal(formLeftCapOpen(T + 1000), false)
+  })
+  // No visitor id kept (storage refused): no arm, so no card, and nothing written for the 24 h.
+  inBrowser(new Map(), new Map(), () => {
+    noteFormLeftArm('a', 'v9')
+    assert.equal(formLeftArm(), null)
+  })
+  // Nothing in Widget.tsx to forget: the binding holds in every tab.
+  assert.doesNotMatch(src('Widget.tsx'), /forgetFormLeftArm/)
 })

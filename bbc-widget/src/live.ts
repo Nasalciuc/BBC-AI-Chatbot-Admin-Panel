@@ -129,12 +129,13 @@ export async function askConfig(apiUrl: string): Promise<LiveConfig> {
   const cfg = res.ok ? readConfig(await res.json()) : failedAsk(res.status)
   // The owner's agent-first test: an answer names this visitor's side (Alex's side gets no pass, never listed).
   if (res.ok) noteSide(cfg.test)
-  // Test 1: the arm this answer names (none: the test is off), for the visit's events and its form_left moment. Only
-  // for the visitor it was asked for: an id changed meanwhile (a form for someone else) has an arm of its own, and the
-  // last one's would go on its events (CodeRabbit #291; Widget.tsx forgets it at the change). A browser that keeps no
-  // visitor id (a new one at each ask: storage refused) gets no arm, on purpose: the test's unit is the visitor, and
-  // an id only this page knows would put the same person in an arm anew, with no 24 h cap, on every page.
-  if (res.ok && ensureVisitorId() === visitorId) noteFormLeftArm(cfg.form_left)
+  // Test 1: the arm this answer names (none: the test is off), for the visit's events and its form_left moment, kept
+  // with the visitor it was asked for (formLeftTest.ts: it counts only while that id is this browser's, in every tab).
+  // An id changed meanwhile (a form for someone else) has an arm of its own: this answer is not it (CodeRabbit #291).
+  // A browser that keeps no visitor id (a new one at each ask: storage refused) gets no arm, on purpose: the test's
+  // unit is the visitor, and an id only this page knows would put the same person in an arm anew, with no 24 h cap, on
+  // every page.
+  if (res.ok && ensureVisitorId() === visitorId) noteFormLeftArm(cfg.form_left, visitorId)
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
   // inherit the last one's pass, which would only be refused (CodeRabbit #273). The registry's pass alone (the list
   // off) is kept too: the next page renews it.
