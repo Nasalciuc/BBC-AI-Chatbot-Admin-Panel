@@ -10,8 +10,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, VISITOR_ID_KEY, capOpen, formLeftArm, formLeftCapOpen, formLeftProps,
-  noteFormLeftArm, noteFormLeftShown, readArm, readHeldArm, readShownAt, resetFormLeftForTests, SHOWN_KEPT, stillVisitor,
-  withShown,
+  noteFormLeftArm, noteFormLeftShown, readArm, readHeldArm, readShownAt, resetFormLeftForTests, stillVisitor, withShown,
 } from '../src/formLeftTest.ts'
 import { FORM_LEFT_WITHIN_S, TYPING_QUIET_S, formLeftBlocks, pickFormLeft, pickTrigger, readOff } from '../src/triggers.ts'
 import { readConfig } from '../src/liveRead.ts'
@@ -73,11 +72,14 @@ test('one card of the test per visitor in 24 h: a second within them does not co
   // Kept by visitor, as {"<visitor id>": ms}: anything else is no card on record.
   assert.deepEqual(readShownAt(JSON.stringify({ v1: T, v2: T + 5 })), { v1: T, v2: T + 5 })
   for (const bad of [null, '', String(T), '[1]', '{"v1":"soon"}', '{oops']) assert.deepEqual(readShownAt(bad), {})
-  // One visitor's card moves only their own; the newest SHOWN_KEPT are kept.
-  assert.deepEqual(withShown({ v1: T }, 'v2', T + 1000), { v2: T + 1000, v1: T })
-  const many = Array.from({ length: SHOWN_KEPT + 2 }, (_, i) => i).reduce((o, i) => withShown(o, `v${i}`, T + i), {})
-  assert.equal(Object.keys(many).length, SHOWN_KEPT)
-  assert.ok(!('v0' in many) && !('v1' in many) && `v${SHOWN_KEPT + 1}` in many)
+  // One visitor's card moves only their own, and every card still within its 24 h is kept, however many visitors
+  // (CodeRabbit #291): twelve in one day, all held.
+  assert.deepEqual(withShown({ v1: T }, 'v2', T + 1000), { v1: T, v2: T + 1000 })
+  const day = Array.from({ length: 12 }, (_, i) => i).reduce((o, i) => withShown(o, `v${i}`, T + i * 60_000), {})
+  assert.equal(Object.keys(day).length, 12)
+  for (let i = 0; i < 12; i++) assert.equal(capOpen(day[`v${i}`], T + 11 * 60_000 + 1), false)
+  // The message that takes no branch: a card whose 24 h are over goes, and so does one in the future.
+  assert.deepEqual(withShown({ old: T - DAY, ahead: T + 5000, v1: T - 1000 }, 'v2', T), { v1: T - 1000, v2: T })
   inBrowser(new Map([[VISITOR_ID_KEY, 'v1']]), new Map(), () => {
     resetFormLeftForTests()
     noteFormLeftShown(T)
@@ -293,9 +295,12 @@ test('an answer still on its way when the visitor id changes is not shown, nor s
     local.set(VISITOR_ID_KEY, 'A')
     assert.equal(formLeftCapOpen(T + 1000), false)
   })
-  // The wiring: asked for one visitor, checked again when the answer comes, before anything is shown or counted.
+  // The wiring: asked for one visitor, read again when the answer comes, before its side, its event or its card, and
+  // again after a popup's wait.
   assert.match(hook, /const askedFor = ensureVisitorId\(\)\s+const res = await fetchProactiveOffer\(apiUrl, \{\s+visitor_id: askedFor,/)
   const ask = hook.slice(hook.indexOf('const askedFor = ensureVisitorId()'))
-  assert.match(ask, /if \(\(trigger === 'form_left' \|\| afterCard\) && !stillVisitor\(askedFor\)\) \{(?:\s*\/\/[^\n]*)*\s+giveBack\(\)\s+release\(\)\s+return\s+\}/)
-  assert.ok(ask.indexOf('!stillVisitor(askedFor)') < ask.indexOf('res.arm === FORM_LEFT_OFF_ARM'))
+  assert.match(ask, /const goneVisitor = \(\): boolean => \{\s+if \(!\(trigger === 'form_left' \|\| afterCard\) \|\| stillVisitor\(askedFor\)\) return false\s+giveBack\(\)\s+release\(\)\s+return true\s+\}\s+if \(goneVisitor\(\)\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(res\) noteSide\(res\.test\)/)
+  assert.match(ask, /await untilPopupCloses\(ignore\)\s+passed = [^\n]+\n\s+if \(goneVisitor\(\)\) return/)
+  assert.ok(ask.lastIndexOf('if (goneVisitor()) return') < ask.indexOf("posthog?.capture('proactive_eligible'"))
+  assert.equal(ask.slice(0, ask.indexOf("posthog?.capture('proactive_eligible'")).split('if (goneVisitor()) return').length - 1, 2)
 })

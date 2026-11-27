@@ -32,8 +32,6 @@ const SHOWN_AT_KEY = 'bbc_form_left_at'
 export interface HeldArm { arm: FormLeftArm; visitorId: string }
 /** When each visitor last saw a card of the test (ms), by visitor id: one visitor's card never moves another's. */
 export type ShownAt = Record<string, number>
-/** The most visitors whose last card the browser keeps (the newest; one older than 24 h holds nothing anyway). */
-export const SHOWN_KEPT = 8
 
 let armInPage: HeldArm | null | undefined
 let shownInPage: ShownAt = {}
@@ -76,10 +74,16 @@ export function readShownAt(v: string | null): ShownAt {
   return out
 }
 
-/** `shown` with `visitorId`'s card at `atMs`: the others kept as they were, the newest SHOWN_KEPT only. */
+/** `shown` with `visitorId`'s card at `atMs`. Every other card still within its 24 h is kept, however many visitors
+ *  (CodeRabbit #291); one whose 24 h are over, or in the future (a clock moved back: capOpen holds nothing on it), is
+ *  dropped, so the record never outgrows the visitors of one day. */
 export function withShown(shown: ShownAt, visitorId: string, atMs: number): ShownAt {
-  const all = { ...shown, [visitorId]: atMs }
-  return Object.fromEntries(Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, SHOWN_KEPT))
+  const kept: ShownAt = {}
+  for (const [id, at] of Object.entries(shown)) {
+    if (at <= atMs && atMs - at < FORM_LEFT_EVERY_MS) kept[id] = at
+  }
+  kept[visitorId] = atMs
+  return kept
 }
 
 /** A /chat/live answer for `visitorId` came: its `form_left` is that visitor's arm; an answer without one means the

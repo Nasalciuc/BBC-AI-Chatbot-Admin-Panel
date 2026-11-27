@@ -859,6 +859,16 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         } : {}),
         ...(afterCard ? { after_card: true } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
+      // Test 1's answer is the visitor's it was asked for. For one this browser no longer has (a form for someone
+      // else meanwhile, in any tab), the visitor of now gets nothing of it: no side, no event, no card. Their
+      // reservation goes back. Read when the answer comes and again after a popup's wait (CodeRabbit #291).
+      const goneVisitor = (): boolean => {
+        if (!(trigger === 'form_left' || afterCard) || stillVisitor(askedFor)) return false
+        giveBack()
+        release()
+        return true
+      }
+      if (goneVisitor()) return
       // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
       if (res) noteSide(res.test)
       let passed = !disposed && res?.show && res.message ? momentPassed(trigger, before, askedTrip) : null
@@ -869,6 +879,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       if (!passed && !disposed && res?.show && res.message && popups.open(ignore)) {
         await untilPopupCloses(ignore)
         passed = disposed ? 'popup' : momentPassed(trigger, before, askedTrip) ?? (popups.open(ignore) ? 'popup' : null)
+        if (goneVisitor()) return
       }
       // `site` on every proactive_* event (ADR 18): BBC and BCT are compared, never mixed.
       posthog?.capture('proactive_eligible', {
@@ -891,13 +902,6 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ...(leftAsked ? { left_how: leftAsked.how } : {}),
         ...(afterCard ? { after_card: true } : {}),
       })
-      if ((trigger === 'form_left' || afterCard) && !stillVisitor(askedFor)) {
-        // Test 1's answer for a visitor this browser no longer has (a form for someone else meanwhile, in any tab):
-        // neither shown nor spent for the visitor of now, whose reservation goes back (CodeRabbit #291).
-        giveBack()
-        release()
-        return
-      }
       if (res && !res.show && res.arm === FORM_LEFT_OFF_ARM) {
         // Test 1's off arm: asked and counted, never shown. The visit keeps its moment for the other cards, as today
         // (the comparison rests on it), and the test does not ask again in it.
