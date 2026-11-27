@@ -434,7 +434,8 @@ test('E2: the keyboard\'s height lifts a floating panel; the browser\'s bar does
 
 test('A1/A2: the card\'s yes shows its answer and buttons at once; the stored row takes its place', () => {
   assert.match(chat, /const yesOptions = \(o: ProactiveOpening \| null, text: string\): SendOptions \| undefined =>/)
-  assert.match(chat, /sendMessage\(first, yesOptions\(o, first\)\)/)
+  // Test 1's "Yes, chat now" goes as the wait button it is (form-left.test.mjs); every other yes as before.
+  assert.match(chat, /sendMessage\(first, o\.firstButton \? \{ button: o\.firstButton \} : yesOptions\(o, first\)\)/)
   const send = chat.slice(chat.indexOf('const sendMessage = async'), chat.indexOf('const handleSend'))
   assert.ok(send.indexOf('setMessages(prev => [...prev, optimisticMsg, local])') < send.indexOf('await getTurnstileToken()'),
     'the answer is on screen before the conversation is created')
@@ -569,7 +570,7 @@ test('ADR A5: the ad\'s search is kept as the server keeps it, and may name a pl
 test('ADR A5: a "no" about the ad\'s trip as it was is no "no" about the page now (CodeRabbit #272)', () => {
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The stale answer gives the reservation back and asks again; only one about the trip of now switches ads off.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedTrip\) \{[\s\S]*?giveBack\(\)\s+fired = false\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON\.stringify\(adsTrip\(\)\) !== askedTrip\) \{[\s\S]*?giveBack\(\)\s+release\(\)\s+return\s+\}\s+if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)/)
 })
 
 test('ADR A2: the moment says when the site asked for the script and how long it took to come', () => {
@@ -745,25 +746,27 @@ test('the row beside a refused form comes once more in a visit whose card brough
 
 test('the second chance is wired: its own reservation, given back as the first is, measured apart, closed by the site', () => {
   // The run decides at its start which it watches for; a visitor with a conversation (allowed false) gets the row too.
-  assert.match(hook, /const rowOnly = rowAgain && rowAgainNow\(\)/)
+  assert.match(hook, /const rowChance = rowAgain && rowAgainNow\(\)/)
+  // Test 1's form-only round takes the run when a reason holds (form-left.test.mjs): the row's chance is the rest.
+  assert.match(hook, /const rowOnly = rowChance && !formOnly/)
   assert.match(hook, /function rowAgainNow\(\): boolean \{\s+return rowAgainOpen\(ssGet\(DONE_KEY\), ssGet\(ROW_AGAIN_KEY\), ssGet\(CONTACT_LEFT_KEY\) === '1'\)\s+\}/)
   // Its reservation is its own: the visit's moment stays 'shown'. Every answer that gives a moment back gives this one.
-  assert.match(hook, /const held = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n(?:\s*\/\/[^\n]*\n)*\s+let pending = false\n\s+const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
+  assert.match(hook, /const baseHeld = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n(?:\s*\/\/[^\n]*\n)*\s+let held = baseHeld\n(?:\s*\/\/[^\n]*\n)*\s+let pending = false\n\s+const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  // The four answers that give a moment back, the row's new press (round 8) and the form gone.
-  assert.equal(ask.split('giveBack()').length - 1, 6)
+  // The four answers that give a moment back, the row's new press (round 8), the form gone, and test 1's off arm.
+  assert.equal(ask.split('giveBack()').length - 1, 7)
   assert.doesNotMatch(ask, /ssSet\(DONE_KEY, ''\)/)
   // Only the row may come of it: any other answer gives the chance back.
-  assert.match(ask, /if \(\(res\.variant === 'row' \|\| rowOnly\) && !row\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}/)
+  assert.match(ask, /if \(\(res\.variant === 'row' \|\| \(rowOnly && trigger !== 'form_left'\)\) && !row\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+release\(\)\n\s+return\n\s+\}/)
   // The visit's moment stays 'shown'; any row shown uses the chance, the visit's own row too (the chance is after a card).
-  assert.match(ask, /if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)\n\s+if \(row\) ssSet\(ROW_AGAIN_KEY, 'used'\)/)
+  assert.match(ask, /\} else if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)\n\s+if \(row\) ssSet\(ROW_AGAIN_KEY, 'used'\)/)
   // Its answer is measured as a new opening's, and its moments apart from the visit's first.
   assert.match(ask, /engagedRef\.current = false\n\s+shownRef\.current = opening/)
   assert.equal(ask.split('...(rowOnly ? { again: true } : {}),').length - 1, 2)
   const evaluate = hook.slice(hook.indexOf('const evaluate = () => {'), hook.indexOf('const pointerEvents = ['))
   assert.match(evaluate, /if \(rowOnly && !rowAgainNow\(\)\) return/)
-  assert.match(evaluate, /const trigger = pickTrigger\(state\)\n\s+if \(!trigger\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(rowOnly && !rowMoment\(trigger, quote\)\) return/)
-  assert.match(evaluate, /fired = true\n\s+pending = true\n\s+ssSet\(held, 'asked'\)/)
+  assert.match(evaluate, /const trigger = pickTrigger\(state\)\n\s+if \(!trigger\) return\n(?:\s*\/\/[^\n]*\n)*\s+if \(\(rowOnly \|\| formOnly\) && !rowMoment\(trigger, quote\)\) return/)
+  assert.match(evaluate, /fired = true\n\s+pending = true\n\s+held = formOnly \? FORM_KEY : baseHeld\n\s+ssSet\(held, 'asked'\)/)
   // The site's stop closes it (they sent the request, or reached out).
   const stopFor = hook.slice(hook.indexOf('const stopFor = (e: SiteEvent) => {'))
   assert.match(stopFor, /if \(!stop\) return\n(?:\s*\/\/[^\n]*\n)*\s+const again = ssGet\(ROW_AGAIN_KEY\)\n\s+if \(!again \|\| again === 'asked'\) ssSet\(ROW_AGAIN_KEY, stop\)/)
@@ -816,21 +819,21 @@ test('the row\'s second chance goes back for a new press of the form, and only f
   const back = ask.indexOf('if (givesRowBack(passed, rowOnly)) {')
   const dropped = ask.indexOf('if (disposed || !res || !res.show || !res.message || passed) {')
   assert.ok(back >= 0 && dropped >= 0 && back < dropped, 'given back before a dropped answer spends it')
-  assert.match(ask.slice(back, dropped), /giveBack\(\)\s+fired = false\s+return/)
+  assert.match(ask.slice(back, dropped), /giveBack\(\)\s+release\(\)\s+return/)
   // An answer that never came spends the chance: nothing is given back on that path.
   assert.doesNotMatch(ask.slice(dropped, dropped + 160), /giveBack\(\)/)
 })
 
 test('a run that ends before its answer is decided gives its reservation back, and a late answer frees nothing (CodeRabbit #282, round 8)', () => {
-  const run = hook.slice(hook.indexOf("const held = rowOnly ? ROW_AGAIN_KEY : DONE_KEY"), hook.indexOf('  }, [allowed, rowAgain, step, apiUrl])'))
+  const run = hook.slice(hook.indexOf("const baseHeld = rowOnly ? ROW_AGAIN_KEY : DONE_KEY"), hook.indexOf('  }, [allowed, rowAgain, step, apiUrl])'))
   // The reservation is this run's while nothing is decided about its answer.
-  assert.match(run, /fired = true\s+pending = true\s+ssSet\(held, 'asked'\)/)
+  assert.match(run, /fired = true\s+pending = true\s+held = [^\n]+\s+ssSet\(held, 'asked'\)/)
   // A late answer (its run ended) gives back nothing: it would free a newer run's 'asked'.
   assert.match(run, /const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
   // The run that ends first gives it back, only while it is still its 'asked' (a site stop said meanwhile stays).
   assert.match(run, /return \(\) => \{\s+disposed = true\s+(?:\/\/[^\n]*\n\s+)*if \(pending && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+pending = false/)
   // Decided: shown, or dropped (used as asked): nothing for the cleanup to give back.
-  assert.match(run, /pending = false\s+if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)/)
+  assert.match(run, /pending = false\s+if \(trigger === 'form_left' \|\| afterCard\) \{[\s\S]*?\} else if \(!rowOnly\) ssSet\(DONE_KEY, 'shown'\)/)
   assert.match(run, /if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{\s+(?:\/\/[^\n]*\n\s+)*pending = false\s+return/)
 })
 

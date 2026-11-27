@@ -29,11 +29,13 @@ import {
 } from './api'
 import { rowField, type ChannelKind, type ChatButton, type RowField } from './channel'
 import brand from './config'
+import { formLeftArm, formLeftCapOpen, noteFormLeftShown } from './formLeftTest'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { cardAsideWatch, watchPopups } from './overlay'
 import { posthog, posthogSessionEntry } from './posthog'
 import { onQuoteWindowClosed, quoteForm } from './quoteWindow'
+import type { QuoteWindowClosed } from './quoteWindowRead'
 import {
   applySiteEvent, fieldKinds, isQuoteFormWork, kindOfField, lastSearch, noMomentPage, onSiteEvent, siteEvents, sitePage,
   withKinds, type FieldKind, type SiteEvent,
@@ -41,7 +43,7 @@ import {
 import { hasContext, pickTrip, tripFromFields, tripFromTitle, tripFromUrl, type TripPayload } from './tripContext'
 import {
   OFFER_TIMEOUT_MS, PAUSE_AFTER_DISMISS_MS, SAME_SEND_MS, TRIGGER_OFF_ARM,
-  adKeyword, adVisit, blockedPath, formLeftBlocks, givesMomentBack, givesRowBack, inViewBeforeStartMs, keywordNamesPlace,
+  adKeyword, adVisit, blockedPath, formLeftBlocks, givesMomentBack, pickFormLeft, givesRowBack, inViewBeforeStartMs, keywordNamesPlace,
   offAfter, pauseRunning, pickTrigger, quietReasons, readOff, rowAgainOpen, rowMoment,
   quoteClick, readingMoment, replyKind, socialVisit, worksOnPressedForm, type OpeningTrigger, type PageState,
   type QuoteState, type Trigger,
@@ -64,6 +66,8 @@ export interface ProactiveOpening {
   shownAt: number
   /** The button the visitor tapped on the phone card: it goes out as their first message. */
   firstReply?: string
+  /** That button's kind when the server named one (test 1's "Yes, chat now": `wait`, answered as "I'll wait here"). */
+  firstButton?: 'wait'
   /** Which way the server asked the first question (the note's bandit, app/services/note_bandit.py):
    *  sent back with the answer so the conversation starts with the same words and is counted for it. */
   variant?: string
@@ -109,6 +113,17 @@ const ROW_AGAIN_KEY = 'bbc_proactive_row_again'
 // sessionStorage: the visitor left a contact in the chat this visit (ChatWindow: one the server kept, an email they
 // typed, or the form's): the row's second chance is not for them.
 const CONTACT_LEFT_KEY = 'bbc_contact_left'
+// sessionStorage: test 1's form-only moments this visit (formLeftTest.ts): '' until asked, then 'asked', 'shown', or 'used'
+// (asked and answered no: the off arm, or dropped). Once a visit, whatever the round.
+const FORM_KEY = 'bbc_proactive_form'
+// The server's answer for test 1's off arm (proactive.FORM_LEFT_OFF): asked and counted, never shown.
+const FORM_LEFT_OFF_ARM = 'form_left_off'
+
+/** Test 1 may still bring its card in this visit: not asked yet this visit, none in the last 24 h. */
+function formLeftOpenNow(): boolean {
+  return !ssGet(FORM_KEY) && formLeftCapOpen()
+}
+
 // sessionStorage: the moments the server switched off in this visit (triggers.ts, TRIGGER_OFF_ARM), "ads,kayak".
 const OFF_KEY = 'bbc_proactive_off'
 // The same, in this page's memory: with the tab's storage refused the list still holds here, or the switched-off
@@ -472,7 +487,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         sinceSiteTypingS: typedAt === null ? null : (now - typedAt) / 1000,
         chatOpen: stepRef.current !== 'buttons',
         hasChat: !allowedRef.current,
-        alreadyUsed: false,
+        alreadyUsed: !formLeftOpenNow(),
         visitorId: !!getVisitorId(),
       })
       if (reasons.length) {
@@ -544,23 +559,31 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     // A visit has one moment. In one whose card brought no contact the row beside a refused form may still come, once
     // (triggers.ts rowAgainOpen): this run then watches for that moment alone, also over a conversation the visitor
     // has (the card's chat they left without a contact).
-    const rowOnly = rowAgain && rowAgainNow()
+    const rowChance = rowAgain && rowAgainNow()
     // Every reason the moments don't start on this page, gathered before the first one returns (proactive_quiet,
     // test 1 step 1): the visitors no card could reach, by cause. Once a page.
     const quiet = quietReasons({
       hasChat: !allowed, tabUsed: !!ssGet(DONE_KEY), pause: pauseRunning(lsGet(PAUSE_KEY), Date.now()),
-      noteClosed: !!ssGet(NOTE_CLOSED_KEY), rowOnly,
+      noteClosed: !!ssGet(NOTE_CLOSED_KEY), rowOnly: rowChance,
     })
     if (quiet.length) {
       if (!embedded && !pageQuietSent) {
         pageQuietSent = true
         posthog?.capture('proactive_quiet', { reasons: quiet, returning: isReturning(), site: brand.id })
       }
-      return
+      // Test 1's form-only round (owner, 27 Nov): the visit's moment used, the 24 h pause or the closed note leave the
+      // form_left moment and the row beside a refused form, once a visit and once in 24 h (formLeftTest.ts), as the
+      // row's second chance comes after a card. A conversation stops it, and the CRM's iframe has none.
+      if (embedded || !allowed || !formLeftOpenNow()) return
     }
+    const formOnly = quiet.length > 0
+    const rowOnly = rowChance && !formOnly
 
     let disposed = false
     let fired = false
+    // Test 1's moment on this page: asked apart from the others, so a card shown earlier on the page (88% of those who
+    // leave the window had one) does not keep it away; while it is on its way no other moment is asked.
+    let formFired = false
     let warnedShape = false
     let sentInline = false
     let popupHeldOnce = false
@@ -568,7 +591,9 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     let tripAskedAgain = 0
     // What this run's moment reserves while its answer is on the way: the visit's one moment, or the row's second
     // chance (rowOnly). An answer that gives it back frees only its own 'asked': a stop the site said meanwhile stays.
-    const held = rowOnly ? ROW_AGAIN_KEY : DONE_KEY
+    const baseHeld = rowOnly ? ROW_AGAIN_KEY : DONE_KEY
+    // Test 1's moments hold their own key (FORM_KEY): set when one is asked (evaluate).
+    let held = baseHeld
     // This run's own reservation while nothing is decided about its answer (on its way, or waiting for a popup): the
     // run that ends first gives it back (the cleanup below), and an answer that comes after its run ended gives back
     // nothing, so it never frees a newer run's 'asked' (CodeRabbit #282, round 8).
@@ -595,6 +620,10 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     // Scrolled before the script started: that counts for the reader too.
     let maxScroll = window.scrollY || document.documentElement.scrollTop || 0
     let lastSiteTyping: number | null = null
+    // The same, outside the quote form: typing in the window and closing it is leaving it (triggers.ts formLeftBlocks).
+    let lastOtherTyping: number | null = null
+    // The quote window the visitor last left on this page (quoteWindow.ts), for test 1's moment.
+    let left: QuoteWindowClosed | null = null
     let press: Press | null = null
     // The last time the visitor worked on the quote form, pressed or not (triggers.ts: no card over it).
     let quoteFormAt: number | null = null
@@ -644,6 +673,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       lastActivity = Date.now()
       if (inWidget(e.target)) return
       if (isField(e.target)) lastSiteTyping = Date.now()
+      if (isField(e.target) && !quoteForm(e.target as Element)) lastOtherTyping = Date.now()
       touchQuoteForm(e.target)
       if (press && worksOnPressed(e.target)) press.activityAt = Date.now()
     }
@@ -766,7 +796,8 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       if (rowOnly && ssGet(CONTACT_LEFT_KEY) === '1') return 'contact_left'
       if (stepRef.current !== 'buttons') return 'chat_opened'
       if (document.visibilityState !== 'visible') return 'hidden'
-      if (ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
+      // The note closed with ✕ holds every card but test 1's (owner, 27 Nov: as "Not now", it does not stop it).
+      if (trigger !== 'form_left' && !formOnly && ssGet(NOTE_CLOSED_KEY)) return 'note_closed'
       if (blockedPath(location.pathname)) return 'left_page'
       // The site moved on to its thank-you or a legal page while the answer was on its way.
       if (noMomentPage(sitePage())) return 'left_page'
@@ -788,7 +819,15 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     }
 
     // `reading`: the moment came at the reading moment (triggers.ts), measured as `moment: 'reading'`.
-    const ask = async (trigger: Trigger, phone: boolean, reading = false) => {
+    // `leftAsked`: the window left that brought test 1's moment (its how and what was done in it, never a value).
+    const ask = async (trigger: Trigger, phone: boolean, reading = false, leftAsked: QuoteWindowClosed | null = null) => {
+      // Test 1's row: the row beside a refused form asked in the form-only round, answered by the test's arms.
+      const afterCard = formOnly && trigger === 'quote'
+      // An answer that gives its moment back frees the ask it came for: test 1's own, or the page's.
+      const release = () => {
+        if (trigger === 'form_left') formFired = false
+        else fired = false
+      }
       const before = seen()
       // The ads card asks with the trip that made it due (adsTrip): the words name that destination.
       const trip = tripFor(trigger)
@@ -810,6 +849,10 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ...(rowAt ? { place: 'form' as const } : {}),
         // This widget opens the contact field with the yes's answer (the owner's contact test, ChatWindow).
         opens_field: true,
+        ...(leftAsked ? {
+          left: { how: leftAsked.how, source: leftAsked.source, focused: leftAsked.focused, typed: leftAsked.typed },
+        } : {}),
+        ...(afterCard ? { after_card: true } : {}),
       }, OFFER_TIMEOUT_MS, (t) => took.push(t))
       // The owner's agent-first test: the side this answer names is the visit's, on every event from here on.
       if (res) noteSide(res.test)
@@ -839,12 +882,23 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ...(trigger === 'ads' && trip?.keyword ? { ad_keyword: true } : {}),
         // The row's second chance (rowAgainOpen): its moments counted apart from the visit's first.
         ...(rowOnly ? { again: true } : {}),
+        // Test 1: how the window was left, and the row asked after a card (its arms, apart from today's row).
+        ...(leftAsked ? { left_how: leftAsked.how } : {}),
+        ...(afterCard ? { after_card: true } : {}),
       })
+      if (res && !res.show && res.arm === FORM_LEFT_OFF_ARM) {
+        // Test 1's off arm: asked and counted, never shown. The visit keeps its moment for the other cards, as today
+        // (the comparison rests on it), and the test does not ask again in it.
+        giveBack()
+        ssSet(FORM_KEY, 'used')
+        release()
+        return
+      }
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM && trigger === 'ads' && JSON.stringify(adsTrip()) !== askedTrip) {
         // A "no" about the ad's trip as it was: the page named another meanwhile, so it says nothing about this one.
         // The reservation goes back and the moment is asked again with the trip of now (CodeRabbit #272).
         giveBack()
-        fired = false
+        release()
         return
       }
       if (res && !res.show && res.arm === TRIGGER_OFF_ARM) {
@@ -856,7 +910,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ssSet(OFF_KEY, offMoments().join(','))
         // Only the reservation this answer owned: a stop the site said meanwhile ('sent') stays.
         giveBack()
-        fired = false
+        release()
         return
       }
       if (res && !res.show && res.arm === AGENT_FIRST_ARM && res.retry_after_s) {
@@ -865,7 +919,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         // A "no" from this arm (an agent said hello, or the visitor said not now) keeps the moment used.
         holdAlex(res.retry_after_s, res.alex_at)
         giveBack()
-        fired = false
+        release()
         return
       }
       if (givesMomentBack(passed, tripAskedAgain)) {
@@ -873,14 +927,14 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         // measured above, and the moment goes back; evaluate asks again with the trip of now if it is still due.
         tripAskedAgain++
         giveBack()
-        fired = false
+        release()
         return
       }
       if (givesRowBack(passed, rowOnly)) {
         // The row's second chance, dropped for a new press of the form (measured above): that send may be refused
         // too, and its refusal is the row's moment then (CodeRabbit #282, round 8).
         giveBack()
-        fired = false
+        release()
         return
       }
       if (disposed || !res || !res.show || !res.message || passed) {
@@ -890,11 +944,11 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       }
       // D1: the server gave the row's words, and the form is still there to stand beside.
       const row = res.variant === 'row' && !!res.buttons?.length && !!rowAt?.isConnected
-      if ((res.variant === 'row' || rowOnly) && !row) {
+      if ((res.variant === 'row' || (rowOnly && trigger !== 'form_left')) && !row) {
         // The form went away meanwhile: nothing to stand beside, and this visit's moment is given back. The row's second
         // chance is for the row alone: any other answer gives it back too.
         giveBack()
-        fired = false
+        release()
         return
       }
       const surface: Surface = row ? 'row' : phone ? 'card' : 'panel'
@@ -914,7 +968,13 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       // The visit's one moment is used now (the second chance keeps it 'shown'). Any row shown uses the row's second
       // chance: that chance itself, or the visit's moment that was the row (it had its row; the chance is after a card).
       pending = false
-      if (!rowOnly) ssSet(DONE_KEY, 'shown')
+      if (trigger === 'form_left' || afterCard) {
+        // Test 1's card: once a visit and once in 24 h (formLeftTest.ts); the visit's moment, if still free, is used too.
+        ssSet(FORM_KEY, 'shown')
+        noteFormLeftShown()
+        const done = ssGet(DONE_KEY)
+        if (!done || done === 'asked') ssSet(DONE_KEY, 'shown')
+      } else if (!rowOnly) ssSet(DONE_KEY, 'shown')
       if (row) ssSet(ROW_AGAIN_KEY, 'used')
       ssSet(ATTENTION_KEY, '1')
       // A new opening on screen: its answer is measured too (the card's, earlier in the visit, may have been).
@@ -939,6 +999,8 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ...contactTestProps(opening),
         // The row's second chance, after a card that brought no contact (rowAgainOpen): measured apart.
         ...(rowOnly ? { again: true } : {}),
+        ...(leftAsked ? { left_how: leftAsked.how } : {}),
+        ...(afterCard ? { after_card: true } : {}),
       })
     }
 
@@ -952,12 +1014,53 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       setTimeout(check, 500)
     })
 
+    // Test 1's moment (triggers.ts pickFormLeft): the window the visitor closed in the last FORM_LEFT_WITHIN_S, the
+    // test running for this visitor (an arm) and not used in this visit nor in the last 24 h, nothing in the way.
+    const formLeftDue = (now: number): QuoteWindowClosed | null => {
+      const l = left
+      if (!l || !formLeftArm() || !formLeftOpenNow() || offMoments().includes('form_left')) return null
+      // The agent-first test: while Alex waits for an agent, no moment is asked (agentTest.ts), test 1's neither.
+      if (alexWaitLeftMs(now) > 0) return null
+      const blocks = formLeftBlocks({
+        how: l.how, pageVisible: document.visibilityState === 'visible', sitePopup: false,
+        sinceSiteTypingS: lastOtherTyping === null ? null : (now - lastOtherTyping) / 1000,
+        chatOpen: stepRef.current !== 'buttons', hasChat: !allowedRef.current, alreadyUsed: false,
+        visitorId: !!getVisitorId(),
+      })
+      return pickFormLeft((now - l.at) / 1000, blocks) ? l : null
+    }
+
     const evaluate = () => {
-      if (fired || disposed || stopped || document.visibilityState !== 'visible') return
-      // The note closed with ✕ while this page was open: no card for the rest of the visit.
-      if (ssGet(NOTE_CLOSED_KEY)) return
+      if (disposed || stopped || document.visibilityState !== 'visible') return
       // The site says this is its thank-you or a legal page (bbc-signals), whatever the address.
       if (noMomentPage(sitePage())) return
+      // Test 1 first, before the other cards (the site's popup still holds it, below): the window just left is the
+      // visitor leaving, in every round. A form sent in place sends no window left (quoteWindow.ts), so it is read
+      // before the press's checks.
+      // Asked apart from the page's moment: not while any answer is on its way (one reservation at a time).
+      const leftNow = !formFired && !pending ? formLeftDue(Date.now()) : null
+      if (leftNow) {
+        if (popups.open()) {
+          if (!popupHeldOnce) {
+            popupHeldOnce = true
+            posthog?.capture('proactive_popup_held', {
+              trigger: 'form_left', device: matches(PHONE) ? 'phone' : 'computer', site: brand.id,
+            })
+          }
+          return
+        }
+        formFired = true
+        pending = true
+        held = FORM_KEY
+        ssSet(held, 'asked')
+        void ask('form_left', matches(PHONE), false, leftNow)
+        return
+      }
+      // The page's moment is asked once, and never while test 1's is on its way or shown.
+      if (fired || formFired) return
+      // The note closed with ✕ while this page was open: no other card for the rest of the visit (test 1's row in its
+      // form-only round still may: the closed note does not stop test 1).
+      if (ssGet(NOTE_CLOSED_KEY) && !formOnly) return
       // The row's second chance, read again each time: a contact left in a chat that sent while this ran (a send
       // finishing after the chat closed), or the site's stop, closes it.
       if (rowOnly && !rowAgainNow()) return
@@ -1005,8 +1108,10 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       if (alexWaitLeftMs(now) > 0) return
       const trigger = pickTrigger(state)
       if (!trigger) return
-      // The second chance is the row beside a refused form, never any other moment (triggers.ts rowMoment).
-      if (rowOnly && !rowMoment(trigger, quote)) return
+      // The second chance is the row beside a refused form, never any other moment (triggers.ts rowMoment); so is test
+      // 1's form-only round, for a visitor the test runs for (its row, `after_card`).
+      if ((rowOnly || formOnly) && !rowMoment(trigger, quote)) return
+      if (formOnly && !formLeftArm()) return
       // E1: no card over a popup of the site; it comes once the popup closes (the quote moment looks past the
       // quote form's own modal).
       const pressedForm = press?.form ?? null
@@ -1019,6 +1124,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       }
       fired = true
       pending = true
+      held = formOnly ? FORM_KEY : baseHeld
       ssSet(held, 'asked')
       void ask(trigger, state.phone, readingMoment(state, trigger))
     }
@@ -1040,6 +1146,11 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
     // What the site said before this watch started (the queue), then what it says from now on.
     for (const e of siteEvents()) onSite(e)
     const offSite = onSiteEvent(onSite)
+    // Test 1: a window left is answered at once, not at the next second of the clock.
+    const offLeft = onQuoteWindowClosed((c) => {
+      left = c
+      evaluate()
+    })
     const tick = setInterval(evaluate, 1000)
 
     return () => {
@@ -1049,6 +1160,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       pending = false
       clearInterval(tick)
       offSite()
+      offLeft()
       if (refusalTimer !== null) clearTimeout(refusalTimer)
       for (const ev of pointerEvents) window.removeEventListener(ev, onActivity, cap)
       window.removeEventListener('scroll', onScroll, cap)

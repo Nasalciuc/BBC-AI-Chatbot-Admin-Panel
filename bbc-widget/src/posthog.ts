@@ -1,5 +1,6 @@
 import posthogSdk from 'posthog-js'
 import { agentTestProps } from './agentTest'
+import { formLeftProps } from './formLeftTest'
 import { choosePostHog, sitePostHogOf, watchSitePostHog, type PostHogLike } from './posthogChoice'
 import { tapCapture } from './visitTap'
 
@@ -85,7 +86,8 @@ export const posthog = {
   capture(event: string, properties?: Record<string, unknown>): void {
     // The side of the owner's agent-first test rides on every event while the visit has one (agentTest.ts):
     // the comparison reads per side, the card's moments, the hellos and the leads alike.
-    try { active()?.capture(event, { ...agentTestProps(), ...properties }) } catch { /* tracking never breaks the chat */ }
+    // So does test 1's arm, with the test's name (formLeftTest.ts): every event reads on the arm from the page's start.
+    try { active()?.capture(event, { ...agentTestProps(), ...formLeftProps(), ...properties }) } catch { /* tracking never breaks the chat */ }
     // The visit registry keeps the same events, as short words (visits.ts), with or without a PostHog running.
     tapCapture(event, properties)
   },

@@ -80,9 +80,10 @@
  */
 import type { CloseHow } from './quoteWindowRead'
 
-/** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. */
-export type Trigger = 'kayak' | 'ads' | 'social' | 'quote' | 'reader' | 'exit'
-const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit']
+/** `exit` is no longer picked (see above); it stays in the type so an opening kept before reads back. `form_left`: test
+ *  1's moment after the quote window was closed unsent (pickFormLeft), picked before pickTrigger. */
+export type Trigger = 'kayak' | 'ads' | 'social' | 'quote' | 'reader' | 'exit' | 'form_left'
+const TRIGGERS: readonly Trigger[] = ['kayak', 'ads', 'social', 'quote', 'reader', 'exit', 'form_left']
 
 /** The server's answer for a moment switched off on its own (PROACTIVE_TRIGGERS), with the feature on: the
  *  visit keeps its one moment for the others (proactive.ts), and this one is not asked again in it. Without
@@ -434,6 +435,19 @@ export interface FormLeftCheck {
   hasChat: boolean
   alreadyUsed: boolean
   visitorId: boolean
+}
+
+/** Test 1's moment comes at most this long after the visitor closed the window (owner, 27 Nov: a constant, frozen when
+ *  the test starts, chosen from step 1's data; changed mid-test it would change who of the arms sees the card). Of the
+ *  Kayak phone visitors who closed it with × on 23-27 Nov, 45% stayed ~10 s more: the card must come while they are
+ *  still there. The visitors who send the form reach their first field only at ~15 s, so the open window is never
+ *  touched: the moment comes only after it closed. */
+export const FORM_LEFT_WITHIN_S = 2
+
+/** The form_left moment is due: a window the visitor closed `sinceLeftS` ago (null: none on this page), nothing in the
+ *  way (formLeftBlocks). Never after `unmounted` or `page_hidden`: those are reasons in the way. */
+export function pickFormLeft(sinceLeftS: number | null, blocks: readonly FormLeftReason[]): boolean {
+  return sinceLeftS !== null && sinceLeftS >= 0 && sinceLeftS <= FORM_LEFT_WITHIN_S && blocks.length === 0
 }
 
 export function formLeftBlocks(c: FormLeftCheck): FormLeftReason[] {

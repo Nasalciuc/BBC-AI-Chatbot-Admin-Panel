@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { alexAt, alexCard, alexShown, noteSide } from './agentTest'
+import { noteFormLeftArm } from './formLeftTest'
 import { apiFetch, ensureVisitorId, getVisitorId } from './api'
 import {
   afterRefusedPass, beatBody, configFor, failedAsk, keptPass, lastBeatAgain, nextPollDelay, readConfig, readHello,
@@ -128,6 +129,8 @@ export async function askConfig(apiUrl: string): Promise<LiveConfig> {
   const cfg = res.ok ? readConfig(await res.json()) : failedAsk(res.status)
   // The owner's agent-first test: an answer names this visitor's side (Alex's side gets no pass, never listed).
   if (res.ok) noteSide(cfg.test)
+  // Test 1: the arm this answer names (none: the test is off), for the visit's events and its form_left moment.
+  if (res.ok) noteFormLeftArm(cfg.form_left)
   // Kept only for the id it was asked for: a visitor id changed meanwhile (a form for someone else) must not
   // inherit the last one's pass, which would only be refused (CodeRabbit #273). The registry's pass alone (the list
   // off) is kept too: the next page renews it.
