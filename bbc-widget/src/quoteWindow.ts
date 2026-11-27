@@ -5,13 +5,14 @@
  * floating box that holds the window's own × (`[data-qd-close]`, buybusinessclass.com, Nov 2026), or inside something
  * fixed over the page. A quote form in the page itself is no window. The page is looked at every WINDOW_LOOK_MS: a
  * window seen open starts a run; the run ends when it is no longer shown, or when the page goes out of view with it
- * open. Each run that ends without a send is one `quote_window_closed` (PostHog) and one call to the listeners
+ * open (one a send went out of waits for the page to come back, `kept`). Each run that ends without a send is one
+ * `quote_window_closed` (PostHog) and one call to the listeners
  * (proactive.ts: the form_left moment of test 1). Never in the CRM's iframe (entry.tsx).
  */
 import brand from './config'
 import { posthog } from './posthog'
 import {
-  closeHow, closedFromRun, closedProps, newRun, runAfterSiteEvent, WINDOW_LOOK_MS,
+  closeHow, closedFromRun, closedProps, keptAfterSiteEvent, newRun, runAfterSiteEvent, WINDOW_LOOK_MS,
   type CloseGesture, type CloseHow, type QuoteWindowClosed, type WindowRun,
 } from './quoteWindowRead'
 import { onSiteEvent, type SiteEvent } from './siteSignals'
@@ -132,23 +133,31 @@ export function lastQuoteWindowClosed(): QuoteWindowClosed | null {
 export function startQuoteWindow(): void {
   stopQuoteWindow()
   let open: { el: Element; box: Element; run: WindowRun } | null = null
-  // A window a send went out of, when the page was hidden with it still open (CodeRabbit #291): back in view, the same
-  // window still shown is the same run's, so it stays sent and its close is no window left. Forgotten once it is no
-  // longer shown: the next time it shows, it is a new quote.
-  let sentHidden: Element | null = null
+  // The run of a window a send went out of, when the page went out of view with it still open, and when it went
+  // (CodeRabbit #291). Back in view, the same window still shown goes on with that run, so its close is no window left
+  // while the send stands. The site's word meanwhile is the run's (keptAfterSiteEvent): a send that fails while the page
+  // is out of view leaves the window there unsent, as any other. Taken up by the run that goes on, so a failure after
+  // that is the run's alone; forgotten once the window is no longer shown: the next time it shows, it is a new quote.
+  let kept: { el: Element; box: Element; run: WindowRun; at: number } | null = null
 
-  const finish = (how: CloseHow, at: number) => {
-    const o = open
-    open = null
-    if (!o) return
-    if (how === 'page_hidden' && o.run.sent) sentHidden = o.el
-    const c = closedFromRun(o.run, how, at)
+  const report = (run: WindowRun, how: CloseHow, at: number) => {
+    const c = closedFromRun(run, how, at)
     if (!c) return
     last = c
     posthog?.capture('quote_window_closed', closedProps(c, brand.id))
     for (const l of [...listeners]) {
       try { l(c) } catch { /* one listener's error never stops the others */ }
     }
+  }
+  const finish = (how: CloseHow, at: number) => {
+    const o = open
+    open = null
+    if (!o) return
+    if (how === 'page_hidden' && o.run.sent) {
+      kept = { ...o, at, run: { ...o.run, gesture: null } }
+      return
+    }
+    report(o.run, how, at)
   }
   const look = () => {
     const now = Date.now()
@@ -157,9 +166,15 @@ export function startQuoteWindow(): void {
       return
     }
     if (document.visibilityState !== 'visible') return
-    if (sentHidden && !shown(sentHidden)) sentHidden = null
+    if (kept && !shown(kept.el)) kept = null
     const w = openWindow()
-    if (w) open = { ...w, run: { ...newRun(now), sent: w.el === sentHidden } }
+    if (!w) return
+    let run = newRun(now)
+    if (kept?.el === w.el) {
+      run = kept.run
+      kept = null
+    }
+    open = { ...w, run }
   }
   const inOpen = (t: EventTarget | null) => !!open && t instanceof Node && open.el.contains(t)
   const inWidget = (t: EventTarget | null) => t instanceof Element && !!t.closest('#bbc-widget-root')
@@ -181,6 +196,14 @@ export function startQuoteWindow(): void {
   const onSite = (e: SiteEvent) => {
     if (e.name === 'quote_form_opened') look()
     if (open) open.run = runAfterSiteEvent(open.run, e.name)
+    else if (kept) {
+      const k = keptAfterSiteEvent(kept.run, e.name, document.visibilityState === 'visible')
+      if (k.ended) {
+        const at = kept.at
+        kept = null
+        report(k.run, 'page_hidden', at)
+      } else kept = { ...kept, run: k.run }
+    }
   }
   const onHidden = () => {
     if (document.visibilityState !== 'visible' && open) finish('page_hidden', Date.now())

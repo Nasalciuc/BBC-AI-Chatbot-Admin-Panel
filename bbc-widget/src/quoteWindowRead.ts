@@ -56,6 +56,17 @@ export function runAfterSiteEvent(run: WindowRun, name: string): WindowRun {
   }
 }
 
+/** The run quoteWindow.ts keeps when the page goes out of view with a send out of it, after the site's word while it
+ *  waits (CodeRabbit #291): the run as runAfterSiteEvent leaves it, and `ended` when the send failed with the page
+ *  still out of view: the window was left there unsent, as any window the page hides without a send. Back in view, a
+ *  failure is the run's own: the same window, still shown, goes on with it. */
+export function keptAfterSiteEvent(
+  run: WindowRun, name: string, pageVisible: boolean,
+): { run: WindowRun; ended: boolean } {
+  const next = runAfterSiteEvent(run, name)
+  return { run: next, ended: !pageVisible && !next.sent }
+}
+
 /** How the window went at `goneAt`: the visitor's last gesture when it came just before, else the page took it. */
 export function closeHow(gesture: WindowRun['gesture'], goneAt: number): CloseHow {
   if (gesture && goneAt - gesture.at >= 0 && goneAt - gesture.at <= GESTURE_MS) return gesture.kind

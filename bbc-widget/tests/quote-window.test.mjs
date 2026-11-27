@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  CLOSED_BY_VISITOR, GESTURE_MS, closeHow, closedFromRun, closedProps, newRun, runAfterSiteEvent,
+  CLOSED_BY_VISITOR, GESTURE_MS, closeHow, closedFromRun, closedProps, keptAfterSiteEvent, newRun, runAfterSiteEvent,
 } from '../src/quoteWindowRead.ts'
 import { TYPING_QUIET_S, formLeftBlocks, quietReasons } from '../src/triggers.ts'
 import { VISIT_EVENTS, awayToken, eventToken } from '../src/visitsRead.ts'
@@ -152,12 +152,39 @@ test('a full-screen dialog holds its backdrop: a press outside the box with the 
 
 test('a window a send went out of stays sent when the tab comes back to it (CodeRabbit #291)', () => {
   const w = src('quoteWindow.ts')
-  // Hidden with a send gone out: the same window, still shown when the tab is back, is the same run's.
-  assert.match(w, /if \(how === 'page_hidden' && o\.run\.sent\) sentHidden = o\.el/)
-  assert.match(w, /if \(sentHidden && !shown\(sentHidden\)\) sentHidden = null/)
-  assert.match(w, /open = \{ \.\.\.w, run: \{ \.\.\.newRun\(now\), sent: w\.el === sentHidden \} \}/)
+  // Hidden with a send gone out: its run is kept, and the same window, still shown when the tab is back, goes on with it
+  // (taken up once, so a failure after that is the run's alone).
+  assert.match(w, /if \(how === 'page_hidden' && o\.run\.sent\) \{\s*kept = \{ \.\.\.o, at, run: \{ \.\.\.o\.run, gesture: null \} \}\s*return\s*\}/)
+  assert.match(w, /if \(kept && !shown\(kept\.el\)\) kept = null/)
+  assert.match(w, /let run = newRun\(now\)\s*if \(kept\?\.el === w\.el\) \{\s*run = kept\.run\s*kept = null\s*\}\s*open = \{ \.\.\.w, run \}/)
   // The message that takes no branch: a window that was not sent starts unsent, also the same one shown again.
   assert.deepEqual(newRun(T).sent, false)
   assert.ok(closedFromRun({ ...newRun(T), sent: false }, 'close_button', T + 1000))
   assert.equal(closedFromRun({ ...newRun(T), sent: true }, 'close_button', T + 1000), null)
+})
+
+test('a send that fails while the tab is hidden leaves the window unsent: left there, with the refusal (CodeRabbit #291)', () => {
+  const sent = { ...runAfterSiteEvent(newRun(T), 'quote_form_submitting'), typed: true, focused: true }
+  // Failed with the page still out of view: the window was left there, as one the page hides without a send.
+  const failed = keptAfterSiteEvent(sent, 'quote_form_failed', false)
+  assert.equal(failed.ended, true)
+  const c = closedFromRun(failed.run, 'page_hidden', T + 4000)
+  assert.ok(c)
+  assert.equal(c.refused, true)
+  assert.equal(c.typed, true)
+  // Failed once the page is back, before the window is looked at again: the run goes on, unsent, and its close counts.
+  const back = keptAfterSiteEvent(sent, 'quote_form_failed', true)
+  assert.equal(back.ended, false)
+  assert.equal(back.run.sent, false)
+  assert.ok(closedFromRun(back.run, 'close_button', T + 9000))
+  // The message that takes no branch: a send that went through, or any other word, keeps it sent and waiting.
+  for (const name of ['quote_form_submitted', 'quote_form_step', 'quote_form_opened']) {
+    const k = keptAfterSiteEvent(sent, name, false)
+    assert.equal(k.ended, false)
+    assert.equal(k.run.sent, true)
+  }
+  // The wiring: while a run is kept (none open), the site's word is its; ended, it is reported as left with the page.
+  const w = src('quoteWindow.ts')
+  assert.match(w, /if \(open\) open\.run = runAfterSiteEvent\(open\.run, e\.name\)\s*else if \(kept\) \{\s*const k = keptAfterSiteEvent\(kept\.run, e\.name, document\.visibilityState === 'visible'\)/)
+  assert.match(w, /if \(k\.ended\) \{\s*const at = kept\.at\s*kept = null\s*report\(k\.run, 'page_hidden', at\)\s*\} else kept = \{ \.\.\.kept, run: k\.run \}/)
 })
