@@ -30,11 +30,13 @@ const SHOWN_AT_KEY = 'bbc_form_left_at'
 
 /** An arm the server named, with the visitor it named it for. */
 export interface HeldArm { arm: FormLeftArm; visitorId: string }
-/** A card of the test shown, with the visitor it was shown to. */
-export interface Shown { at: number; visitorId: string }
+/** When each visitor last saw a card of the test (ms), by visitor id: one visitor's card never moves another's. */
+export type ShownAt = Record<string, number>
+/** The most visitors whose last card the browser keeps (the newest; one older than 24 h holds nothing anyway). */
+export const SHOWN_KEPT = 8
 
 let armInPage: HeldArm | null | undefined
-let shownInPage: Shown | null = null
+let shownInPage: ShownAt = {}
 
 function ssGet(k: string): string | null { try { return sessionStorage.getItem(k) } catch { return null } }
 function ssSet(k: string, v: string) { try { sessionStorage.setItem(k, v) } catch { /* this page's memory holds it */ } }
@@ -61,13 +63,23 @@ export function readHeldArm(v: string | null): HeldArm | null {
   return arm && visitorId ? { arm, visitorId } : null
 }
 
-/** "<ms>:<visitor id>" as kept in localStorage, or null for anything else. */
-export function readShown(v: string | null): Shown | null {
-  const i = v ? v.indexOf(':') : -1
-  if (!v || i < 0) return null
-  const at = Number(v.slice(0, i))
-  const visitorId = v.slice(i + 1)
-  return v.slice(0, i) !== '' && Number.isFinite(at) && visitorId ? { at, visitorId } : null
+/** The visitors' last cards as kept in localStorage (JSON, {"<visitor id>": ms}); anything else is none. */
+export function readShownAt(v: string | null): ShownAt {
+  const out: ShownAt = {}
+  try {
+    const o: unknown = v ? JSON.parse(v) : null
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return out
+    for (const [id, at] of Object.entries(o as Record<string, unknown>)) {
+      if (id && typeof at === 'number' && Number.isFinite(at)) out[id] = at
+    }
+  } catch { /* not ours, or broken: no card on record */ }
+  return out
+}
+
+/** `shown` with `visitorId`'s card at `atMs`: the others kept as they were, the newest SHOWN_KEPT only. */
+export function withShown(shown: ShownAt, visitorId: string, atMs: number): ShownAt {
+  const all = { ...shown, [visitorId]: atMs }
+  return Object.fromEntries(Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, SHOWN_KEPT))
 }
 
 /** A /chat/live answer for `visitorId` came: its `form_left` is that visitor's arm; an answer without one means the
@@ -92,29 +104,35 @@ export function formLeftProps(): { experiment?: string; form_left?: FormLeftArm 
   return a ? { experiment: FORM_LEFT_TEST_ID, form_left: a } : {}
 }
 
-/** The 24 h since `visitorId`'s last card of the test have run out, or there was none: another visitor's card is none
- *  of this one's, and a time in the future (a clock moved back) is none. */
-export function capOpen(shown: Shown | null, nowMs: number, visitorId: string | null): boolean {
-  if (!shown || !visitorId || shown.visitorId !== visitorId) return true
-  return !(shown.at <= nowMs && nowMs - shown.at < FORM_LEFT_EVERY_MS)
+/** The 24 h since a visitor's last card of the test (`shownAt`, or none) have run out: a time in the future (a clock
+ *  moved back) is none. */
+export function capOpen(shownAt: number | null | undefined, nowMs: number): boolean {
+  if (shownAt === null || shownAt === undefined || !Number.isFinite(shownAt)) return true
+  return !(shownAt <= nowMs && nowMs - shownAt < FORM_LEFT_EVERY_MS)
 }
 
-/** Whether this visitor may get a card of the test now (the 24 h, read from this browser and this page). */
+/** Whether this visitor may get a card of the test now: their own last card, read from this page and this browser
+ *  (another visitor's card is none of theirs). */
 export function formLeftCapOpen(nowMs: number = Date.now()): boolean {
   const visitorId = currentVisitor()
-  return capOpen(shownInPage, nowMs, visitorId) && capOpen(readShown(lsGet(SHOWN_AT_KEY)), nowMs, visitorId)
+  if (!visitorId) return true
+  return capOpen(shownInPage[visitorId], nowMs) && capOpen(readShownAt(lsGet(SHOWN_AT_KEY))[visitorId], nowMs)
 }
 
-/** A card of the test was shown to this visitor: none again for them for 24 h. */
-export function noteFormLeftShown(atMs: number = Date.now()): void {
-  const visitorId = currentVisitor()
+/** A card of the test was shown to `visitorId` (the one it was asked for): none again for them for 24 h. */
+export function noteFormLeftShown(atMs: number = Date.now(), visitorId: string | null = currentVisitor()): void {
   if (!visitorId) return
-  shownInPage = { at: atMs, visitorId }
-  lsSet(SHOWN_AT_KEY, `${atMs}:${visitorId}`)
+  shownInPage = withShown(shownInPage, visitorId, atMs)
+  lsSet(SHOWN_AT_KEY, JSON.stringify(withShown(readShownAt(lsGet(SHOWN_AT_KEY)), visitorId, atMs)))
+}
+
+/** Whether `visitorId` (the one an answer was asked for) is still this browser's visitor. */
+export function stillVisitor(visitorId: string): boolean {
+  return currentVisitor() === visitorId
 }
 
 /** For the tests: forget what this page knows. */
 export function resetFormLeftForTests(): void {
   armInPage = undefined
-  shownInPage = null
+  shownInPage = {}
 }

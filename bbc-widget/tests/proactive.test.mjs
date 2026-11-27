@@ -671,7 +671,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\.\.\.\(leftAsked \? \{[\s\S]*?\} : \{\}\),\s+\.\.\.\(afterCard \? \{ after_card: true \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: askedFor, trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\.\.\.\(leftAsked \? \{[\s\S]*?\} : \{\}\),\s+\.\.\.\(afterCard \? \{ after_card: true \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })

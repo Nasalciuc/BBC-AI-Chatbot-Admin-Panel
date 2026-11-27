@@ -29,7 +29,7 @@ import {
 } from './api'
 import { rowField, type ChannelKind, type ChatButton, type RowField } from './channel'
 import brand from './config'
-import { formLeftArm, formLeftCapOpen, noteFormLeftShown } from './formLeftTest'
+import { formLeftArm, formLeftCapOpen, noteFormLeftShown, stillVisitor } from './formLeftTest'
 import { browserLanguage, timeZone } from './i18n'
 import { keepOpening, readKeptOpening } from './keptOpening'
 import { cardAsideWatch, watchPopups } from './overlay'
@@ -844,8 +844,10 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       // on its way (onSite), and the row asks for what the form had when the server was asked (CodeRabbit #279).
       const refusedAsked = trigger === 'quote' ? [...refused] : []
       const lang = browserLanguage()
+      // The visitor this answer is asked for: test 1's answer is theirs alone (formLeftTest.ts stillVisitor).
+      const askedFor = ensureVisitorId()
       const res = await fetchProactiveOffer(apiUrl, {
-        visitor_id: ensureVisitorId(), trigger, trip, site: brand.id,
+        visitor_id: askedFor, trigger, trip, site: brand.id,
         ...(refusedAsked.length ? { refused: refusedAsked } : {}),
         ...(lang ? { lang } : {}),
         device,
@@ -889,6 +891,13 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         ...(leftAsked ? { left_how: leftAsked.how } : {}),
         ...(afterCard ? { after_card: true } : {}),
       })
+      if ((trigger === 'form_left' || afterCard) && !stillVisitor(askedFor)) {
+        // Test 1's answer for a visitor this browser no longer has (a form for someone else meanwhile, in any tab):
+        // neither shown nor spent for the visitor of now, whose reservation goes back (CodeRabbit #291).
+        giveBack()
+        release()
+        return
+      }
       if (res && !res.show && res.arm === FORM_LEFT_OFF_ARM) {
         // Test 1's off arm: asked and counted, never shown. The visit keeps its moment for the other cards, as today
         // (the comparison rests on it), and the test does not ask again in it.
@@ -974,7 +983,7 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
       if (trigger === 'form_left' || afterCard) {
         // Test 1's card: once a visit and once in 24 h (formLeftTest.ts); the visit's moment, if still free, is used too.
         ssSet(FORM_KEY, 'shown')
-        noteFormLeftShown()
+        noteFormLeftShown(Date.now(), askedFor)
         const done = ssGet(DONE_KEY)
         if (!done || done === 'asked') ssSet(DONE_KEY, 'shown')
       } else if (!rowOnly) ssSet(DONE_KEY, 'shown')

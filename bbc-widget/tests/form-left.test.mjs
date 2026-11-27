@@ -10,7 +10,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   FORM_LEFT_EVERY_MS, FORM_LEFT_TEST_ID, VISITOR_ID_KEY, capOpen, formLeftArm, formLeftCapOpen, formLeftProps,
-  noteFormLeftArm, noteFormLeftShown, readArm, readHeldArm, readShown, resetFormLeftForTests,
+  noteFormLeftArm, noteFormLeftShown, readArm, readHeldArm, readShownAt, resetFormLeftForTests, SHOWN_KEPT, stillVisitor,
+  withShown,
 } from '../src/formLeftTest.ts'
 import { FORM_LEFT_WITHIN_S, TYPING_QUIET_S, formLeftBlocks, pickFormLeft, pickTrigger, readOff } from '../src/triggers.ts'
 import { readConfig } from '../src/liveRead.ts'
@@ -62,15 +63,21 @@ test('the arm is the server’s word on /chat/live: three arms, anything else no
 
 test('one card of the test per visitor in 24 h: a second within them does not come, after them it does', () => {
   assert.equal(FORM_LEFT_EVERY_MS, DAY)
-  const shown = { at: T, visitorId: 'v1' }
-  assert.equal(capOpen(null, T, 'v1'), true)
-  assert.equal(capOpen(shown, T + 1, 'v1'), false)
-  assert.equal(capOpen(shown, T + DAY - 1, 'v1'), false)
-  assert.equal(capOpen(shown, T + DAY, 'v1'), true)
-  // One in the future (a clock moved back) is no card; a value that is not "<ms>:<visitor>" is none either.
-  assert.equal(capOpen({ at: T + 60_000, visitorId: 'v1' }, T, 'v1'), true)
-  assert.deepEqual(readShown(`${T}:v1`), shown)
-  for (const bad of [null, '', String(T), 'soon:v1', `${T}:`, `:v1`]) assert.equal(readShown(bad), null)
+  assert.equal(capOpen(null, T), true)
+  assert.equal(capOpen(T, T + 1), false)
+  assert.equal(capOpen(T, T + DAY - 1), false)
+  assert.equal(capOpen(T, T + DAY), true)
+  // One in the future (a clock moved back) is no card, and neither is a value that is not a time.
+  assert.equal(capOpen(T + 60_000, T), true)
+  assert.equal(capOpen(Number.NaN, T), true)
+  // Kept by visitor, as {"<visitor id>": ms}: anything else is no card on record.
+  assert.deepEqual(readShownAt(JSON.stringify({ v1: T, v2: T + 5 })), { v1: T, v2: T + 5 })
+  for (const bad of [null, '', String(T), '[1]', '{"v1":"soon"}', '{oops']) assert.deepEqual(readShownAt(bad), {})
+  // One visitor's card moves only their own; the newest SHOWN_KEPT are kept.
+  assert.deepEqual(withShown({ v1: T }, 'v2', T + 1000), { v2: T + 1000, v1: T })
+  const many = Array.from({ length: SHOWN_KEPT + 2 }, (_, i) => i).reduce((o, i) => withShown(o, `v${i}`, T + i), {})
+  assert.equal(Object.keys(many).length, SHOWN_KEPT)
+  assert.ok(!('v0' in many) && !('v1' in many) && `v${SHOWN_KEPT + 1}` in many)
   inBrowser(new Map([[VISITOR_ID_KEY, 'v1']]), new Map(), () => {
     resetFormLeftForTests()
     noteFormLeftShown(T)
@@ -155,7 +162,7 @@ test('the moment is read first, holds its own key, and asks with how the window 
 test('the off arm is asked and counted, never shown, and the visit keeps its moment for the other cards', () => {
   assert.match(hook, /if \(res && !res\.show && res\.arm === FORM_LEFT_OFF_ARM\) \{[\s\S]*?giveBack\(\)\s+ssSet\(FORM_KEY, 'used'\)\s+release\(\)\s+return\s+\}/)
   // Shown: once a visit and once in 24 h; the visit's moment, if still free, is used too.
-  assert.match(hook, /if \(trigger === 'form_left' \|\| afterCard\) \{[\s\S]*?ssSet\(FORM_KEY, 'shown'\)\s+noteFormLeftShown\(\)/)
+  assert.match(hook, /if \(trigger === 'form_left' \|\| afterCard\) \{[\s\S]*?ssSet\(FORM_KEY, 'shown'\)\s+noteFormLeftShown\(Date\.now\(\), askedFor\)/)
   // The quiet after a window left says already_used by the same rule the moment reads.
   assert.match(hook, /alreadyUsed: !formLeftOpenNow\(\),/)
 })
@@ -218,9 +225,6 @@ test('with sessionStorage refused, the visit’s guards hold on the page: the of
 test('the arm and the 24 h are the visitor’s: another id has neither, in every tab, and gets them back with its id (CodeRabbit #291)', () => {
   assert.deepEqual(readHeldArm('b:v1'), { arm: 'b', visitorId: 'v1' })
   for (const bad of [null, '', 'b', 'x:v1', 'b:']) assert.equal(readHeldArm(bad), null)
-  // Another visitor's card is none of this one's.
-  assert.equal(capOpen({ at: T, visitorId: 'v1' }, T + 1000, 'v2'), true)
-  assert.equal(capOpen({ at: T, visitorId: 'v1' }, T + 1000, null), true)
   const local = new Map([[VISITOR_ID_KEY, 'v1']])
   const tab1 = new Map()
   inBrowser(local, tab1, () => {
@@ -250,4 +254,48 @@ test('the arm and the 24 h are the visitor’s: another id has neither, in every
   })
   // Nothing in Widget.tsx to forget: the binding holds in every tab.
   assert.doesNotMatch(src('Widget.tsx'), /forgetFormLeftArm/)
+})
+
+test('each visitor keeps their own 24 h: A, then B in another tab, then A again within them, and A is still held (CodeRabbit #291)', () => {
+  const local = new Map([[VISITOR_ID_KEY, 'A']])
+  inBrowser(local, new Map(), () => {
+    noteFormLeftShown(T)
+    assert.equal(formLeftCapOpen(T + 1000), false)
+  })
+  // Another tab: a form for someone else gives the browser B, who sees a card of their own.
+  inBrowser(local, new Map(), () => {
+    local.set(VISITOR_ID_KEY, 'B')
+    assert.equal(formLeftCapOpen(T + 2000), true)
+    noteFormLeftShown(T + 2000)
+    assert.equal(formLeftCapOpen(T + 3000), false)
+  })
+  // A new page with A again, within A's 24 h: B's card did not move A's.
+  inBrowser(local, new Map(), () => {
+    local.set(VISITOR_ID_KEY, 'A')
+    assert.equal(formLeftCapOpen(T + 4000), false)
+    assert.equal(formLeftCapOpen(T + DAY), true)
+    // The message that takes no branch: B's own 24 h run from B's card.
+    local.set(VISITOR_ID_KEY, 'B')
+    assert.equal(formLeftCapOpen(T + DAY), false)
+    assert.equal(formLeftCapOpen(T + 2000 + DAY), true)
+  })
+})
+
+test('an answer still on its way when the visitor id changes is not shown, nor spent for the new visitor (CodeRabbit #291)', () => {
+  const local = new Map([[VISITOR_ID_KEY, 'A']])
+  inBrowser(local, new Map(), () => {
+    assert.equal(stillVisitor('A'), true)
+    local.set(VISITOR_ID_KEY, 'B')
+    assert.equal(stillVisitor('A'), false)
+    // The card's 24 h go to the visitor it was asked for, not to whoever the browser has.
+    noteFormLeftShown(T, 'A')
+    assert.equal(formLeftCapOpen(T + 1000), true)
+    local.set(VISITOR_ID_KEY, 'A')
+    assert.equal(formLeftCapOpen(T + 1000), false)
+  })
+  // The wiring: asked for one visitor, checked again when the answer comes, before anything is shown or counted.
+  assert.match(hook, /const askedFor = ensureVisitorId\(\)\s+const res = await fetchProactiveOffer\(apiUrl, \{\s+visitor_id: askedFor,/)
+  const ask = hook.slice(hook.indexOf('const askedFor = ensureVisitorId()'))
+  assert.match(ask, /if \(\(trigger === 'form_left' \|\| afterCard\) && !stillVisitor\(askedFor\)\) \{(?:\s*\/\/[^\n]*)*\s+giveBack\(\)\s+release\(\)\s+return\s+\}/)
+  assert.ok(ask.indexOf('!stillVisitor(askedFor)') < ask.indexOf('res.arm === FORM_LEFT_OFF_ARM'))
 })
