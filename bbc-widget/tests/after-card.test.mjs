@@ -753,9 +753,9 @@ test('the second chance is wired: its own reservation, given back as the first i
   // Its reservation is its own: the visit's moment stays 'shown'. Every answer that gives a moment back gives this one.
   assert.match(hook, /const baseHeld = rowOnly \? ROW_AGAIN_KEY : DONE_KEY\n(?:\s*\/\/[^\n]*\n)*\s+let held = baseHeld\n(?:\s*\/\/[^\n]*\n)*\s+let pending = false\n\s+const giveBack = \(\) => \{\s+pending = false\s+if \(!disposed && ssGet\(held\) === 'asked'\) ssSet\(held, ''\)\s+\}/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
-  // The four answers that give a moment back, the row's new press (round 8), the form gone, test 1's off arm, and test
-  // 1's answer for a visitor the browser no longer has (CodeRabbit #291).
-  assert.equal(ask.split('giveBack()').length - 1, 8)
+  // The four answers that give a moment back, the row's new press (round 8), the form gone, test 1's off arm, test 1's
+  // answer for a visitor the browser no longer has, and test 1's card whose 24 h another tab took (CodeRabbit #291).
+  assert.equal(ask.split('giveBack()').length - 1, 9)
   assert.doesNotMatch(ask, /ssSet\(DONE_KEY, ''\)/)
   // Only the row may come of it: any other answer gives the chance back.
   assert.match(ask, /if \(\(res\.variant === 'row' \|\| \(rowOnly && trigger !== 'form_left'\)\) && !row\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+release\(\)\n\s+return\n\s+\}/)

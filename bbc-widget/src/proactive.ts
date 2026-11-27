@@ -967,6 +967,14 @@ export function useProactive({ apiUrl, step, allowed, rowAgain = false, restored
         release()
         return
       }
+      if ((trigger === 'form_left' || afterCard) && !formLeftCapOpen()) {
+        // Test 1's 24 h, read again at the card: another tab of this visitor may have shown one while this answer was
+        // on its way (the 24 h live in localStorage, shared by the tabs; FORM_KEY is this tab's alone). This one does
+        // not come, and its reservation goes back with no card on record (CodeRabbit #291).
+        giveBack()
+        release()
+        return
+      }
       const surface: Surface = row ? 'row' : phone ? 'card' : 'panel'
       const opening: ProactiveOpening = {
         trigger, message: res.message, quickReplies: res.quick_replies, trip, surface, shownAt: Date.now(),

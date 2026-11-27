@@ -304,3 +304,25 @@ test('an answer still on its way when the visitor id changes is not shown, nor s
   assert.ok(ask.lastIndexOf('if (goneVisitor()) return') < ask.indexOf("posthog?.capture('proactive_eligible'"))
   assert.equal(ask.slice(0, ask.indexOf("posthog?.capture('proactive_eligible'")).split('if (goneVisitor()) return').length - 1, 2)
 })
+
+test('the 24 h are read again at the card: another tab of the visitor that showed one meanwhile keeps this one away (CodeRabbit #291)', () => {
+  // Two tabs of one visitor both asked; the first answer shows its card, and the second finds the 24 h taken.
+  const local = new Map([[VISITOR_ID_KEY, 'A']])
+  inBrowser(local, new Map(), () => {
+    assert.equal(formLeftCapOpen(T), true)
+  })
+  inBrowser(local, new Map(), () => {
+    noteFormLeftShown(T, 'A')
+  })
+  inBrowser(local, new Map(), () => {
+    assert.equal(formLeftCapOpen(T + 1500), false)
+  })
+  // The wiring: right before the display commit, after every way an answer can be dropped, and with nothing awaited
+  // between the read and the write of the 24 h.
+  const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
+  assert.match(ask, /if \(\(trigger === 'form_left' \|\| afterCard\) && !formLeftCapOpen\(\)\) \{(?:\s*\/\/[^\n]*)*\s+giveBack\(\)\s+release\(\)\s+return\s+\}\s+const surface: Surface/)
+  const check = ask.indexOf('&& !formLeftCapOpen()) {')
+  const commit = ask.indexOf("ssSet(FORM_KEY, 'shown')")
+  assert.ok(check > ask.lastIndexOf('if (goneVisitor()) return') && check < commit)
+  assert.doesNotMatch(ask.slice(check, commit), /await /)
+})
