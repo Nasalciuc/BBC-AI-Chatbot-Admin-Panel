@@ -282,6 +282,80 @@ class TestRangeEndsAndMonthYear:
         assert e.departure_date is None and e.return_date is None
 
 
+@freeze_time("2026-11-28")
+class TestRangesWithTheMonthLast:
+    """#3830 (27 Nov 2026): "7-22 August" kept the 22nd as the departure and no return; the ranges whose month
+    comes only with the last day all did, and "the 7th of August to the 22nd" lost its return. Phrasings
+    written like the chats', none copied from one."""
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("7-22 August", "2027-08-07", "2027-08-22"),
+        ("7 to 22 August", "2027-08-07", "2027-08-22"),
+        ("from 7 to 22 of August", "2027-08-07", "2027-08-22"),
+        ("7th-22nd August", "2027-08-07", "2027-08-22"),
+        ("we would go 7 - 22 august", "2027-08-07", "2027-08-22"),
+        ("the 7th to the 22nd of August", "2027-08-07", "2027-08-22"),
+        ("7th to August 22", "2027-08-07", "2027-08-22"),
+        ("from the 3rd to March 15", "2027-03-03", "2027-03-15"),
+        ("the 7th of August to the 22nd", "2027-08-07", "2027-08-22"),
+        ("7 Aug - 22", "2027-08-07", "2027-08-22"),
+        # The first day after the last one: it is in the month before.
+        ("20th to January 5", "2026-12-20", "2027-01-05"),
+        ("28-5 March", "2027-02-28", "2027-03-05"),
+        ("the 3rd to March 1", "2027-02-03", "2027-03-01"),
+        # A year with the last day.
+        ("7-22 Aug 2027", "2027-08-07", "2027-08-22"),
+        ("28-5 January 2027", "2026-12-28", "2027-01-05"),
+        ("20th to January 5, 2027", "2026-12-20", "2027-01-05"),
+        ("the 7th of August 2027 to the 22nd", "2027-08-07", "2027-08-22"),
+        # A count before the dates, and the first range written wins.
+        ("we will be 2-3 people 7-22 August", "2027-08-07", "2027-08-22"),
+        ("I can do 7-22 August or 10-25 August", "2027-08-07", "2027-08-22"),
+    ])
+    def test_the_first_day_is_the_departure_and_the_last_the_return(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+        assert e.trip_type == "round_trip"
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("August 7-22", "2027-08-07", "2027-08-22"),
+        ("August 7 to 22", "2027-08-07", "2027-08-22"),
+        ("Aug 7 - Aug 22", "2027-08-07", "2027-08-22"),
+        ("7 August to 22 August", "2027-08-07", "2027-08-22"),
+        ("7th August - 22nd August", "2027-08-07", "2027-08-22"),
+        ("from August 7th to the 22nd", "2027-08-07", "2027-08-22"),
+        ("Dec 20 - Jan 5", "2026-12-20", "2027-01-05"),
+        ("20 Dec to 5 Jan", "2026-12-20", "2027-01-05"),
+        ("Dec 20th - 5th January", "2026-12-20", "2027-01-05"),
+        ("May 6th to June 7", "2027-05-06", "2027-06-07"),
+        ("May 6 to 7 June", "2027-05-06", "2027-06-07"),
+        ("march 28-5", "2027-03-28", "2027-04-05"),
+        ("leaving on the 7th of August", "2027-08-07", None),
+        ("7 august", "2027-08-07", None),
+        ("returning August 22", None, "2027-08-22"),
+    ])
+    def test_what_was_read_before_reads_the_same(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+
+    @pytest.mark.parametrize("text,dep", [
+        ("Option 2 - March 15", "2027-03-15"),      # a bare number with no "th" or "the" is no first day
+        ("7 August to 2 people", "2027-08-07"),
+        ("7 August to 10:30", "2027-08-07"),
+        ("7 August - 10 days", "2027-08-07"),
+        ("10:30 - 22 August", "2027-08-22"),
+        ("3-4 people in August", None),
+    ])
+    def test_no_range_where_the_numbers_are_something_else(self, text, dep):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, None)
+
+    def test_a_first_day_the_month_lacks_leaves_the_dates_unread(self):
+        # The 30th of February does not exist: the 5th of March is the return of a range, not a departure.
+        e = extract_entities("30-5 March")
+        assert (e.departure_date, e.return_date) == (None, None)
+
+
 @freeze_time("2026-11-23")
 class TestACountWithADashIsNoDate:
     """23 Nov 2026: a stay or a count written with a dash ("for 2-3 weeks", "10-14 days") was read as a month

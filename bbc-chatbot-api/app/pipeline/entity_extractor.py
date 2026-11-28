@@ -449,6 +449,63 @@ _DATE_RANGE_DAY_END = re.compile(
     + _NOT_A_DAY_END,
     re.I
 )
+# "the 7th of August to the 22nd", "7 Aug - 22": the first date named day first, the last one only a day.
+_DATE_RANGE_DAY_FIRST = re.compile(
+    r'(?<![\d/.:])\b(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m>' + _MONTH_PAT + r')\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?'
+    r'\s*,?\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b'
+    + _NOT_A_DAY_END,
+    re.I
+)
+
+# The ranges whose month is written only with the last day. Chat #3830 (27 Nov 2026): "7-22 August" kept
+# the 22nd as the departure and no return, and a later message put the return there too (22 → 22 Aug).
+# "7-22 August", "7 to 22 August", "from 7 to 22 of August", "7th-22nd Aug 2027": the days first.
+_DATE_RANGE_MONTH_LAST = re.compile(
+    r'(?<![\d/.:])\b(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?'
+    r'\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?'
+    r'(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m>' + _MONTH_PAT + r')\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?',
+    re.I
+)
+# "7th to August 22", "from the 3rd to March 15", "the 20th to January 5": a bare first day. It carries its
+# "th" or a "the"/"from" before it: "Option 2 - March 15" is no range.
+_DATE_RANGE_BARE_START = re.compile(
+    r'(?<![\d/.:])(?:\b(?P<lead>(?:from\s+)?the|from)\s+)?\b(?P<d1>\d{1,2})(?!\d)'
+    r'(?(lead)(?:st|nd|rd|th)?|(?:st|nd|rd|th))'
+    r'\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?'
+    r'(?P<m>' + _MONTH_PAT + r')(?:\.\s*|\s+)(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?',
+    re.I
+)
+# A month written just before the first day: that day is named too ("May 6 to 7 June"), and the named dates
+# read the range (step 2 of _extract_dates).
+_MONTH_BEFORE_RE = re.compile(r'\b(?:' + _MONTH_PAT + r')\.?\s*$', re.I)
+
+
+def _month_last(pattern: "re.Pattern", text: str) -> "re.Match | None":
+    """The first range of `pattern` (_DATE_RANGE_MONTH_LAST, _DATE_RANGE_BARE_START) in `text`, or None when
+    there is none or its first day is named with a month of its own."""
+    m = pattern.search(text)
+    if m is None or _MONTH_BEFORE_RE.search(text, 0, m.start("d1")):
+        return None
+    return m
+
+
+def _month_last_dates(m: "re.Match") -> tuple[str | None, str | None]:
+    """(departure, return) of a range whose month is written only with the last day: the first day is in
+    that month, or in the month before when it comes after the last day ("28-5 March" leaves on 28 Feb,
+    "the 20th to January 5" on 20 Dec). (None, None) when the first day is no date ("30-5 March"): the
+    last day alone is the return, never the departure."""
+    month = MONTH_NAMES.get(m.group("m").lower())
+    if not month:
+        return None, None
+    d1, d2 = int(m.group("d1")), int(m.group("d2"))
+    year = int(m.group("y")) if m.group("y") else None
+    if d1 > d2:
+        month, year = (12, year - 1 if year else None) if month == 1 else (month - 1, year)
+    dep = _make_date(month, d1, year)
+    return (dep, _day_end(dep, d2)) if dep else (None, None)
 
 
 def _day_end(dep_iso: str, day: int) -> str | None:
@@ -589,13 +646,20 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
             if _dep and _ret:
                 return _dep, _ret
 
-    # 1. A range whose end is only a day: "March 15-22", "april 5 to 26" (the first one written wins)
-    _day_ranges = [r for r in (_DATE_RANGE_DASH.search(text), _DATE_RANGE_DAY_END.search(text)) if r]
+    # 1. A range whose month is written once: "March 15-22", "april 5 to 26", "the 7th of August to the 22nd",
+    # "7-22 August", "7th to August 22" (the first one written wins)
+    _day_ranges = [r for r in (
+        _DATE_RANGE_DASH.search(text), _DATE_RANGE_DAY_END.search(text), _DATE_RANGE_DAY_FIRST.search(text),
+        _month_last(_DATE_RANGE_MONTH_LAST, text), _month_last(_DATE_RANGE_BARE_START, text),
+    ) if r]
     m = min(_day_ranges, key=lambda r: r.start()) if _day_ranges else None
+    if m and m.re in (_DATE_RANGE_MONTH_LAST, _DATE_RANGE_BARE_START):
+        return _month_last_dates(m)
     if m:
         month = MONTH_NAMES.get(m.group("m").lower())
         if month:
-            dep = _make_date(month, int(m.group("d1")))
+            _y = m.groupdict().get("y")
+            dep = _make_date(month, int(m.group("d1")), int(_y) if _y else None)
             if dep:
                 return dep, _day_end(dep, int(m.group("d2")))
 
