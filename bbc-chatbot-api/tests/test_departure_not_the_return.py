@@ -94,7 +94,11 @@ class TestTheNet:
     ("leaving on August 22 to come back", False),
     ("departing August 22 on the return", False),
     ("We leave on August 22 instead; we will book the return later", True),   # a return named apart
-    ("leaving August 22, returning home in September", False),
+    ("leaving August 22, returning home in September", True),        # the return in another clause
+    ("we leave August 22, back home by September", True),
+    ("we leave August 22 and come back the 30th", True),             # the two legs said together
+    ("leave on August 22 to return on the 30th", True),
+    ("our return flight leaves August 22", False),
     ("we depart August 22 on our return flight", False),
     ("leave it as is, August 22 works", False),                  # a leave that is no journey
     ("please leave the dates, August 22 works", False),

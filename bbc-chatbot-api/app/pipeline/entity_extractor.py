@@ -691,13 +691,17 @@ _LEAVING_RE = re.compile(
 )
 
 
-# Leaving on the way back: "we leave Rome on the 22nd to fly home", "departing the 22nd on the return" leave the
-# destination, not home. Not a return named in another clause: "we leave on the 22nd; we'll book the return later"
-# still moves the departure (CodeRabbit #291).
+# Leaving on the way back, in the same clause: "we leave Rome on the 22nd to fly home", "departing the 22nd on
+# the return", "our return flight leaves the 22nd" leave the destination, not home. Not a return named apart, nor
+# the two legs said together: "we leave on the 22nd; we'll book the return later", "leaving the 22nd, back home by
+# September", "we leave the 22nd and come back the 30th" still move the departure (CodeRabbit #291).
 _RETURN_LEG_RE = re.compile(
-    r"\b(?:inbound|(?:come|coming|fly|flying|head|heading|go|going|get|getting)\s+(?:back|home)"
-    r"|return(?:ing)?\s+home|back\s+home|(?:on|for)\s+(?:the|our|my)\s+(?:return|way\s+(?:back|home))"
-    r"|return\s+(?:flight|leg|trip|journey)s?)\b",
+    r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?)\b[^.;,!?\n]*?\b(?:"
+    r"to\s+(?:fly|come|go|head|get)\s+(?:back|home)\b"
+    r"|(?:on|for)\s+(?:the|our|my)\s+(?:return|inbound|way\s+(?:back|home))\b"
+    r"|(?:the|our|my)\s+(?:return|inbound)\s+(?:flight|leg|trip|journey)s?\b)"
+    r"|\b(?:(?:return|inbound)\s+(?:flight|leg|trip|journey)s?|(?:flight|trip)s?\s+(?:back|home))\s+"
+    r"(?:leav|depart)\w*",
     re.I,
 )
 
