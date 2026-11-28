@@ -670,8 +670,10 @@ def mentions_date(text: Optional[str]) -> bool:
 
 # "leave", "leaving", "depart", "departure", "fly out", "fly on", "outbound", "the trip starts", "our trip will
 # start", "we start our trip": the message speaks of the way out. "August 22 works" does not, nor "school starts
-# the next day": a start or a beginning counts only with the trip (CodeRabbit #291).
-_TRIP_WORD = r"(?:trip|journey|travel|vacation|holiday|flight)s?"
+# the next day": a start or a beginning counts only with the trip, and not the way back ("our return flight will
+# start…", "the trip home begins…") (CodeRabbit #291).
+_TRIP_WORD = (r"(?<!\breturn\s)(?<!\breturning\s)(?<!\binbound\s)(?<!\bhome\s)"
+              r"(?:trip|journey|travel|vacation|holiday|flight)s?(?!\s+(?:back|home)\b)")
 _LEAVING_RE = re.compile(
     r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?|fly(?:ing)?\s+(?:out|on)|outbound|head(?:ing)?\s+out"
     r"|" + _TRIP_WORD + r"\s+(?:(?:will|would|should|could|can|is|are|now|then|be)\s+){0,3}"
