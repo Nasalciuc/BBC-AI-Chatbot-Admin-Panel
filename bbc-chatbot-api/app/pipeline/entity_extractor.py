@@ -668,14 +668,22 @@ def mentions_date(text: Optional[str]) -> bool:
     return bool(text and _DATE_MENTION_RE.search(text))
 
 
-# "leave", "leaving", "depart", "departure", "fly out", "fly on", "outbound", "the trip starts", "our trip will
-# start", "we start our trip": the message speaks of the way out. "August 22 works" does not, nor "school starts
+# "leave", "leaving", "depart", "departure", "fly out", "fly on the 22nd", "outbound", "the trip starts", "our trip
+# will start", "we start our trip": the message speaks of the way out. "August 22 works" does not, nor "school starts
 # the next day": a start or a beginning counts only with the trip, and not the way back ("our return flight will
-# start…", "the trip home begins…") (CodeRabbit #291).
+# start…", "the trip home begins…"); nor "leave it as is" or "we fly on Emirates" (CodeRabbit #291).
 _TRIP_WORD = (r"(?<!\breturn\s)(?<!\breturning\s)(?<!\binbound\s)(?<!\bhome\s)"
               r"(?:trip|journey|travel|vacation|holiday|flight)s?(?!\s+(?:back|home)\b)")
+# Not "leave it as is", "leave a message", "leave the dates": a leave that is no journey.
+_NOT_A_JOURNEY = (r"(?!\s+(?:it|this|that|them|me|us|you|him|her|everything|as\s+is"
+                  r"|a\s+(?:message|note|review|comment|voicemail)|the\s+(?:dates?|rest|return|message|note|details)"
+                  r"|my\s+(?:number|details|email|phone))\b)")
+# "fly on" a day, never on an airline ("we fly on Emirates").
+_ON_A_DAY = (r"(?=(?:the\s+)?(?:\d|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|" + _MONTH_PAT
+             + r")\b))")
 _LEAVING_RE = re.compile(
-    r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?|fly(?:ing)?\s+(?:out|on)|outbound|head(?:ing)?\s+out"
+    r"\b(?:leav(?:e|es|ing)" + _NOT_A_JOURNEY + r"|depart(?:s|ing|ure)?|fly(?:ing)?\s+out"
+    r"|fly(?:ing)?\s+on\s+" + _ON_A_DAY + r"|outbound|head(?:ing)?\s+out"
     r"|" + _TRIP_WORD + r"\s+(?:(?:will|would|should|could|can|is|are|now|then|be)\s+){0,3}"
     r"(?:start(?:s|ing)?|begin(?:s|ning)?)"
     r"|(?:start(?:s|ing)?|begin(?:s|ning)?)\s+(?:the\s+|our\s+|my\s+)?" + _TRIP_WORD + r")\b",

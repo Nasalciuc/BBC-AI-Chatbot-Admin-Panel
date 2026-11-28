@@ -96,6 +96,12 @@ class TestTheNet:
     ("We leave on August 22 instead; we will book the return later", True),   # a return named apart
     ("leaving August 22, returning home in September", False),
     ("we depart August 22 on our return flight", False),
+    ("leave it as is, August 22 works", False),                  # a leave that is no journey
+    ("please leave the dates, August 22 works", False),
+    ("can we leave a day later, on August 22?", True),
+    ("we fly on Emirates, August 22 works", False),               # an airline, not a day
+    ("flying on the 22nd of August", True),
+    ("we fly on Saturday, August 22", True),
     ("Back on August 22; school starts the next day", False),   # a start that is not the trip's
     ("the meeting begins at 9", False),
     ("August 22 works", False),
