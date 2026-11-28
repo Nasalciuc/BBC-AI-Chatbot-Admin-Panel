@@ -193,6 +193,14 @@ class TestHeldBack:
                    {"role": "user", "content": "Chicago"}]
         assert _held({"origin": "ORD", "destination": "BCN"}, "Chicago", history) == {"destination"}
 
+    def test_a_yes_answers_our_question_not_the_statement_beside_it(self):
+        # CodeRabbit #291: the place in a statement, the question about something else.
+        history = [{"role": "ai", "content": "Barcelona fares are available. Shall I send you a quote?"}]
+        assert _held({"destination": "BCN"}, "Right.", history) == {"destination"}
+        # Two questions, one of them about the place: the yes confirms it.
+        history = [{"role": "ai", "content": "Business class to Barcelona? Where would you fly from?"}]
+        assert _held({"destination": "BCN"}, "yes, from Chicago", history) == set()
+
     def test_a_yes_to_a_question_that_named_no_place(self):
         history = [{"role": "agent", "content": "Shall I send you a quote?"}]
         assert _held({"destination": "BCN"}, "yes", history) == {"destination"}

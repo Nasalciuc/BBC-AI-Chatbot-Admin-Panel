@@ -89,10 +89,16 @@ def _names(text: Optional[str], code: str, words: set[str]) -> bool:
     return any(re.search(r"\b" + re.escape(w) + r"\b", text, re.I) for w in words)
 
 
+def _questions(text: Optional[str]) -> list[str]:
+    """The questions of one of our messages: a yes answers a question, never a statement beside it
+    ("Barcelona fares are available. Shall I send you a quote?" asks nothing about Barcelona: CodeRabbit #291)."""
+    return re.findall(r"[^.!?\n]*\?", text or "")
+
+
 def _client_words(history: Optional[list], message: str) -> tuple[list[str], list[str]]:
-    """(the client's messages, our messages the client answered yes to), over the history and this message.
-    A yes answers our message just before it: "yes" to "Is Barcelona where you'd like to go?" still counts
-    on the turn after, when the client answers where they fly from (CodeRabbit #291)."""
+    """(the client's messages, the questions of ours the client answered yes to), over the history and this
+    message. A yes answers our message just before it: "yes" to "Is Barcelona where you'd like to go?" still
+    counts on the turn after, when the client answers where they fly from (CodeRabbit #291)."""
     from app.pipeline.contact_capture import last_question
 
     said: list[str] = []
@@ -107,11 +113,11 @@ def _client_words(history: Optional[list], message: str) -> tuple[list[str], lis
         elif m.get("role") == "user":
             said.append(content)
             if ours and _YES_RE.match(content):
-                agreed.append(ours)
+                agreed.extend(_questions(ours))
     # This message: the history holds it when it was saved first; read again either way.
     said.append(message or "")
     if _YES_RE.match(message or ""):
-        agreed.append(last_question(history))
+        agreed.extend(_questions(last_question(history)))
     return said, agreed
 
 
