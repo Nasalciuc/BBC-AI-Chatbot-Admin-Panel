@@ -5,7 +5,7 @@ Auth: CRON_SECRET header (not JWT).
 
 import hmac
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -138,6 +138,30 @@ def _crm_fingerprint(conv: dict, lead: dict) -> str:
     # passengers.child corrected by the counts alone is a new request (CodeRabbit #270).
     parts += [str(lead.get(k) or lead.get(f"_{k}") or 0) for k in ("children_count", "infant_count")]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+# The same data the CRM refused (422) is asked again a day later, not never: on 27 Nov 2026 the BCT endpoint
+# began taking a lead with one contact, and the BCT leads it had refused since 17 Nov stayed out until their marks
+# were cleared by hand (owner, 28 Nov 2026). Once a day, not every tick: a 422 asked for again every five minutes
+# was #3324 (18 Nov).
+_REFUSAL_ASKED_AGAIN_AFTER = timedelta(hours=24)
+
+
+def _refusal_still_fresh(mark: dict, now: datetime) -> bool:
+    """The CRM's 422 for this data (metadata.crm_refused) is under a day old: asking again now repeats it.
+
+    A mark with no time, one we cannot read or one ahead of now (another process's clock) is not fresh: the CRM is
+    asked once more, and a new refusal writes a time we can read."""
+    raw = mark.get("at")
+    at: Optional[datetime] = None
+    if isinstance(raw, str) and raw.strip():
+        try:
+            at = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        except ValueError:  # noqa: silent — a time we cannot read is no time: the CRM is asked once more, by design
+            at = None
+    if at is not None and at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at is not None and timedelta(0) <= now - at < _REFUSAL_ASKED_AGAIN_AFTER
 
 
 async def _persist_refusal(lead_id: str, error: str) -> bool:
@@ -488,12 +512,19 @@ async def run_abandoned_crm() -> dict:
 
             # The CRM refused this data with a 422 and nothing it was built from
             # has changed since: asking again every five minutes only repeats
-            # the refusal (#3324, 18 Nov 2026). It stays visible in the panel.
+            # the refusal (#3324, 18 Nov 2026). It stays visible in the panel,
+            # and the CRM is asked again once a day: its rules change too.
             _fp = _crm_fingerprint(conv, lead)
             _refused_before = (conv.get("metadata") or {}).get("crm_refused")
             if isinstance(_refused_before, dict) and _refused_before.get("fp") == _fp:
-                results.append({"id": cid, "status": "skipped", "reason": "crm_refused_unchanged"})
-                continue
+                if _refusal_still_fresh(_refused_before, datetime.now(timezone.utc)):
+                    results.append({"id": cid, "status": "skipped", "reason": "crm_refused_unchanged"})
+                    continue
+                CRM_PUSH_HEALTH["refusal_asked_again"] += 1
+                logger.info(
+                    f"[cron][{cid}] the CRM refused this data a day ago or more "
+                    f"({_refused_before.get('fields') or 'unknown'}): asked again"
+                )
 
             # The rows this loop judged were read at the start of the tick. Under the chat's CRM lock (the agent's
             # button holds it around its own call) the receipts are read again, and the lock is kept until this
