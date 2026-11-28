@@ -54,7 +54,7 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
     if not flag("EXTRACT_EVERY_MESSAGE", True):
         return
     try:
-        from app.pipeline.entity_extractor import extract_entities
+        from app.pipeline.entity_extractor import extract_entities, speaks_of_leaving
         from app.services import lead_service
         from app.db import supabase as db
 
@@ -75,6 +75,9 @@ async def extract_and_push(conversation_id: str, message: str) -> None:
             "must_haves": extracted.needs,
         }
         entities = {k: v for k, v in entities.items() if v is not None}
+        if entities.get("departure_date"):
+            # The lead's return read again as the departure stays off the lead (lead_service, #3830).
+            entities["_departure_said"] = speaks_of_leaving(message)
         if entities:
             await lead_service.update_lead_from_entities(conversation_id, entities)
         if not flag("OPERATOR_DETAILS_CARD", False):

@@ -374,7 +374,7 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
   // The row's second chance (rowAgain: in a visit whose card brought no contact, the row beside a refused form once
   // more) comes over the conversation that card's chat left too; ChatWindow sends its contact into it.
   const proactive = useProactive({
-    apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,
+    apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening, embedded,
   })
   const openProactive = (o: ProactiveOpening) => {
     noteRunRef.current++
@@ -637,7 +637,9 @@ export function Widget({ apiUrl, embedded = false }: { apiUrl: string; embedded?
           context={pageCtx}
           unread={unread}
           card={proactive.offer?.surface === 'card' && !proactive.aside ? proactive.offer : null}
-          onCardOpen={(reply) => { if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply }) }}
+          onCardOpen={(reply, button) => {
+            if (proactive.offer) openProactive({ ...proactive.offer, firstReply: reply, ...(button ? { firstButton: button } : {}) })
+          }}
           onCardDismiss={() => proactive.dismiss('not_now')}
           onCardChannel={(kind) => { if (proactive.offer) openProactive({ ...proactive.offer, firstChannel: kind }) }}
           pill={sessionActive ? null : proactive.pill}

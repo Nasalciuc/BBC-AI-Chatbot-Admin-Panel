@@ -57,12 +57,14 @@ from app.services import note_bandit, proactive_i18n
 
 logger = logging.getLogger(__name__)
 
-Trigger = Literal["kayak", "ads", "social", "quote", "reader", "exit"]
+Trigger = Literal["kayak", "ads", "social", "quote", "reader", "exit", "form_left"]
 # Every moment a widget may name; the ones that open the card unless PROACTIVE_TRIGGERS says otherwise.
 # "ads": the visit came from a Google or Bing ad and the page names a destination (bbc-widget triggers.ts):
 # on 17-18 Nov about 350 such visitors a day stayed at least 8 s and got no moment at all.
 # "social": the visit came from a paid Meta ad (Facebook, Instagram), at the reading moment (25 Nov).
-TRIGGERS: tuple[str, ...] = ("kayak", "ads", "social", "quote", "reader", "exit")
+# "form_left": the visitor closed the site's quote window without sending it (test 1, below): in TRIGGERS, never in
+# DEFAULT_TRIGGERS — FORM_LEFT_TEST alone switches it on, not PROACTIVE_TRIGGERS.
+TRIGGERS: tuple[str, ...] = ("kayak", "ads", "social", "quote", "reader", "exit", "form_left")
 DEFAULT_TRIGGERS: tuple[str, ...] = ("kayak", "ads", "social", "quote", "reader")
 # The tapped note (module docstring): asked for by the visitor, so in no arm.
 NOTE = "note"
@@ -127,6 +129,13 @@ _CABINS = {"economy": "Economy", "premium_economy": "Premium Economy", "business
 # plain one); seed_errors: the lead could not start with the page's search.
 PROACTIVE_HEALTH: dict = {
     "offers": 0, "shown": 0, "opened": 0, "open_failures": 0, "seed_errors": 0, "last_seed_error_at": None,
+    # Test 1 (form_left, below): the moments asked; the control arm's (counted, not shown); the cards shown by variant
+    # (and the row after a card, "row"); a language with no words yet (the card fell back to English); the windows
+    # by how the widget saw them close; whether an agent is online could not be read (no minute promised then).
+    "form_left_offers": 0, "form_left_off": 0,
+    "form_left_shown": {"fl_a": 0, "fl_b_day": 0, "fl_b_day_quiet": 0, "fl_b_night": 0, "row": 0},
+    "form_left_words_missing": 0, "form_left_how": {"close_button": 0, "escape": 0, "backdrop": 0},
+    "form_left_agents_unknown": 0,
 }
 
 
@@ -160,6 +169,119 @@ def arm_for(visitor_id: Optional[str]) -> str:
         return "control"
     percent = int(flag("PROACTIVE_PERCENT", 100) or 0)
     return "proactive" if in_arm(EXPERIMENT, visitor_id, percent) else "control"
+
+
+# --- test 1: the quote window left -----------------------------------------
+#
+# The owner's test 1 ("Testul 1: plan de implementare", 27 Nov 2026): the visitor closes the site's quote window
+# without sending it (bbc-widget quoteWindow.ts: ×, Esc or a click outside it), and within seconds a card offers what
+# the form asked for, without the form. On Kayak 23-27 Nov about 245 a day left that window, ~90 of them closing it
+# with × and staying on the page; nothing caught them (88% had already had the card).
+#
+# Three arms, stable per visitor and salted apart from every other test (experiments.bucket("form_left", …)):
+# 0-33 off (asked and counted, never shown: the control), 34-66 A — the form's ask without the form ("No form needed…
+# Text or email, one is enough") — and 67-99 B — the chat now, by the team's hours: in them, with an agent online,
+# "about a minute" (the promise the wait button keeps, card_words.wait_answer); in them with nobody online, only that
+# an agent helps here; outside them, the fares by text or email when the team is back, no hour promised (weekends and
+# the Australians included). Why 33/33/33 and not 50/25/25: the control has ~1% contacts, so a bigger control does
+# not hurry on-against-off (6.4 days against 6.0 at the small effect) and makes A against B a third longer.
+#
+# FORM_LEFT_TEST (app_settings.flags, off at merge) switches it on; off, the moment answers TRIGGER_OFF and
+# /chat/live names no arm, so the widget never asks. The proactive chat's own control arm (arm_for) sees no card here
+# either, as with every card. The row beside a refused form that the widget asks for after a card or in the pause
+# (`after_card`, its form-only round) is the same test's: the off arm gets "no", as today; A and B get the row.
+FORM_LEFT = "form_left"
+FORM_LEFT_EXPERIMENT = "form_left"
+# The test's name on every event and chat (bbc-widget: `experiment`), so the arms are read without guessing.
+FORM_LEFT_TEST_ID = "form_left_2026_11"
+FORM_LEFT_OFF = "form_left_off"
+FL_A = "fl_a"
+FL_B_DAY = "fl_b_day"
+FL_B_DAY_QUIET = "fl_b_day_quiet"
+FL_B_NIGHT = "fl_b_night"
+FORM_LEFT_VARIANTS: tuple[str, ...] = (FL_A, FL_B_DAY, FL_B_DAY_QUIET, FL_B_NIGHT)
+# The closes the widget names (bbc-widget quoteWindowRead.ts CLOSED_BY_VISITOR): only after one of these.
+FORM_LEFT_HOW: tuple[str, ...] = ("close_button", "escape", "backdrop")
+
+
+def form_left_on() -> bool:
+    """Test 1 runs (FORM_LEFT_TEST, off unless app_settings.flags says true)."""
+    from app.flags import flag
+    return bool(flag("FORM_LEFT_TEST", False))
+
+
+def form_left_arm(visitor_id: Optional[str]) -> Optional[str]:
+    """"off", "a" or "b" for this visitor while test 1 runs; None while it is off or with no visitor id."""
+    from app.experiments import bucket
+
+    if not visitor_id or not form_left_on():
+        return None
+    b = bucket(FORM_LEFT_EXPERIMENT, visitor_id)
+    if b is None:
+        return None
+    if b <= 33:
+        return "off"
+    return "a" if b <= 66 else "b"
+
+
+def form_left_variant(arm: str, team_online: bool, agent_online: bool) -> str:
+    """The words of arm A, or of arm B by the team's hours and an agent online now."""
+    if arm == "a":
+        return FL_A
+    if not team_online:
+        return FL_B_NIGHT
+    return FL_B_DAY if agent_online else FL_B_DAY_QUIET
+
+
+def _no(trigger: str, arm: str, **more) -> dict:
+    return {"show": False, "arm": arm, "trigger": trigger, "message": None, "quick_replies": [], **more}
+
+
+def _form_left_offer(
+    visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str],
+    lang: Optional[str], place: Optional[str], team_online: bool, agent_online: bool, how: Optional[str],
+) -> dict:
+    """Test 1's answer: the form_left moment, or the row a widget asks for after a card or in the pause."""
+    from app.services import card_words
+
+    PROACTIVE_HEALTH["form_left_offers"] += 1
+    if how in FORM_LEFT_HOW:
+        PROACTIVE_HEALTH["form_left_how"][how] += 1
+    if not enabled():
+        return _no(trigger, "off")
+    arm = form_left_arm(visitor_id)
+    if arm is None:
+        # The test is off (or no visitor id): this moment alone, as a moment switched off.
+        return _no(trigger, TRIGGER_OFF, reason="no_visitor_id" if not visitor_id else "test_off")
+    if arm_for(visitor_id) != "proactive":
+        return _no(trigger, "control", form_left=arm)
+    if arm == "off":
+        PROACTIVE_HEALTH["form_left_off"] += 1
+        return _no(trigger, FORM_LEFT_OFF, form_left=arm)
+    if trigger == "quote":
+        # The row beside the refused form, after a card or in the pause: as the quote moment answers it today.
+        if place != "form":
+            return _no(trigger, FORM_LEFT_OFF, form_left=arm, reason="no_row")
+        lang = proactive_i18n.card_lang(lang)
+        text, replies = compose("quote", trip, site, ROW, lang)
+        PROACTIVE_HEALTH["shown"] += 1
+        PROACTIVE_HEALTH["form_left_shown"]["row"] += 1
+        out = {"show": True, "arm": f"form_left_{arm}", "trigger": trigger, "message": text, "quick_replies": replies,
+               "variant": ROW, "buttons": card_words.row_buttons(lang), "form_left": arm}
+        if lang:
+            out["lang"] = lang
+        return out
+    if proactive_i18n.card_lang(lang):
+        # English first (the owner approves the English words, then Spanish and French): counted, never silent.
+        PROACTIVE_HEALTH["form_left_words_missing"] += 1
+    variant = form_left_variant(arm, team_online, agent_online)
+    text, replies = compose(FORM_LEFT, trip, site, variant, None)
+    PROACTIVE_HEALTH["shown"] += 1
+    PROACTIVE_HEALTH["form_left_shown"][variant] += 1
+    return {
+        "show": True, "arm": f"form_left_{arm}", "trigger": trigger, "message": text, "quick_replies": replies,
+        "variant": variant, "buttons": card_words.form_left_buttons(variant), "form_left": arm,
+    }
 
 
 # --- the words ------------------------------------------------------------
@@ -438,7 +560,7 @@ def tests_started(now: Optional[datetime] = None) -> bool:
 def known_variant(variant: object) -> Optional[str]:
     """A variant any door may carry back (the note's bandit, the quote's CONTACT or ROW, the Kayak card's
     BEAT); anything else None."""
-    if variant in (CONTACT, ROW, BEAT):
+    if variant in (CONTACT, ROW, BEAT) or variant in FORM_LEFT_VARIANTS:
         return variant  # type: ignore[return-value]
     return note_bandit.known(variant)
 
@@ -472,6 +594,8 @@ def applied_variant(trigger: str, trip: Optional[TripContext], variant: Optional
     the usual ones, and the chat counts for no variant)."""
     if trigger == "quote":
         return variant if variant in (CONTACT, ROW) else None
+    if trigger == FORM_LEFT:
+        return variant if variant in FORM_LEFT_VARIANTS else None
     if trigger == "kayak":
         return BEAT if variant == BEAT and full_trip(trip) else None
     if trigger != NOTE or _names_a_destination(trip):
@@ -509,6 +633,17 @@ def compose(
     reply_key = trigger if trigger in _REPLIES else "reader"
     replies = proactive_i18n.replies(lang, reply_key) or list(_REPLIES[reply_key])
 
+    if trigger == FORM_LEFT:
+        # Test 1: the arm's words, in English (the widget's "Not now" under the buttons card_words.form_left_buttons
+        # gives). A variant that is not one of the test's is arm A's words.
+        key = {FL_B_DAY: "form_left_b_day", FL_B_DAY_QUIET: "form_left_b_day_quiet",
+               FL_B_NIGHT: "form_left_b_night"}.get(variant or "")
+        if key:
+            return proactive_i18n.sentence(None, key), ["Not now"]
+        route = _route_line(trip)
+        a = proactive_i18n.sentence(None, "form_left_a_line").format(line=route) if route else (
+            proactive_i18n.sentence(None, "form_left_a"))
+        return a, ["Not now"]
     if trigger == "quote" and variant == ROW:
         # The row beside the refused form: short (the route only, the form shows the rest), and its own
         # two buttons (card_words.row_buttons), no chips.
@@ -648,7 +783,7 @@ def offer(
     visitor_id: Optional[str], trigger: str, trip: Optional[TripContext], site: Optional[str] = None,
     refused: Optional[list[str]] = None, lang: Optional[str] = None, device: Optional[str] = None,
     place: Optional[str] = None, c4: Optional[str] = None, c4_open: bool = True, team_online: bool = False,
-    opens_field: bool = False,
+    opens_field: bool = False, after_card: bool = False, agent_online: bool = False, how: Optional[str] = None,
 ) -> dict:
     """Should this visitor see the card now, and what does it say.
 
@@ -671,10 +806,16 @@ def offer(
     the owner's contact test (contact_field_test). The answer then names the side (`contact_test`); on the
     field side `confirm` carries the field it opens (`field`), and "Get a fare quote" on a card that knows no
     whole trip gets a `confirm` of its own, contact first (CONTACT_FIRST_TRIGGERS).
+
+    Test 1 (`form_left`, and the row asked `after_card`): _form_left_offer, by its own arms. `agent_online`: an agent
+    is online now (the route reads it only for that moment, in the team's hours); `how`: how the widget saw the
+    window close, counted.
     """
     from app.services import card_words, contact_field_test
 
     PROACTIVE_HEALTH["offers"] += 1
+    if trigger == FORM_LEFT or (after_card and trigger == "quote"):
+        return _form_left_offer(visitor_id, trigger, trip, site, lang, place, team_online, agent_online, how)
     lang = proactive_i18n.card_lang(lang)
     contact_side = contact_field_test.side(visitor_id) if opens_field else None
     if trigger == NOTE:
@@ -813,6 +954,10 @@ def init_metadata(
         meta["proactive_trip"] = trip.model_dump(mode="json", exclude_none=True)
     if known_variant(variant):
         meta["proactive_variant"] = variant
+    if trigger == FORM_LEFT and variant in FORM_LEFT_VARIANTS:
+        # Test 1: the test and the arm on the chat (and the lead's CRM line reads it from the visitor id, suid).
+        meta["form_left_test"] = FORM_LEFT_TEST_ID
+        meta["form_left_arm"] = "a" if variant == FL_A else "b"
     lang = proactive_i18n.card_lang(lang)
     if lang:
         meta["client_lang"] = lang
@@ -954,11 +1099,17 @@ async def open_conversation(
 
 def _entities_from_trip(trip: TripContext) -> dict:
     """The page's search in the shape update_lead_from_entities takes. Trip
-    type is left out on purpose: that writer marks it as said by the client."""
+    type is left out on purpose: that writer marks it as said by the client.
+
+    The places a page is about (a route page, TripContext.from_the_page) stay
+    off the lead: #3823 (27 Nov 2026) opened on a destination page, the lead
+    took the page's city as the destination and the bot told the client so;
+    they wanted another one. They reach the lead once the client says them
+    (app.pipeline.page_place)."""
     ent: dict = {}
-    if trip.origin_code:
+    if trip.origin_code and not trip.from_the_page:
         ent["origin"] = trip.origin_code
-    if trip.destination_code:
+    if trip.destination_code and not trip.from_the_page:
         ent["destination"] = trip.destination_code
     if trip.depart_date:
         ent["departure_date"] = trip.depart_date.isoformat()
@@ -1080,6 +1231,13 @@ def _recorded_landed(lead: dict) -> Optional[list[str]]:
     return [f for f in landed if f in _SEED_FIELDS]
 
 
+def _unseeded_side(trip: TripContext, side: str) -> bool:
+    """The page names this side of the route ("origin", "destination") and the seed never writes it on the
+    lead: a city named only in words, or any place of a page the trip is about (_entities_from_trip)."""
+    name, code = getattr(trip, f"{side}_name"), getattr(trip, f"{side}_code")
+    return bool(name or code) and (trip.from_the_page or not code)
+
+
 def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> str:
     """How the lead stands against what the page seeded, over `fields` (all
     the seeded ones for the prompt, route and dates for the CRM note):
@@ -1098,14 +1256,22 @@ def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> 
     without the record counts the seed as written when the lead holds any of
     the page's fields, the cabin "business" aside (one update writes them
     all or none)."""
-    # A route the page named only in words (a route page's title) is never
-    # written on the lead: a code there is one the client gave.
-    if (trip.origin_name and not trip.origin_code and lead.get("origin_code")) or (
-        trip.destination_name and not trip.destination_code and lead.get("destination_code")
-    ):
-        return "changed"
+    # A route the page named only in words, or a place the page is about (a
+    # route page, TripContext.from_the_page), is never written on the lead by
+    # the seed: a code there is one the client gave. Unless it is the page's
+    # own code and a seed from before #3823 wrote it: it recorded so, or it
+    # was older than the record and the fallback below reads it (CodeRabbit
+    # #291).
     every = _pairs(lead, trip)
     recorded = _recorded_landed(lead)
+    for side in ("origin", "destination"):
+        column = f"{side}_code"
+        if not (_unseeded_side(trip, side) and lead.get(column)):
+            continue
+        have, page = every.get(column, (None, None))
+        if page is not None and have == page and (recorded is None or column in recorded):
+            continue
+        return "changed"
     if recorded is None:
         seeded = any(have is not None and not (f == "cabin_class" and have == _CABIN_DEFAULT)
                      for f, (have, _) in every.items())
@@ -1147,6 +1313,14 @@ def page_trip_line(lead: Optional[dict]) -> Optional[str]:
     line = _trip_line(trip)
     if not line:
         return None
+    if trip.from_the_page:
+        # #3823 (27 Nov 2026): "treat it as known" made the page's city the client's trip, and the bot told
+        # them so; they wanted another one. A page is what they were reading, not what they asked for.
+        return (
+            f"From the page the chat opened on, not the client's words: {line}. Until the client says it is "
+            "their trip (they name it, or say yes when you ask), ask once, naturally, whether it is what they "
+            "have in mind, and never state it as their route. If they name another place, theirs wins."
+        )
     return (
         f"From the page (the client's own search, already shown in your opening message): {line}. "
         "Treat it as known and do not ask for it again; if the client changes anything, "

@@ -158,6 +158,10 @@ export async function fetchProactiveOffer(
     lang?: string; device?: 'phone' | 'computer'; place?: 'form'
     /** This widget opens the contact field with the yes's answer: it takes part in the owner's contact test. */
     opens_field?: boolean
+    /** Test 1 (form_left): how the quote window was left, and what was done in it (yes/no, never a value). */
+    left?: { how: string; source: 'site' | 'dom'; focused: boolean; typed: boolean }
+    /** Test 1: the row beside a refused form asked after a card or in the pause (the form-only round). */
+    after_card?: boolean
   },
   timeoutMs: number,
   onTiming?: (t: OfferTiming) => void,

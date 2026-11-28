@@ -61,6 +61,14 @@ SENTENCES: dict[str, dict[str, str]] = {
         "ask_ads_dest": "Want an agent to send you today's {cabin_fares} fares to {dest}?",
         "row_line": "Faster than the form: an agent can send you the fares for {line} by text or by email.",
         "row": "Faster than the form: an agent can send you the fares by text or by email.",
+        # Test 1 (proactive.form_left; the owner approved them on 27 Nov): after the quote window was closed unsent.
+        # English only for now: a card asked in another language falls back to these, counted
+        # (form_left_words_missing). B at night promises no hour: on a Saturday "9 AM" would be wrong.
+        "form_left_a_line": "No form needed. Where should an agent send the fares for {line}? Text or email, one is enough.",
+        "form_left_a": "No form needed. Where should an agent send the fares? Text or email, one is enough.",
+        "form_left_b_day": "Want to talk it through now? An agent can answer you right here in about a minute.",
+        "form_left_b_day_quiet": "Want to talk it through? An agent can help you right here.",
+        "form_left_b_night": "Want the fares by text or email? Our team will follow up as soon as we're back.",
     },
     "es": {
         "hello": "Hola, soy {persona}, de {brand}.",

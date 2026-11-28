@@ -4,13 +4,13 @@ The CRM takes a lead only with an email AND a phone today: a phone-only lead got
 client.email field is required."), and the abandoned sweep asked again every five minutes, an ERROR
 each time (#3324). Now: the refusal happens here, as a gate state the panel shows; a 422 is a refusal
 of that data, remembered with a fingerprint of what the push was built from, and the sweep asks again
-only once that data changes. CRM_SINGLE_CONTACT (off) lets one contact through once the CRM's team
+once that data changes, or a day later (28 Nov 2026). CRM_SINGLE_CONTACT (off) lets one contact through once the CRM's team
 says their side takes it. Every contact and route here is invented."""
 
 import logging
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -194,14 +194,71 @@ async def test_a_422_is_remembered_with_what_the_push_was_built_from():
     assert out["results"][0]["status"] == "crm_failed"
 
 
+def _ago(**delta) -> str:
+    return (datetime.now(timezone.utc) - timedelta(**delta)).isoformat()
+
+
 @pytest.mark.asyncio
-async def test_the_same_data_is_not_sent_again():
+async def test_the_same_data_is_not_sent_again_the_same_day():
     fp = cron._crm_fingerprint(_conv(), _LEAD)
-    conv = _conv(metadata={"crm_refused": {"fields": "client.phone", "fp": fp, "at": "2026-11-18T10:40:00+00:00"}})
+    conv = _conv(metadata={"crm_refused": {"fields": "client.phone", "fp": fp, "at": _ago(hours=23)}})
     out, submit, state, meta = await _sweep(conv, _REFUSED)
     submit.assert_not_awaited()
     meta.assert_not_awaited()
     assert out["results"] == [{"id": "c-9", "status": "skipped", "reason": "crm_refused_unchanged"}]
+
+
+# ── a day on, the same data is asked again (28 Nov 2026) ────────────────
+# On 27 Nov the BCT endpoint began taking a lead with one contact; the BCT leads it had refused since 17 Nov
+# stayed out until their marks were cleared by hand. The CRM's rules change: once a day, it is asked again.
+
+@pytest.mark.asyncio
+async def test_the_same_data_is_asked_again_a_day_later(caplog):
+    fp = cron._crm_fingerprint(_conv(), _LEAD)
+    conv = _conv(metadata={"crm_refused": {"fields": "client.phone", "fp": fp, "at": _ago(hours=24, minutes=5)}})
+    before = crm.CRM_PUSH_HEALTH["refusal_asked_again"]
+    with caplog.at_level(logging.INFO, logger="app.api.cron"):
+        out, submit, _, _ = await _sweep(conv, CRMResult(success=True, request_id="R-3"))
+    submit.assert_awaited_once()
+    assert out["results"][0]["status"] == "success"
+    assert crm.CRM_PUSH_HEALTH["refusal_asked_again"] == before + 1
+    assert any("refused this data a day ago or more (client.phone): asked again" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_day_old_refusal_refused_again_waits_another_day():
+    fp = cron._crm_fingerprint(_conv(), _LEAD)
+    conv = _conv(metadata={"crm_refused": {"fields": "client.phone", "fp": fp, "at": _ago(days=2)}})
+    out, submit, state, meta = await _sweep(conv, _REFUSED, lead={**_LEAD, "crm_push_gate_reason": "crm_422:client.phone"})
+    submit.assert_awaited_once()
+    meta.assert_awaited_once_with("c-9", {"crm_refused": {"fields": "client.phone", "fp": fp, "at": ANY}})
+    new_mark = meta.await_args.args[1]["crm_refused"]
+    assert cron._refusal_still_fresh(new_mark, datetime.now(timezone.utc)), "the new time holds it for a day"
+    assert out["results"][0]["status"] == "crm_failed"
+
+
+_NOW = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("at, fresh", [
+    ((_NOW - timedelta(minutes=1)).isoformat(), True),
+    ((_NOW - timedelta(hours=23, minutes=59)).isoformat(), True),
+    ("2026-11-28T11:00:00Z", True),                       # written with a Z
+    ("2026-11-28T11:00:00", True),                        # no zone: ours are UTC
+    ((_NOW - timedelta(hours=24)).isoformat(), False),
+    ((_NOW - timedelta(days=10)).isoformat(), False),
+    ((_NOW + timedelta(minutes=5)).isoformat(), False),   # ahead of now: asked once more, a new time follows
+    (None, False),
+    ("", False),
+    ("not a time", False),
+    (1764331200, False),                                  # not ours
+])
+def test_when_a_refusal_is_still_fresh(at, fresh):
+    mark = {"fields": "client.phone", "fp": "x"}
+    if at is not None:
+        mark["at"] = at
+    assert cron._refusal_still_fresh(mark, _NOW) is fresh
 
 
 @pytest.mark.asyncio

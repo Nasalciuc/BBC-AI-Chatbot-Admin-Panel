@@ -277,7 +277,8 @@ test('the side is the server\'s word, kept for the visit and put on every event'
   assert.deepEqual(at.agentTestProps(), {})
   // posthog.ts sends it with every event the widget captures, the event's own properties last.
   const ph = readFileSync(join(here, '..', 'src', 'posthog.ts'), 'utf8')
-  assert.match(ph, /active\(\)\?\.capture\(event, \{ \.\.\.agentTestProps\(\), \.\.\.properties \}\)/)
+  // (test 1's arm rides beside it: form-left.test.mjs).
+  assert.match(ph, /active\(\)\?\.capture\(event, \{ \.\.\.agentTestProps\(\), \.\.\.formLeftProps\(\), \.\.\.properties \}\)/)
 })
 
 test('Alex\'s wait: the server\'s seconds, held to its cap, and the time he comes', async () => {
@@ -387,7 +388,7 @@ test('while Alex waits no moment is asked, and the wait gives the moment back', 
   const branch = held.slice(0, held.indexOf('return'))
   assert.match(branch, /holdAlex\(res\.retry_after_s, res\.alex_at\)/)
   assert.match(branch, /giveBack\(\)/)
-  assert.match(branch, /fired = false/)
+  assert.match(branch, /release\(\)/)
   // The wait sits before the moment is picked: nothing is asked again until it is over.
   const ev = src.slice(src.indexOf('const evaluate = () => {'))
   const guard = ev.indexOf('if (alexWaitLeftMs(now) > 0) return')

@@ -338,7 +338,7 @@ test('a trip that changed under the answer gives the visit its moment back, a fe
   // site said meanwhile stays), evaluate may fire again, and the page counts the asks.
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // Then the row's second chance's own (round 8), then the drop that keeps the moment used.
-  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(givesRowBack\(passed, rowOnly\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+fired = false\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{/)
+  assert.match(ask, /if \(givesMomentBack\(passed, tripAskedAgain\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+tripAskedAgain\+\+\n\s+giveBack\(\)\n\s+release\(\)\n\s+return\n\s+\}\n\s+if \(givesRowBack\(passed, rowOnly\)\) \{\n(?:\s*\/\/[^\n]*\n)*\s+giveBack\(\)\n\s+release\(\)\n\s+return\n\s+\}\n\s+if \(disposed \|\| !res \|\| !res\.show \|\| !res\.message \|\| passed\) \{/)
   // Measured first: the dropped answer keeps its moment_passed on proactive_eligible.
   assert.ok(ask.indexOf('moment_passed: passed') < ask.indexOf('if (givesMomentBack(passed, tripAskedAgain))'))
   // Counted per page: the hook's moments start each page at nothing.
@@ -377,7 +377,7 @@ test('a moment the server switched off on its own leaves the visit\'s moment to 
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   // The tab keeps the whole list this visit knows (CodeRabbit #269, round 3): a moment whose own write was refused
   // rides on the next write that goes through.
-  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+giveBack\(\)\s+fired = false\s+return\s+\}/)
+  assert.match(ask, /if \(res && !res\.show && res\.arm === TRIGGER_OFF_ARM\) \{[\s\S]*?offInPage = offAfter\(offInPage, trigger\)\s+(?:\/\/[^\n]*\n\s+)*ssSet\(OFF_KEY, offMoments\(\)\.join\(','\)\)\s+\/\/[^\n]*\n\s+giveBack\(\)\s+release\(\)\s+return\s+\}/)
   assert.doesNotMatch(ask, /ssSet\(OFF_KEY, offAfter\(ssGet\(OFF_KEY\)/)
   assert.ok(ask.indexOf('TRIGGER_OFF_ARM') > ask.indexOf("posthog?.capture('proactive_eligible'"), 'measured first')
   // The list holds in the page's memory too: with the tab's storage refused, the switched-off moment is not asked
@@ -671,7 +671,7 @@ test('the offer has its 3.5 s answer or nothing, and says how it went', () => {
   assert.equal(OFFER_TIMEOUT_MS, 3500)
   assert.match(api, /\/api\/chat\/proactive\/offer/)
   assert.match(api, /ctrl\?\.abort\(\)/)
-  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: ensureVisitorId\(\), trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
+  assert.match(hook, /fetchProactiveOffer\(apiUrl, \{\s+visitor_id: askedFor, trigger, trip, site: brand\.id,\s+\.\.\.\(refusedAsked\.length \? \{ refused: refusedAsked \} : \{\}\),\s+\.\.\.\(lang \? \{ lang \} : \{\}\),\s+device,\s+\.\.\.\(rowAt \? \{ place: 'form' as const \} : \{\}\),(?:\s+\/\/[^\n]*)?\s+opens_field: true,\s+\.\.\.\(leftAsked \? \{[\s\S]*?\} : \{\}\),\s+\.\.\.\(afterCard \? \{ after_card: true \} : \{\}\),\s+\}, OFFER_TIMEOUT_MS, \(t\) => took\.push\(t\)\)/)
   const ask = hook.slice(hook.indexOf('const ask = async'), hook.indexOf('const evaluate = () => {'))
   assert.match(ask, /\.\.\.offerMeasures\(took\[0\]\),/)
 })
@@ -760,8 +760,11 @@ test('the connection to the API opens when the widget starts, once, as the anony
 test('the guards: one moment per visit, the 24 h pause, the closed note, the CRM iframe', () => {
   // One moment per visit, and the row's second chance alone after a card that brought no contact (rowAgainOpen,
   // after-card.test.mjs): the pause and the closed note hold both.
-  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowOnly = rowAgain && rowAgainNow\(\)\n\s+if \(!rowOnly && \(!allowed \|\| ssGet\(DONE_KEY\)\)\) return\n\s+if \(ssGet\(NOTE_CLOSED_KEY\) \|\| pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\)\) return/)
-  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening,\s+\}\)/)
+  // Every reason is gathered before the one return (proactive_quiet, test 1; triggers.ts quietReasons, which holds the
+  // rules: a conversation and a used moment hold all but the row's second chance, the pause and the note hold both).
+  assert.match(hook, /if \(step !== 'buttons'\) return\n(?:\s*\/\/[^\n]*\n)*\s+const rowChance = rowAgain && rowAgainNow\(\)\n(?:\s*\/\/[^\n]*\n)*\s+const quiet = quietReasons\(\{\s+hasChat: !allowed, tabUsed: !!ssGet\(DONE_KEY\), pause: pauseRunning\(lsGet\(PAUSE_KEY\), Date\.now\(\)\),\s+noteClosed: !!ssGet\(NOTE_CLOSED_KEY\), rowOnly: rowChance,\s+\}\)\n\s+if \(quiet\.length\) \{[\s\S]*?\n\s+if \(embedded \|\| !allowed \|\| !formLeftOpenNow\(\)\) return\n\s+\}/)
+  // Past that return only test 1's form-only round runs (form-left.test.mjs): its moment and the row, nothing else.
+  assert.match(widget, /useProactive\(\{\s+apiUrl, step, allowed: !embedded && !hasOptimisticSession, rowAgain: !embedded, restored: keptOpening, embedded,\s+\}\)/)
   assert.match(buttons, /onClick=\{\(\) => \{ markNoteClosed\(\); onDismissAttention\?\.\(\) \}\}/)
   // The card replaces the note for the rest of the visit.
   assert.match(widget, /showAttention=\{showAttention && !sessionActive && !proactive\.quiet\}/)
@@ -800,7 +803,8 @@ test('the card\'s chat never falls back to a plain conversation: the send fails,
 
 test('the note closed with ✕ stops the moments on the next tick, not only on the next page', () => {
   const tick = hook.slice(hook.indexOf('const evaluate = () => {'), hook.indexOf('const quote: QuoteState | null'))
-  assert.match(tick, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return/)
+  // Every card but test 1's (owner, 27 Nov: the closed note does not stop it; form-left.test.mjs).
+  assert.match(tick, /if \(ssGet\(NOTE_CLOSED_KEY\) && !formOnly\) return/)
 })
 
 test('an answer that comes after the visitor moved on is dropped and measured, never shown', () => {
@@ -991,8 +995,9 @@ test('few messages sit by the buttons and the composer, never under an empty ban
 test('the site goes with the offer and with every proactive event, so BBC and BCT are never mixed', () => {
   const captures = hook.match(/posthog\?\.capture\('proactive_[a-z_]+', \{[\s\S]*?\}\)/g) || []
   // The five of the moments, the note's proactive_shown and proactive_note_unanswered, the popup the card waited
-  // for (E1), and the pill after "Not now" (C2): shown, closed, opened.
-  assert.equal(captures.length, 11)
+  // for (E1), the pill after "Not now" (C2): shown, closed, opened, and test 1's: the two quiets (the page's moments,
+  // and the form_left moment after a window left) and the popup its card waited for.
+  assert.equal(captures.length, 14)
   for (const call of captures) assert.match(call, /site: brand\.id/, call.slice(0, 60))
   assert.match(api, /body: \{\s+visitor_id: string; trigger: string; trip: unknown; site: string; refused\?: string\[\]\s/)
 })

@@ -214,6 +214,11 @@ export function ChatWindow({
       const no = chips.findIndex(c => isNotNow(c.label))
       chips.splice(no < 0 ? chips.length : no, 0, { label: o.channel.label, kind: o.channel.kind })
     }
+    // Test 1's panel (form_left): the server's buttons, before "Not now" (Text me · Email me, or "Yes, chat now").
+    if (o.trigger === 'form_left' && o.buttons?.length) {
+      const no = chips.findIndex(c => isNotNow(c.label))
+      chips.splice(no < 0 ? chips.length : no, 0, ...o.buttons.map(b => ({ label: b.label, kind: b.kind })))
+    }
     return chips
   })
   // The widget's own words, in the browser's language (i18n.ts); the server's are already in it.
@@ -539,8 +544,9 @@ export function ChatWindow({
       const first = o.firstReply
       if (first) {
         onProactiveEngaged?.(first)
-        // The card's yes on a card that knew the whole trip: its answer is on screen at once (A2).
-        sendMessage(first, yesOptions(o, first))
+        // The card's yes on a card that knew the whole trip: its answer is on screen at once (A2). Test 1's "Yes, chat
+        // now" goes as the wait button it is (card_buttons._wait: the line for a person, the minute only if one is online).
+        sendMessage(first, o.firstButton ? { button: o.firstButton } : yesOptions(o, first))
       } else if (o.firstContact) {
         // The row beside the refused form took the contact itself (FormRow.tsx): it goes out as the client's first
         // message, as the channel's field sends it. Only the kind goes to PostHog, never the contact.

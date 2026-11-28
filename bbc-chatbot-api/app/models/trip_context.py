@@ -183,6 +183,12 @@ class TripContext(BaseModel):
         return self
 
     @property
+    def from_the_page(self) -> bool:
+        """The places are what the page is about (a route page, its title), not a search the visitor ran (Kayak,
+        the site's search): they are not the client's trip until the client says so (#3823, 27 Nov 2026)."""
+        return self.source in ("route_page", "title")
+
+    @property
     def has_route(self) -> bool:
         return bool((self.origin_code or self.origin_name) and (self.destination_code or self.destination_name))
 

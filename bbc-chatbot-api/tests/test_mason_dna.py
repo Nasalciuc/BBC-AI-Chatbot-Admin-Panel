@@ -316,7 +316,8 @@ class TestSiteContext:
         assert "Came from: www.kayak.com via kayak/cpc" in block
         assert "Opened chat on page: /business-class-to-london" in block
         assert "comparing public fares" in block
-        assert "interest in London" in block
+        # The page's city is asked about, never taken as the client's (#3823).
+        assert "is about London: a hint, not their trip yet" in block
 
     def test_absent_without_metadata(self):
         assert build_site_context(None) is None

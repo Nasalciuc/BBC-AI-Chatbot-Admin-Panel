@@ -23,6 +23,8 @@ export interface LiveConfig {
   visits?: boolean
   /** The country the API's edge saw (two letters), for the registry. */
   country?: string
+  /** Test 1 (formLeftTest.ts): this visitor's arm, on every answer while the test runs. */
+  form_left?: 'off' | 'a' | 'b'
 }
 
 export interface LiveHello {
@@ -100,7 +102,9 @@ export function readConfig(raw: unknown): LiveConfig {
   const r = raw as Record<string, unknown>
   // The agent-first test's side rides on every answer, "off" included: Alex's side is never listed.
   const side: LiveConfig['test'] = r.test === 'agent' || r.test === 'alex' ? r.test : undefined
-  const test = side ? { test: side } : {}
+  // Test 1's arm rides on every answer too, "off" and "later" included (formLeftTest.ts).
+  const arm: LiveConfig['form_left'] = r.form_left === 'off' || r.form_left === 'a' || r.form_left === 'b' ? r.form_left : undefined
+  const test = { ...(side ? { test: side } : {}), ...(arm ? { form_left: arm } : {}) }
   if (r.later === true) return { enabled: false, later: true, ...test }
   const url = typeof r.url === 'string' && /^https?:\/\/[^\s/]+/.test(r.url) ? r.url.replace(/\/+$/, '') : null
   const pass = typeof r.pass === 'string' && PASS.test(r.pass) ? r.pass : null

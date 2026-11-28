@@ -60,7 +60,32 @@ def _calculate_score(lead: dict, conv: Optional[dict] = None) -> int:
 
 # Money-path observability: lead writes must never fail silently. Surfaced
 # in /health as lead_writes so ops sees breakage without log diving.
-LEAD_WRITE_HEALTH: dict = {"errors_since_boot": 0, "last_error_at": None}
+# departure_kept: a departure read from a message that was the lead's return (_departure_is_the_return).
+# page_place_held: turns whose AI reading gave the page's place as the route before the client said it
+# (app.pipeline.page_place).
+LEAD_WRITE_HEALTH: dict = {"errors_since_boot": 0, "last_error_at": None, "departure_kept": 0, "page_place_held": 0}
+
+
+def _departure_is_the_return(dep: str, entities: dict, lead: dict) -> bool:
+    """A departure read from the client's message that is the return the lead already holds, after its
+    departure: the message named the return again, and writing it would make the trip leave on the day it
+    comes back. #3830 (27 Nov 2026): "7-22 August" was read as the 22nd alone and the lead ended 22 → 22 Aug.
+
+    Only for a message whose reader says whether it spoke of leaving (`_departure_said`, a bool, set by
+    the orchestrator and the operator card): "we'd rather leave on the 22nd" moves the departure. So do a
+    new return in the same message (not the one the lead holds, read again with it: CodeRabbit #291), a
+    cleared return and a one-way."""
+    if entities.get("_departure_said") is not False:
+        return False
+    held_dep = str(lead.get("departure_date") or "")[:10]
+    held_ret = str(lead.get("return_date") or "")[:10]
+    # The return as it would be written: a past year is moved to the next one first (CodeRabbit #291).
+    new_ret = str(_validate_future_date(entities.get("return_date")) or "")[:10]
+    if (new_ret and new_ret != held_ret) or entities.get("_clear_return_date"):
+        return False
+    if "one_way" in (entities.get("trip_type"), lead.get("trip_type")):
+        return False
+    return bool(held_dep and held_ret and held_dep < held_ret and dep == held_ret)
 
 
 def _record_lead_write_error(conversation_id: str, context: str, exc: Exception) -> None:
@@ -403,6 +428,11 @@ async def update_lead_from_entities(conversation_id: str, entities: dict) -> boo
             lead_payload["cabin_class"] = entities["cabin_class"]
         if entities.get("departure_date"):
             _dep = _validate_future_date(entities["departure_date"])
+            if _dep and _departure_is_the_return(_dep, entities, lead_data):
+                LEAD_WRITE_HEALTH["departure_kept"] += 1
+                logger.info(f"[{conversation_id}] departure {_dep} not written: it is the lead's return, "
+                            f"and the message did not speak of leaving (the departure stays {lead_data.get('departure_date')})")
+                _dep = None
             if _dep:
                 lead_payload["departure_date"] = _dep
         if entities.get("return_date"):

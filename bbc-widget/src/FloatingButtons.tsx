@@ -25,7 +25,8 @@ interface Props {
   /** The proactive card (phones): the server's words for this visitor's search and two buttons. */
   card?: ProactiveOpening | null
   /** Open the chat from the card; `reply` is the button tapped, sent as the visitor's first message. */
-  onCardOpen?: (reply?: string) => void
+  /** `button`: the kind the server gave the tapped button (test 1's "Yes, chat now" is `wait`). */
+  onCardOpen?: (reply?: string, button?: 'wait') => void
   /** "Not now" on the card. */
   onCardDismiss?: () => void
   /** A tap on the 10 s note: the chat with Alex and no form (Widget.tsx). Without it, the form. */
@@ -99,6 +100,8 @@ export function FloatingButtons({
   const cardNo = card?.quickReplies.find(isNotNow) || 'Not now'
   // C1: the card's own channel, between the yes and "Not now".
   const cardChannel = card?.channel && onCardChannel ? card.channel : null
+  // Test 1's card (form_left): the server's own buttons in place of the yes — Text me · Email me, or "Yes, chat now".
+  const cardButtons = card?.trigger === 'form_left' && card.buttons?.length ? card.buttons : null
 
   const label = count > 0
     ? `Chat with ${brand.name}, ${count} new message${count === 1 ? '' : 's'}`
@@ -171,8 +174,15 @@ export function FloatingButtons({
               <span class="bw-nudge__text">{card.message}</span>
             )}
           </button>
-          <div class={`bw-card__actions${cardChannel ? ' bw-card__actions--channel' : ''}`}>
-            {cardYes && (
+          <div class={`bw-card__actions${cardChannel || (cardButtons && cardButtons.length > 1) ? ' bw-card__actions--channel' : ''}`}>
+            {cardButtons && cardButtons.map(b => (b.kind === 'sms' || b.kind === 'email') ? (
+              <button type="button" class="bw-card__channel" onClick={() => onCardChannel?.(b.kind as ChannelKind)}>
+                <ChannelIcon kind={b.kind as ChannelKind} />{b.label}
+              </button>
+            ) : b.kind === 'wait' ? (
+              <button type="button" class="bw-card__yes" onClick={() => onCardOpen?.(b.label, 'wait')}>{b.label}</button>
+            ) : null)}
+            {!cardButtons && cardYes && (
               <button type="button" class="bw-card__yes" onClick={() => onCardOpen?.(cardYes)}>
                 {cardYes}
               </button>

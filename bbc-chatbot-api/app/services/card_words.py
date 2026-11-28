@@ -347,6 +347,23 @@ def contact_unreadable(kind: str, lang: Optional[str] = None) -> tuple[str, list
     return _UNREADABLE[_lang(lang)][channel], [button(channel, lang), button(other, lang)]
 
 
+# Test 1 (proactive.form_left, 27 Nov): the buttons of each arm's card, English first (the owner approved these words on
+# 27 Nov; Spanish and French after). A and B at night ask where the fares go; B in the team's hours asks for the chat now,
+# with the wait button's kind, so its tap joins the line for a person (card_buttons._wait), with the minute promised
+# only while an agent is online. The card's "Not now" comes from its replies.
+_FORM_LEFT_BUTTONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "fl_a": (("sms", "Text me"), ("email", "Email me")),
+    "fl_b_night": (("sms", "Text me"), ("email", "Email me")),
+    "fl_b_day": (("wait", "Yes, chat now"),),
+    "fl_b_day_quiet": (("wait", "Yes, chat"),),
+}
+
+
+def form_left_buttons(variant: Optional[str]) -> list[dict]:
+    """The buttons of test 1's card for `variant` (arm A's for any other)."""
+    return [{"kind": k, "label": label} for k, label in _FORM_LEFT_BUTTONS.get(variant or "", _FORM_LEFT_BUTTONS["fl_a"])]
+
+
 def row_buttons(lang: Optional[str] = None) -> list[dict]:
     """D1: both channels beside the refused form."""
     return [card_channel("sms", lang), card_channel("email", lang)]

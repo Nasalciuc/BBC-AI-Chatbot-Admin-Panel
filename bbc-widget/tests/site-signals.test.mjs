@@ -432,7 +432,8 @@ test('the card and the note start from the newest trip; a visitor who sent the f
   assert.match(stop, /setQuiet\(true\)\s+\/\/[^\n]*\n\s+setOffer\(null\)/)
   // The site's thank-you or legal page: nothing opens by itself, whatever the address; also when the page
   // became one while the server's answer was on its way.
-  assert.match(hook, /if \(ssGet\(NOTE_CLOSED_KEY\)\) return\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return/)
+  const evaluate = hook.slice(hook.indexOf('const evaluate = () => {'))
+  assert.match(evaluate, /^const evaluate = \(\) => \{\n\s+if \(disposed \|\| stopped \|\| document\.visibilityState !== 'visible'\) return\n\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return/)
   assert.match(hook, /if \(blockedPath\(location\.pathname\)\) return 'left_page'\s+\/\/[^\n]*\n\s+if \(noMomentPage\(sitePage\(\)\)\) return 'left_page'/)
   // A search on the site while the answer was on its way: the trip it was asked with is an old one.
   assert.match(hook, /formAt: press\?\.activityAt \?\? null,\s+quoteForm: quoteFormAt, search: lastSearch\(\),/)
@@ -441,7 +442,7 @@ test('the card and the note start from the newest trip; a visitor who sent the f
   // The watch hears the queue first, then the page; and lets go of it on cleanup.
   assert.match(hook, /for \(const e of siteEvents\(\)\) onSite\(e\)\s+const offSite = onSiteEvent\(onSite\)/)
   assert.match(hook, /clearInterval\(tick\)\s+offSite\(\)/)
-  assert.match(hook, /if \(fired \|\| disposed \|\| stopped \|\| document\.visibilityState !== 'visible'\) return/)
+  assert.match(hook, /if \(disposed \|\| stopped \|\| document\.visibilityState !== 'visible'\) return/)
   assert.match(hook, /site_signals: !!sitePage\(\),/)
 })
 

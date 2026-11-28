@@ -211,6 +211,14 @@ Does a person who writes first get more answers than Alex's card (5.7 % on 15-22
   (`agent_test`), the API on the chat's metadata (`agent_test`), and the heartbeat's live block carries
   `"test": {"percent", "hold_s"}`. `/health/detail` counts it under `agent_first_test`. Redis failing holds nobody.
 
+## Test 1: the quote window left (27 Nov 2026)
+
+- While `FORM_LEFT_TEST` runs (`app_settings.flags`, off at merge), every answer of `POST /chat/live` names this
+  visitor's arm of test 1: `"form_left": "off" | "a" | "b"` (`proactive.form_left_arm`, bucketed by visitor id), also
+  on the agent-first test's Alex side. Off, the key is absent, and the widget never asks for the moment.
+- The widget keeps it for the visit and puts it on its PostHog events with `experiment: "form_left_2026_11"`, so every
+  event reads on the arm from the page's start, for the visitors who never see a card too.
+
 ## Redis keys
 
 | Key | Type | Value | Life | Written by |

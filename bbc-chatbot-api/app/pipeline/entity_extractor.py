@@ -91,6 +91,15 @@ AIRPORTS = {
     "KIV", "TAS", "BEG", "KBP", "TBS", "GYD", "TLL", "RIX", "VNO",
     "SOF", "ZAG", "AKL", "CUN", "MAA", "CCU", "BLR", "HYD",
     "GOI", "JED", "MCT", "KWI", "AMM", "ADD", "DAR", "KGL",
+    # The cities added to CITY_TO_CODE on 28 Nov 2026. Not the codes that are also words or currencies a
+    # client may type in capitals: DAY, DAD, SAT, PER, FAT, LIT, NAP, AMA, SAL, CTA, AMD, CPT, MEM, OAK,
+    # BUF, ALB, RIC, TIA, OMA, MYR (their city names still read).
+    "BWI", "JAX", "SMF", "YEG", "TYS", "FLL", "YOW", "PNS", "RSW", "OKC", "ABQ", "SDF", "RNO", "TUS",
+    "GEG", "DSM", "ORF", "GRR", "ANC", "ITO", "GUA", "BZE", "PUJ",
+    "BER", "VCE", "FLR", "OPO", "AGP", "SVQ", "GVA", "KRK", "TGD", "KEF", "SOU", "JTR", "JMK",
+    "TLV", "BEY", "RAK", "DLA", "NSI", "MRU", "SEZ",
+    "LHE", "KHI", "ISB", "DAC", "COK", "CJB", "ATQ", "CMB", "KTM", "MLE",
+    "SGN", "HAN", "CEB", "DVO", "DPS", "HKT", "CNX", "BNE", "ADL",
 }
 AIRPORT_RE = re.compile(r'\b([A-Z]{3})\b')
 
@@ -171,6 +180,39 @@ CITY_TO_CODE = {
     "addis ababa": "ADD", "addis": "ADD",
     "dar es salaam": "DAR",
     "kigali": "KGL",
+    # 28 Nov 2026: the airports the leads of the last 120 days held three times or more that no name here
+    # gave ("Newark to Saigon" read no route), and the island and beach destinations clients ask for. A name
+    # that is also a common word or another place is left to the AI's reading: male, split, sal, clark,
+    # birmingham, santiago, san jose, santa cruz, kingston, victoria, columbia, ontario, panama, sicily.
+    # North America
+    "newark": "EWR", "baltimore": "BWI", "jacksonville": "JAX", "sacramento": "SMF", "omaha": "OMA",
+    "edmonton": "YEG", "memphis": "MEM", "knoxville": "TYS", "fort lauderdale": "FLL", "ft lauderdale": "FLL",
+    "ottawa": "YOW", "pensacola": "PNS", "fort myers": "RSW", "ft myers": "RSW", "oklahoma city": "OKC",
+    "myrtle beach": "MYR", "albuquerque": "ABQ", "fresno": "FAT", "little rock": "LIT", "louisville": "SDF",
+    "reno": "RNO", "tucson": "TUS", "san antonio": "SAT", "spokane": "GEG", "des moines": "DSM",
+    "oakland": "OAK", "buffalo": "BUF", "albany": "ALB", "richmond": "RIC", "norfolk": "ORF",
+    "dayton": "DAY", "amarillo": "AMA", "grand rapids": "GRR", "anchorage": "ANC", "hilo": "ITO",
+    # Central America and the Caribbean
+    "san salvador": "SAL", "el salvador": "SAL", "guatemala city": "GUA", "guatemala": "GUA",
+    "belize": "BZE", "belize city": "BZE", "punta cana": "PUJ",
+    # Europe
+    "berlin": "BER", "venice": "VCE", "venezia": "VCE", "florence": "FLR", "firenze": "FLR",
+    "naples": "NAP", "napoli": "NAP", "catania": "CTA", "porto": "OPO", "oporto": "OPO",
+    "porto alegre": "POA", "malaga": "AGP",
+    "seville": "SVQ", "sevilla": "SVQ", "geneva": "GVA", "geneve": "GVA", "krakow": "KRK", "cracow": "KRK",
+    "tirana": "TIA", "podgorica": "TGD", "reykjavik": "KEF", "southampton": "SOU",
+    "santorini": "JTR", "mykonos": "JMK",
+    # Middle East and Africa
+    "tel aviv": "TLV", "beirut": "BEY", "marrakech": "RAK", "marrakesh": "RAK", "cape town": "CPT",
+    "douala": "DLA", "yaounde": "NSI", "mauritius": "MRU", "seychelles": "SEZ", "the seychelles": "SEZ",
+    # South Asia
+    "ahmedabad": "AMD", "lahore": "LHE", "karachi": "KHI", "islamabad": "ISB", "dhaka": "DAC",
+    "kochi": "COK", "cochin": "COK", "coimbatore": "CJB", "amritsar": "ATQ", "colombo": "CMB",
+    "kathmandu": "KTM", "maldives": "MLE", "the maldives": "MLE",
+    # Southeast Asia and Australia
+    "ho chi minh city": "SGN", "ho chi minh": "SGN", "saigon": "SGN", "hanoi": "HAN",
+    "da nang": "DAD", "danang": "DAD", "cebu": "CEB", "davao": "DVO", "bali": "DPS", "denpasar": "DPS",
+    "phuket": "HKT", "chiang mai": "CNX", "brisbane": "BNE", "perth": "PER", "adelaide": "ADL",
 }
 
 NAME_PATTERNS = [
@@ -336,6 +378,31 @@ ROUTE_FROM_TO_RE = re.compile(
     re.I,
 )
 
+# The longest city name in CITY_TO_CODE, in words ("ho chi minh city"), and the words that begin a longer
+# name ("los" of "los angeles", "san" of "san francisco", "the" of "the maldives").
+_CITY_MAX_WORDS = max(len(name.split()) for name in CITY_TO_CODE)
+_CITY_FIRST_WORDS = frozenset(name.split()[0] for name in CITY_TO_CODE if " " in name)
+_WORD_RUN_RE = re.compile(r"[^\W\d_]+(?:[ \t]+[^\W\d_]+)*")
+
+
+def _place_at(text: str, start: int) -> Optional[str]:
+    """The code of the place a route names at `start`, just after its "to": the longest city name there,
+    else the word itself when it is an airport code. The routes' lazy group stops at the first space, so
+    "to Los Angeles" was read "los", the code of Lagos, "to San Francisco" San Diego's, and "to New York"
+    nothing. A word that only begins a longer name is no code unless typed in capitals ("to SAN")."""
+    run = _WORD_RUN_RE.match(text, start)
+    if not run:
+        return None
+    words = run.group(0).split()
+    for n in range(min(len(words), _CITY_MAX_WORDS), 0, -1):
+        code = CITY_TO_CODE.get(" ".join(words[:n]).lower())
+        if code:
+            return code
+    first = words[0]
+    if first.upper() in AIRPORTS and (first.isupper() or len(words) == 1 or first.lower() not in _CITY_FIRST_WORDS):
+        return first.upper()
+    return None
+
 # Trip type detection
 ONE_WAY_RE = re.compile(
     r'\b(?:one[\s\-]?way|ow|single|only\s+going)\b', re.I
@@ -449,6 +516,63 @@ _DATE_RANGE_DAY_END = re.compile(
     + _NOT_A_DAY_END,
     re.I
 )
+# "the 7th of August to the 22nd", "7 Aug - 22": the first date named day first, the last one only a day.
+_DATE_RANGE_DAY_FIRST = re.compile(
+    r'(?<![\d/.:])\b(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m>' + _MONTH_PAT + r')\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?'
+    r'\s*,?\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b'
+    + _NOT_A_DAY_END,
+    re.I
+)
+
+# The ranges whose month is written only with the last day. Chat #3830 (27 Nov 2026): "7-22 August" kept
+# the 22nd as the departure and no return, and a later message put the return there too (22 → 22 Aug).
+# "7-22 August", "7 to 22 August", "from 7 to 22 of August", "7th-22nd Aug 2027": the days first.
+_DATE_RANGE_MONTH_LAST = re.compile(
+    r'(?<![\d/.:])\b(?P<d1>\d{1,2})(?!\d)(?:st|nd|rd|th)?'
+    r'\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?'
+    r'(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(?P<m>' + _MONTH_PAT + r')\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?',
+    re.I
+)
+# "7th to August 22", "from the 3rd to March 15", "the 20th to January 5": a bare first day. It carries its
+# "th" or a "the"/"from" before it: "Option 2 - March 15" is no range.
+_DATE_RANGE_BARE_START = re.compile(
+    r'(?<![\d/.:])(?:\b(?P<lead>(?:from\s+)?the|from)\s+)?\b(?P<d1>\d{1,2})(?!\d)'
+    r'(?(lead)(?:st|nd|rd|th)?|(?:st|nd|rd|th))'
+    r'\s*(?:-|–|—|to|t0|till?|until|through|thru)\s*(?:the\s+)?'
+    r'(?P<m>' + _MONTH_PAT + r')(?:\.\s*|\s+)(?P<d2>\d{1,2})(?!\d)(?:st|nd|rd|th)?\b'
+    r'(?:\s*,?\s*(?P<y>\d{4})(?!\d))?',
+    re.I
+)
+# A month written just before the first day: that day is named too ("May 6 to 7 June"), and the named dates
+# read the range (step 2 of _extract_dates).
+_MONTH_BEFORE_RE = re.compile(r'\b(?:' + _MONTH_PAT + r')\.?\s*$', re.I)
+
+
+def _month_last(pattern: "re.Pattern", text: str) -> "re.Match | None":
+    """The first range of `pattern` (_DATE_RANGE_MONTH_LAST, _DATE_RANGE_BARE_START) in `text`, or None when
+    there is none or its first day is named with a month of its own."""
+    m = pattern.search(text)
+    if m is None or _MONTH_BEFORE_RE.search(text, 0, m.start("d1")):
+        return None
+    return m
+
+
+def _month_last_dates(m: "re.Match") -> tuple[str | None, str | None]:
+    """(departure, return) of a range whose month is written only with the last day: the first day is in
+    that month, or in the month before when it comes after the last day ("28-5 March" leaves on 28 Feb,
+    "the 20th to January 5" on 20 Dec). (None, None) when the first day is no date ("30-5 March"): the
+    last day alone is the return, never the departure."""
+    month = MONTH_NAMES.get(m.group("m").lower())
+    if not month:
+        return None, None
+    d1, d2 = int(m.group("d1")), int(m.group("d2"))
+    year = int(m.group("y")) if m.group("y") else None
+    if d1 > d2:
+        month, year = (12, year - 1 if year else None) if month == 1 else (month - 1, year)
+    dep = _make_date(month, d1, year)
+    return (dep, _day_end(dep, d2)) if dep else (None, None)
 
 
 def _day_end(dep_iso: str, day: int) -> str | None:
@@ -544,6 +668,52 @@ def mentions_date(text: Optional[str]) -> bool:
     return bool(text and _DATE_MENTION_RE.search(text))
 
 
+# "leave", "leaving", "depart", "departure", "fly out", "fly on the 22nd", "outbound", "the trip starts", "our trip
+# will start", "we start our trip": the message speaks of the way out. "August 22 works" does not, nor "school starts
+# the next day": a start or a beginning counts only with the trip, and not the way back ("our return flight will
+# start…", "the trip home begins…"); nor "leave it as is" or "we fly on Emirates" (CodeRabbit #291).
+# Up to three helper words between a trip and its verb: "our trip will start", "our return flight will leave".
+_AUX = r"(?:(?:will|would|should|could|can|is|are|now|then|be)\s+){0,3}"
+_TRIP_WORD = (r"(?<!\breturn\s)(?<!\breturning\s)(?<!\binbound\s)(?<!\bhome\s)"
+              r"(?:trip|journey|travel|vacation|holiday|flight)s?(?!\s+(?:back|home)\b)")
+# Not "leave it as is", "leave a message", "leave the dates": a leave that is no journey.
+_NOT_A_JOURNEY = (r"(?!\s+(?:it|this|that|them|me|us|you|him|her|everything|as\s+is"
+                  r"|a\s+(?:message|note|review|comment|voicemail)|the\s+(?:dates?|rest|return|message|note|details)"
+                  r"|my\s+(?:number|details|email|phone))\b)")
+# "fly on" a day, never on an airline ("we fly on Emirates").
+_ON_A_DAY = (r"(?=(?:the\s+)?(?:\d|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|" + _MONTH_PAT
+             + r")\b))")
+_LEAVING_RE = re.compile(
+    r"\b(?:leav(?:e|es|ing)" + _NOT_A_JOURNEY + r"|depart(?:s|ing|ure)?|fly(?:ing)?\s+out"
+    r"|fly(?:ing)?\s+on\s+" + _ON_A_DAY + r"|outbound|head(?:ing)?\s+out"
+    r"|" + _TRIP_WORD + r"\s+" + _AUX + r"(?:start(?:s|ing)?|begin(?:s|ning)?)"
+    r"|(?:start(?:s|ing)?|begin(?:s|ning)?)\s+(?:the\s+|our\s+|my\s+)?" + _TRIP_WORD + r")\b",
+    re.I,
+)
+
+
+# Leaving on the way back, in the same clause: "we leave Rome on the 22nd to fly home", "departing the 22nd on
+# the return", "our return flight leaves the 22nd" leave the destination, not home. Not a return named apart, nor
+# the two legs said together: "we leave on the 22nd; we'll book the return later", "leaving the 22nd, back home by
+# September", "we leave the 22nd and come back the 30th" still move the departure (CodeRabbit #291).
+_RETURN_LEG_RE = re.compile(
+    r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?)\b[^.;,!?\n]*?\b(?:"
+    r"to\s+(?:fly|come|go|head|get)\s+(?:back|home)\b"
+    r"|(?:on|for)\s+(?:the|our|my)\s+(?:return|inbound|way\s+(?:back|home))\b"
+    r"|(?:the|our|my)\s+(?:return|inbound)\s+(?:flight|leg|trip|journey)s?\b)"
+    r"|\b(?:(?:return|inbound)\s+(?:flight|leg|trip|journey)s?|(?:flight|trip)s?\s+(?:back|home))\s+" + _AUX
+    + r"(?:leav|depart)\w*",
+    re.I,
+)
+
+
+def speaks_of_leaving(text: Optional[str]) -> bool:
+    """True when the client's message speaks of leaving (_LEAVING_RE) and not of the way back (_RETURN_LEG_RE):
+    only then may a date it gives move the departure onto the return the lead holds
+    (lead_service._departure_is_the_return). A message with a new return moves it anyway."""
+    return bool(text and _LEAVING_RE.search(text) and not _RETURN_LEG_RE.search(text))
+
+
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
     """Extract departure and optional return date from message text.
     Returns (departure_date, return_date) as YYYY-MM-DD strings or None.
@@ -589,13 +759,20 @@ def _extract_dates(text: str) -> tuple[str | None, str | None]:
             if _dep and _ret:
                 return _dep, _ret
 
-    # 1. A range whose end is only a day: "March 15-22", "april 5 to 26" (the first one written wins)
-    _day_ranges = [r for r in (_DATE_RANGE_DASH.search(text), _DATE_RANGE_DAY_END.search(text)) if r]
+    # 1. A range whose month is written once: "March 15-22", "april 5 to 26", "the 7th of August to the 22nd",
+    # "7-22 August", "7th to August 22" (the first one written wins)
+    _day_ranges = [r for r in (
+        _DATE_RANGE_DASH.search(text), _DATE_RANGE_DAY_END.search(text), _DATE_RANGE_DAY_FIRST.search(text),
+        _month_last(_DATE_RANGE_MONTH_LAST, text), _month_last(_DATE_RANGE_BARE_START, text),
+    ) if r]
     m = min(_day_ranges, key=lambda r: r.start()) if _day_ranges else None
+    if m and m.re in (_DATE_RANGE_MONTH_LAST, _DATE_RANGE_BARE_START):
+        return _month_last_dates(m)
     if m:
         month = MONTH_NAMES.get(m.group("m").lower())
         if month:
-            dep = _make_date(month, int(m.group("d1")))
+            _y = m.groupdict().get("y")
+            dep = _make_date(month, int(m.group("d1")), int(_y) if _y else None)
             if dep:
                 return dep, _day_end(dep, int(m.group("d2")))
 
@@ -1713,13 +1890,10 @@ def extract_entities(
         m = ROUTE_RE.search(text)
         if m:
             origin = m.group(1).strip().lower()
-            dest = m.group(2).strip().lower()
             origin_iata = CITY_TO_CODE.get(origin) or (
                 origin.upper() if origin.upper() in AIRPORTS else None
             )
-            dest_iata = CITY_TO_CODE.get(dest) or (
-                dest.upper() if dest.upper() in AIRPORTS else None
-            )
+            dest_iata = _place_at(text, m.start(2))
             if origin_iata and not entities.origin_code:
                 entities.origin_code = origin_iata
             if dest_iata and not entities.destination_code:
@@ -1728,13 +1902,10 @@ def extract_entities(
             m2 = ROUTE_FROM_TO_RE.search(text)
             if m2:
                 origin = m2.group(1).strip().lower()
-                dest = m2.group(2).strip().lower()
                 origin_iata = CITY_TO_CODE.get(origin) or (
                     origin.upper() if origin.upper() in AIRPORTS else None
                 )
-                dest_iata = CITY_TO_CODE.get(dest) or (
-                    dest.upper() if dest.upper() in AIRPORTS else None
-                )
+                dest_iata = _place_at(text, m2.start(2))
                 if origin_iata and not entities.origin_code:
                     entities.origin_code = origin_iata
                 if dest_iata and not entities.destination_code:

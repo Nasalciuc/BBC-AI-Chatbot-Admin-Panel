@@ -4787,6 +4787,13 @@ async def get_pending_conversations(agent_id: Optional[str] = None) -> list[dict
 # table scan.
 _ABANDONED_SCAN_CAP = 200
 
+# The older page the sweep reads next, after the newest one, when that one is full: 1 is rows 200-399, then 2,
+# and back to 1 after the window's last page, so every candidate of the 30 days comes up within a few ticks, at
+# two reads a tick. Until 28 Nov 2026 the scan read the newest page only, and a chat past the first 200 was never
+# seen again: six BCT leads the CRM refused on 17-20 Nov stayed out after the CRM began taking them. Per process,
+# like the counters: a restart starts again at 1.
+_older_page = 1
+
 _ABANDONED_COLUMNS = (
     "id, visitor_name, visitor_phone, visitor_email, visitor_phone_country, "
     "tunnel, message_count, mode, status, metadata, visitor_id, created_at, assigned_agent_id"
@@ -4796,8 +4803,13 @@ _ABANDONED_COLUMNS = (
 # conversation with its newest message and its lead's CRM flag.
 # `embedded_failed`: that read was refused and the plain one ran instead.
 # `message_reads`: conversations asked for one by one (all 200 of them, every
-# 5 minutes, until Nov 2026).
-ABANDONED_SCAN_HEALTH: dict = {"scans": 0, "embedded": 0, "embedded_failed": 0, "message_reads": 0}
+# 5 minutes, until Nov 2026). `cap_hits`: the newest page was full, so an older
+# page was asked for too; `older_reads`: it came; `older_failed`: it could not be
+# read, and that tick swept the newest page only.
+ABANDONED_SCAN_HEALTH: dict = {
+    "scans": 0, "embedded": 0, "embedded_failed": 0, "message_reads": 0,
+    "cap_hits": 0, "older_reads": 0, "older_failed": 0,
+}
 
 _NOT_EMBEDDED = object()
 
@@ -4840,14 +4852,21 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     400 reads every 5 minutes, 199 of them to learn "already in the CRM".
     Which rows are selected, and which count as abandoned, is unchanged. If
     that read is refused the plain one runs and each row is asked for, as
-    before; the row then carries no `_in_crm` and the sweep reads the lead."""
+    before; the row then carries no `_in_crm` and the sweep reads the lead.
+
+    A full newest page means older candidates: one older page is read with it,
+    a different one each tick (_older_page), by the same embedded read; when that
+    read fails, the tick sweeps the newest page only and says so."""
+    global _older_page
     db = get_client()
     _window_start = (
         datetime.now(timezone.utc) - timedelta(days=30)
     ).isoformat()
+    # The older page read this tick, when the newest one is full.
+    older_rows: list = []
 
-    def _candidates(columns: str):
-        return (
+    def _candidates(columns: str, offset: int = 0):
+        q = (
             db.table("conversations")
             .select(columns)
             .in_("status", [*OPEN_STATUSES, "closed"])
@@ -4866,19 +4885,26 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 "and(visitor_email.not.is.null,visitor_email.neq.)"
             )
             .order("created_at", desc=True)
+            # The id breaks ties: the pages are separate reads, and two chats with the same created_at at a page's
+            # edge could otherwise come twice, or not at all (CodeRabbit #291).
+            .order("id")
             .limit(_ABANDONED_SCAN_CAP)
         )
+        return q.offset(offset) if offset else q
+
+    def _embedded_read(offset: int = 0):
+        # The newest message per conversation, the way the list's previews
+        # read it (order + limit inside the embedded rows), and the lead's flag.
+        return _order_inside(
+            _candidates(_ABANDONED_COLUMNS + ", messages(created_at, role), leads(created_in_crm)", offset)
+            .limit(1, foreign_table="messages"),
+            "messages", "created_at", desc=True,
+        ).execute()
 
     ABANDONED_SCAN_HEALTH["scans"] += 1
     result = None
     try:
-        # The newest message per conversation, the way the list's previews
-        # read it (order + limit inside the embedded rows), and the lead's flag.
-        result = await _run_sync(lambda: _order_inside(
-            _candidates(_ABANDONED_COLUMNS + ", messages(created_at, role), leads(created_in_crm)")
-            .limit(1, foreign_table="messages"),
-            "messages", "created_at", desc=True,
-        ).execute(), label="cron")
+        result = await _run_sync(_embedded_read, label="cron")
         ABANDONED_SCAN_HEALTH["embedded"] += 1
     except Exception as e:
         ABANDONED_SCAN_HEALTH["embedded_failed"] += 1
@@ -4895,21 +4921,44 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
             logger.error(f"get_abandoned_conversations query error: {e}")
             return []
 
-    # The widened select (closed + human, 30 days) can return far more
-    # rows than the old active-only one. Cap it — and NEVER cap silently.
-    if len(result.data or []) >= _ABANDONED_SCAN_CAP:
-        logger.warning(
-            f"get_abandoned_conversations: hit the {_ABANDONED_SCAN_CAP}-row "
-            "scan cap — older candidates wait for the next tick"
-        )
+    rows = list(result.data or [])
+    # The widened select (closed + human, 30 days) returns more rows than one
+    # page. Capped, never silently: a full newest page brings one older page
+    # along, in turn, and /health counts both.
+    if len(rows) >= _ABANDONED_SCAN_CAP:
+        ABANDONED_SCAN_HEALTH["cap_hits"] += 1
+        page = _older_page
+        # The embedded read only, never the plain one: that asks each of the page's rows for its newest message and
+        # leaves the sweep to read each lead, up to 400 reads more a tick, the reads this scan was rid of after the
+        # executor saturated on 9-10 Nov 2026. While the embedded read is refused, the newest page keeps its own
+        # fallback, and the older ones wait, counted (older_failed), until it is back.
+        try:
+            older = await _run_sync(lambda: _embedded_read(page * _ABANDONED_SCAN_CAP), label="cron")
+            older_rows = list(older.data or [])
+            ABANDONED_SCAN_HEALTH["older_reads"] += 1
+            # A page short of the cap is the window's last: the next tick starts again right behind the newest.
+            _older_page = page + 1 if len(older_rows) >= _ABANDONED_SCAN_CAP else 1
+            logger.debug(
+                f"get_abandoned_conversations: hit the {_ABANDONED_SCAN_CAP}-row scan cap — "
+                f"older page {page} read too ({len(older_rows)} rows)"
+            )
+        except Exception as e:
+            ABANDONED_SCAN_HEALTH["older_failed"] += 1
+            logger.warning(
+                f"get_abandoned_conversations: hit the {_ABANDONED_SCAN_CAP}-row scan cap, and older page {page} "
+                f"could not be read ({type(e).__name__}: {e}) — this tick sweeps the newest page only"
+            )
+        # A chat that moved between the two reads (new chats push the pages back) comes once.
+        seen = {r.get("id") for r in rows}
+        rows.extend(r for r in older_rows if r.get("id") not in seen)
 
-    if not result.data:
+    if not rows:
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
     abandoned = []
 
-    for conv in result.data:
+    for conv in rows:
         cid = conv["id"]
         try:
             # What the one read brought comes off the row: the sweep and the

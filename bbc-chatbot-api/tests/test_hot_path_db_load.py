@@ -296,7 +296,8 @@ class TestSweepScan:
         assert by["form-only"]["_in_crm"] is False and by["form-only"]["_no_engagement"] is True
         # The row keeps the shape the sweep and the CRM payload always had.
         assert all("messages" not in c and "leads" not in c for c in out)
-        assert _scan_health == {"scans": 1, "embedded": 1, "embedded_failed": 0, "message_reads": 0}
+        assert _scan_health == {"scans": 1, "embedded": 1, "embedded_failed": 0, "message_reads": 0,
+                                "cap_hits": 0, "older_reads": 0, "older_failed": 0}
 
     @pytest.mark.asyncio
     async def test_a_lead_embedded_as_one_object_is_read_too(self):
@@ -365,10 +366,112 @@ class TestSweepScan:
         # rows, the way the list's previews ask (a related `order=` is a 400).
         assert "&messages.limit=1" in params and "&messages.order=created_at.desc" in params
         assert "order=messages(" not in params
-        # The page itself is the one the sweep always read.
-        assert "&order=created_at.desc&limit=200" in params
+        # The page itself is the one the sweep always read, newest first, the id breaking ties (CodeRabbit #291).
+        assert "&order=created_at.desc,id&limit=200" in params
         assert "status=in.(active,needs_agent,closed)" in params and "mode=in.(ai,human)" in params
         assert "metadata->>closed_by_agent_id=is.null" in params and "tunnel=eq.sales" in params
+
+
+# ── Past the first 200 (28 Nov 2026) ───────────────────────────────────
+# The scan read the newest 200 candidates of its 30 days every tick, so a chat past them was never seen again:
+# six BCT leads the CRM refused on 17-20 Nov stayed out after the CRM began taking them. A full newest page now
+# brings one older page along, a different one each tick.
+
+def _page(prefix, n=200, **kw):
+    return [_cand(f"{prefix}{i}", in_crm=True, **kw) for i in range(n)]
+
+
+@pytest.fixture
+def _older_page():
+    before = sb._older_page
+    sb._older_page = 1
+    yield
+    sb._older_page = before
+
+
+class TestSweepReachesOlderChats:
+    @staticmethod
+    async def _scan(*answers):
+        run = AsyncMock(side_effect=list(answers))
+        with patch.object(sb, "get_client", return_value=MagicMock()), patch.object(sb, "_run_sync", new=run):
+            out = await sb.get_abandoned_conversations(30)
+        return out, run
+
+    @pytest.mark.asyncio
+    async def test_a_full_newest_page_brings_one_older_page(self, _scan_health, _older_page):
+        newest = _page("n")
+        older = [_cand("o1", in_crm=False), _cand("o2", in_crm=True), _cand("n5", in_crm=True)]
+        out, run = await self._scan(SimpleNamespace(data=newest), SimpleNamespace(data=older))
+        assert run.await_count == 2
+        ids = [c["id"] for c in out]
+        assert ids[:200] == [f"n{i}" for i in range(200)]
+        assert ids[200:] == ["o1", "o2"], "a chat in both reads comes once"
+        assert next(c for c in out if c["id"] == "o1")["_in_crm"] is False
+        assert (_scan_health["cap_hits"], _scan_health["older_reads"], _scan_health["older_failed"]) == (1, 1, 0)
+        assert sb._older_page == 1, "a short older page is the window's last: start again behind the newest"
+
+    @pytest.mark.asyncio
+    async def test_the_older_page_moves_on_each_tick_and_starts_over_at_the_end(self, _older_page):
+        await self._scan(SimpleNamespace(data=_page("n")), SimpleNamespace(data=_page("a")))
+        assert sb._older_page == 2
+        await self._scan(SimpleNamespace(data=_page("n")), SimpleNamespace(data=_page("b")))
+        assert sb._older_page == 3
+        await self._scan(SimpleNamespace(data=_page("n")), SimpleNamespace(data=[]))
+        assert sb._older_page == 1
+
+    @pytest.mark.asyncio
+    async def test_a_page_short_of_the_cap_reads_nothing_more(self, _scan_health, _older_page):
+        out, run = await self._scan(SimpleNamespace(data=_page("n", n=199)))
+        assert run.await_count == 1 and len(out) == 199
+        assert (_scan_health["cap_hits"], _scan_health["older_reads"]) == (0, 0)
+        assert sb._older_page == 1
+
+    @pytest.mark.asyncio
+    async def test_an_older_page_that_fails_leaves_the_newest_swept_and_says_so(self, _scan_health, _older_page,
+                                                                               caplog):
+        sb._older_page = 3
+        out, run = await self._scan(SimpleNamespace(data=_page("n")), RuntimeError("Server disconnected"))
+        assert run.await_count == 2 and len(out) == 200
+        assert (_scan_health["cap_hits"], _scan_health["older_reads"], _scan_health["older_failed"]) == (1, 0, 1)
+        assert sb._older_page == 3, "the same older page is asked for next tick"
+        warned = [r for r in caplog.records if "older page 3 could not be read" in r.getMessage()]
+        assert warned and warned[0].levelname == "WARNING"
+
+    def test_the_older_page_is_asked_for_past_the_ones_already_read(self, _older_page):
+        """The two requests, as PostgREST receives them."""
+        from postgrest import SyncPostgrestClient
+        import postgrest._sync.request_builder as rb
+        from urllib.parse import unquote
+
+        sb._older_page = 2
+        seen: list = []
+
+        class _Sent(Exception):
+            pass
+
+        def _capture(fn, *a, **k):
+            def _exec(self):
+                seen.append(unquote(str(self.params)))
+                raise _Sent()
+
+            with patch.object(rb.SyncSelectRequestBuilder, "execute", new=_exec):
+                try:
+                    fn()
+                except _Sent:
+                    pass
+            return SimpleNamespace(data=_page("n") if len(seen) == 1 else [])
+
+        client = MagicMock()
+        client.table = SyncPostgrestClient("https://x.invalid/rest/v1", headers={}).from_
+        with patch.object(sb, "get_client", return_value=client), \
+             patch.object(sb, "_run_sync", new=AsyncMock(side_effect=_capture)):
+            asyncio.get_event_loop_policy().new_event_loop().run_until_complete(sb.get_abandoned_conversations(30))
+        assert len(seen) == 2
+        assert "offset=" not in seen[0]
+        # The same order on both reads, the id breaking ties at a page's edge (CodeRabbit #291).
+        assert "&order=created_at.desc,id&limit=200&offset=400" in seen[1]
+        # The same embedded read: the newest message and the lead's flag, never 200 reads more.
+        assert "leads(created_in_crm)" in seen[1] and "&messages.limit=1" in seen[1]
 
 
 class TestSweepSkipsWhatIsDone:
@@ -418,6 +521,44 @@ class TestSweepSkipsWhatIsDone:
         conv = dict(_BASE, id="c1", status="closed", mode="ai", created_at=_iso(300), _in_crm=True, visitor_phone="12")
         got, _ = await self._sweep([conv], {"id": "L1", "created_in_crm": True})
         assert got == {"c1": "skipped"}
+
+    # 28 Nov 2026: "already pushed today … flag write likely failed", a WARNING every five minutes for each chat
+    # sent today (~150 an hour), about marks that were there. The guard is for a mark that may be missing.
+
+    @staticmethod
+    def _sent_today(cid):
+        cron._pushed_today = set()
+        cron._pushed_today_date = ""
+        cron._day_guard_blocks(cid)  # starts today's set
+        cron._pushed_today.add(cid)
+
+    @pytest.mark.asyncio
+    async def test_a_chat_sent_today_and_read_as_in_the_crm_is_done_without_a_warning(self, caplog):
+        self._sent_today("c1")
+        conv = dict(_BASE, id="c1", status="closed", mode="ai", created_at=_iso(300), _in_crm=True)
+        try:
+            got, reader = await self._sweep([conv], {"id": "L1", "created_in_crm": True})
+        finally:
+            cron._pushed_today = set()
+        assert got == {"c1": "already_done"}
+        reader.assert_not_awaited()
+        assert not [r for r in caplog.records if "already pushed today" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hint", [False, None, "absent"])
+    async def test_a_chat_sent_today_whose_mark_does_not_read_is_still_held_and_warned(self, hint, caplog):
+        self._sent_today("c1")
+        conv = dict(_BASE, id="c1", status="closed", mode="ai", created_at=_iso(300))
+        if hint != "absent":
+            conv["_in_crm"] = hint
+        try:
+            got, reader = await self._sweep([conv], {"id": "L1", "created_in_crm": False})
+        finally:
+            cron._pushed_today = set()
+        assert got == {"c1": "skipped"}
+        reader.assert_not_awaited()
+        warned = [r for r in caplog.records if "already pushed today" in r.getMessage()]
+        assert warned and warned[0].levelname == "WARNING"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -835,6 +976,7 @@ def test_health_detail_reports_the_new_counters():
         out = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(health.health_detail(full=False))
     assert set(out["kb_search"]) == {"searches", "failed", "last_status", "last_error", "refused_because", "tunnel_index"}
     assert set(out["presence_ticks"]) == {"ticks", "read_failed", "write_failed", "started_twice"}
-    assert set(out["abandoned_scan"]) == {"scans", "embedded", "embedded_failed", "message_reads"}
+    assert set(out["abandoned_scan"]) == {"scans", "embedded", "embedded_failed", "message_reads",
+                                          "cap_hits", "older_reads", "older_failed"}
     assert set(out["user_lookup"]) == {"failed"}
     assert "lookup_failed" in out["sso"]

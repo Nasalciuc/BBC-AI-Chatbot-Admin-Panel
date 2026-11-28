@@ -75,6 +75,9 @@ CRM_PUSH_HEALTH: dict = {
     # close-only branch): the chat stays open and the next tick tries the close again (the lead is marked, nothing
     # is sent twice).
     "close_failed": 0,
+    # A lead the CRM refused (422) for the same data, asked again a day later by the abandoned sweep: the CRM's rules
+    # change (27 Nov 2026, the BCT endpoint and one contact). A new refusal waits another day.
+    "refusal_asked_again": 0,
 }
 
 

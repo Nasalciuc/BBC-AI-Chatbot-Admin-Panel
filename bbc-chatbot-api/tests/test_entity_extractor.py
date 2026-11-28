@@ -70,6 +70,80 @@ class TestCityNames:
         assert e.origin_code is None
 
 
+class TestCitiesTheLeadsUse:
+    """28 Nov 2026: the airports the leads of 120 days held three times or more that no city name gave
+    ("Newark to Saigon" read no route), the island and beach destinations clients ask for, and a destination
+    of two words or more, read as its first word: "to Los Angeles" was Lagos, "to San Francisco" San Diego,
+    "to New York" nothing. Phrasings invented."""
+
+    @pytest.mark.parametrize("text,origin,dest", [
+        ("Newark to Saigon", "EWR", "SGN"),
+        ("Grand Rapids to Lisbon", "GRR", "LIS"),
+        ("from Baltimore to Tel Aviv", "BWI", "TLV"),
+        ("Atlanta to Berlin", "ATL", "BER"),
+        ("Phoenix to Santorini", "PHX", "JTR"),
+        ("from Perth to Phuket", "PER", "HKT"),
+        ("JFK to bali", "JFK", "DPS"),
+        ("Houston to Naples", "IAH", "NAP"),
+        ("Dallas to Cape Town", "DFW", "CPT"),
+        ("Chicago to Ho Chi Minh City", "ORD", "SGN"),
+        ("flying to the maldives", None, "MLE"),
+        ("Atlanta to Punta Cana next week", "ATL", "PUJ"),
+        ("BWI to BER", "BWI", "BER"),
+    ])
+    def test_the_cities_the_leads_use(self, text, origin, dest):
+        e = extract_entities(text)
+        assert (e.origin_code, e.destination_code) == (origin, dest)
+
+    @pytest.mark.parametrize("text,dest", [
+        ("Boston to Los Angeles", "LAX"),
+        ("Miami to San Francisco", "SFO"),
+        ("Paris to New York in May", "JFK"),
+        ("London to Hong Kong", "HKG"),
+        ("flights from Dallas to Abu Dhabi", "AUH"),
+        ("Seattle to Kuala Lumpur.", "KUL"),
+        ("Denver to Salt Lake City", "SLC"),
+        ("Paris to Rio de Janeiro", "GIG"),
+        ("Denver to Las Vegas, 2 people", "LAS"),
+        ("Miami to Porto Alegre", "POA"),           # not Porto, the first word
+    ])
+    def test_a_destination_of_several_words(self, text, dest):
+        assert extract_entities(text).destination_code == dest
+
+    @pytest.mark.parametrize("text,dest", [
+        ("JFK to SAN", "SAN"),          # a code typed in capitals
+        ("Boston to LOS", "LOS"),
+        ("Houston to Lagos", "LOS"),
+        ("jfk to lhr", "LHR"),          # a code alone, in lower case, as before
+        ("Miami to San Fran", None),    # the start of a longer name is no code
+        ("Dubai to Male", None),        # a name that is also a word is left to the AI's reading
+        ("we fly to the airport", None),
+    ])
+    def test_codes_and_the_starts_of_names(self, text, dest):
+        assert extract_entities(text).destination_code == dest
+
+    def test_codes_that_are_words_in_capitals_are_no_airports(self):
+        from app.pipeline.entity_extractor import AIRPORTS, CITY_TO_CODE
+
+        words = {"DAY", "DAD", "SAT", "PER", "FAT", "LIT", "NAP", "AMA", "SAL", "CTA", "AMD", "CPT", "MEM",
+                 "OAK", "BUF", "ALB", "RIC", "TIA", "OMA", "MYR"}
+        assert not words & AIRPORTS
+        e = extract_entities("ME AND MY DAD, SAT OR SUN, 500 MYR PER PERSON")
+        assert (e.origin_code, e.destination_code) == (None, None)
+        # Their cities still read by name.
+        assert CITY_TO_CODE["dayton"] == "DAY" and extract_entities("Denver to Perth").destination_code == "PER"
+
+    @pytest.mark.parametrize("path,city", [
+        ("/business-class-flights/ho-chi-minh-city", "Ho Chi Minh City"),
+        ("/business-class-flights/maldives", "Maldives"),
+        ("/business-class-flights/barcelona", "Barcelona"),
+    ])
+    def test_the_landing_pages_of_the_new_cities(self, path, city):
+        from app.pipeline.entity_extractor import parse_landing_hints
+
+        assert parse_landing_hints(path) == {"destination_city": city, "landing_kind": "city"}
+
+
 class TestNameExtraction:
     def test_my_name_is(self):
         e = extract_entities("My name is John Thompson")
@@ -280,6 +354,80 @@ class TestRangeEndsAndMonthYear:
     def test_a_month_with_its_year_is_no_day(self, text):
         e = extract_entities(text)
         assert e.departure_date is None and e.return_date is None
+
+
+@freeze_time("2026-11-28")
+class TestRangesWithTheMonthLast:
+    """#3830 (27 Nov 2026): "7-22 August" kept the 22nd as the departure and no return; the ranges whose month
+    comes only with the last day all did, and "the 7th of August to the 22nd" lost its return. Phrasings
+    written like the chats', none copied from one."""
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("7-22 August", "2027-08-07", "2027-08-22"),
+        ("7 to 22 August", "2027-08-07", "2027-08-22"),
+        ("from 7 to 22 of August", "2027-08-07", "2027-08-22"),
+        ("7th-22nd August", "2027-08-07", "2027-08-22"),
+        ("we would go 7 - 22 august", "2027-08-07", "2027-08-22"),
+        ("the 7th to the 22nd of August", "2027-08-07", "2027-08-22"),
+        ("7th to August 22", "2027-08-07", "2027-08-22"),
+        ("from the 3rd to March 15", "2027-03-03", "2027-03-15"),
+        ("the 7th of August to the 22nd", "2027-08-07", "2027-08-22"),
+        ("7 Aug - 22", "2027-08-07", "2027-08-22"),
+        # The first day after the last one: it is in the month before.
+        ("20th to January 5", "2026-12-20", "2027-01-05"),
+        ("28-5 March", "2027-02-28", "2027-03-05"),
+        ("the 3rd to March 1", "2027-02-03", "2027-03-01"),
+        # A year with the last day.
+        ("7-22 Aug 2027", "2027-08-07", "2027-08-22"),
+        ("28-5 January 2027", "2026-12-28", "2027-01-05"),
+        ("20th to January 5, 2027", "2026-12-20", "2027-01-05"),
+        ("the 7th of August 2027 to the 22nd", "2027-08-07", "2027-08-22"),
+        # A count before the dates, and the first range written wins.
+        ("we will be 2-3 people 7-22 August", "2027-08-07", "2027-08-22"),
+        ("I can do 7-22 August or 10-25 August", "2027-08-07", "2027-08-22"),
+    ])
+    def test_the_first_day_is_the_departure_and_the_last_the_return(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+        assert e.trip_type == "round_trip"
+
+    @pytest.mark.parametrize("text,dep,ret", [
+        ("August 7-22", "2027-08-07", "2027-08-22"),
+        ("August 7 to 22", "2027-08-07", "2027-08-22"),
+        ("Aug 7 - Aug 22", "2027-08-07", "2027-08-22"),
+        ("7 August to 22 August", "2027-08-07", "2027-08-22"),
+        ("7th August - 22nd August", "2027-08-07", "2027-08-22"),
+        ("from August 7th to the 22nd", "2027-08-07", "2027-08-22"),
+        ("Dec 20 - Jan 5", "2026-12-20", "2027-01-05"),
+        ("20 Dec to 5 Jan", "2026-12-20", "2027-01-05"),
+        ("Dec 20th - 5th January", "2026-12-20", "2027-01-05"),
+        ("May 6th to June 7", "2027-05-06", "2027-06-07"),
+        ("May 6 to 7 June", "2027-05-06", "2027-06-07"),
+        ("march 28-5", "2027-03-28", "2027-04-05"),
+        ("leaving on the 7th of August", "2027-08-07", None),
+        ("7 august", "2027-08-07", None),
+        ("returning August 22", None, "2027-08-22"),
+    ])
+    def test_what_was_read_before_reads_the_same(self, text, dep, ret):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, ret)
+
+    @pytest.mark.parametrize("text,dep", [
+        ("Option 2 - March 15", "2027-03-15"),      # a bare number with no "th" or "the" is no first day
+        ("7 August to 2 people", "2027-08-07"),
+        ("7 August to 10:30", "2027-08-07"),
+        ("7 August - 10 days", "2027-08-07"),
+        ("10:30 - 22 August", "2027-08-22"),
+        ("3-4 people in August", None),
+    ])
+    def test_no_range_where_the_numbers_are_something_else(self, text, dep):
+        e = extract_entities(text)
+        assert (e.departure_date, e.return_date) == (dep, None)
+
+    def test_a_first_day_the_month_lacks_leaves_the_dates_unread(self):
+        # The 30th of February does not exist: the 5th of March is the return of a range, not a departure.
+        e = extract_entities("30-5 March")
+        assert (e.departure_date, e.return_date) == (None, None)
 
 
 @freeze_time("2026-11-23")
