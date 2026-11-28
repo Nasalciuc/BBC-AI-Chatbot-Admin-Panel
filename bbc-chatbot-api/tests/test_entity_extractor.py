@@ -70,6 +70,80 @@ class TestCityNames:
         assert e.origin_code is None
 
 
+class TestCitiesTheLeadsUse:
+    """28 Nov 2026: the airports the leads of 120 days held three times or more that no city name gave
+    ("Newark to Saigon" read no route), the island and beach destinations clients ask for, and a destination
+    of two words or more, read as its first word: "to Los Angeles" was Lagos, "to San Francisco" San Diego,
+    "to New York" nothing. Phrasings invented."""
+
+    @pytest.mark.parametrize("text,origin,dest", [
+        ("Newark to Saigon", "EWR", "SGN"),
+        ("Grand Rapids to Lisbon", "GRR", "LIS"),
+        ("from Baltimore to Tel Aviv", "BWI", "TLV"),
+        ("Atlanta to Berlin", "ATL", "BER"),
+        ("Phoenix to Santorini", "PHX", "JTR"),
+        ("from Perth to Phuket", "PER", "HKT"),
+        ("JFK to bali", "JFK", "DPS"),
+        ("Houston to Naples", "IAH", "NAP"),
+        ("Dallas to Cape Town", "DFW", "CPT"),
+        ("Chicago to Ho Chi Minh City", "ORD", "SGN"),
+        ("flying to the maldives", None, "MLE"),
+        ("Atlanta to Punta Cana next week", "ATL", "PUJ"),
+        ("BWI to BER", "BWI", "BER"),
+    ])
+    def test_the_cities_the_leads_use(self, text, origin, dest):
+        e = extract_entities(text)
+        assert (e.origin_code, e.destination_code) == (origin, dest)
+
+    @pytest.mark.parametrize("text,dest", [
+        ("Boston to Los Angeles", "LAX"),
+        ("Miami to San Francisco", "SFO"),
+        ("Paris to New York in May", "JFK"),
+        ("London to Hong Kong", "HKG"),
+        ("flights from Dallas to Abu Dhabi", "AUH"),
+        ("Seattle to Kuala Lumpur.", "KUL"),
+        ("Denver to Salt Lake City", "SLC"),
+        ("Paris to Rio de Janeiro", "GIG"),
+        ("Denver to Las Vegas, 2 people", "LAS"),
+        ("Miami to Porto Alegre", "POA"),           # not Porto, the first word
+    ])
+    def test_a_destination_of_several_words(self, text, dest):
+        assert extract_entities(text).destination_code == dest
+
+    @pytest.mark.parametrize("text,dest", [
+        ("JFK to SAN", "SAN"),          # a code typed in capitals
+        ("Boston to LOS", "LOS"),
+        ("Houston to Lagos", "LOS"),
+        ("jfk to lhr", "LHR"),          # a code alone, in lower case, as before
+        ("Miami to San Fran", None),    # the start of a longer name is no code
+        ("Dubai to Male", None),        # a name that is also a word is left to the AI's reading
+        ("we fly to the airport", None),
+    ])
+    def test_codes_and_the_starts_of_names(self, text, dest):
+        assert extract_entities(text).destination_code == dest
+
+    def test_codes_that_are_words_in_capitals_are_no_airports(self):
+        from app.pipeline.entity_extractor import AIRPORTS, CITY_TO_CODE
+
+        words = {"DAY", "DAD", "SAT", "PER", "FAT", "LIT", "NAP", "AMA", "SAL", "CTA", "AMD", "CPT", "MEM",
+                 "OAK", "BUF", "ALB", "RIC", "TIA", "OMA", "MYR"}
+        assert not words & AIRPORTS
+        e = extract_entities("ME AND MY DAD, SAT OR SUN, 500 MYR PER PERSON")
+        assert (e.origin_code, e.destination_code) == (None, None)
+        # Their cities still read by name.
+        assert CITY_TO_CODE["dayton"] == "DAY" and extract_entities("Denver to Perth").destination_code == "PER"
+
+    @pytest.mark.parametrize("path,city", [
+        ("/business-class-flights/ho-chi-minh-city", "Ho Chi Minh City"),
+        ("/business-class-flights/maldives", "Maldives"),
+        ("/business-class-flights/barcelona", "Barcelona"),
+    ])
+    def test_the_landing_pages_of_the_new_cities(self, path, city):
+        from app.pipeline.entity_extractor import parse_landing_hints
+
+        assert parse_landing_hints(path) == {"destination_city": city, "landing_kind": "city"}
+
+
 class TestNameExtraction:
     def test_my_name_is(self):
         e = extract_entities("My name is John Thompson")

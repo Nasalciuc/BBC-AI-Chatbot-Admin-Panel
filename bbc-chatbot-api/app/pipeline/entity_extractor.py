@@ -91,6 +91,15 @@ AIRPORTS = {
     "KIV", "TAS", "BEG", "KBP", "TBS", "GYD", "TLL", "RIX", "VNO",
     "SOF", "ZAG", "AKL", "CUN", "MAA", "CCU", "BLR", "HYD",
     "GOI", "JED", "MCT", "KWI", "AMM", "ADD", "DAR", "KGL",
+    # The cities added to CITY_TO_CODE on 28 Nov 2026. Not the codes that are also words or currencies a
+    # client may type in capitals: DAY, DAD, SAT, PER, FAT, LIT, NAP, AMA, SAL, CTA, AMD, CPT, MEM, OAK,
+    # BUF, ALB, RIC, TIA, OMA, MYR (their city names still read).
+    "BWI", "JAX", "SMF", "YEG", "TYS", "FLL", "YOW", "PNS", "RSW", "OKC", "ABQ", "SDF", "RNO", "TUS",
+    "GEG", "DSM", "ORF", "GRR", "ANC", "ITO", "GUA", "BZE", "PUJ",
+    "BER", "VCE", "FLR", "OPO", "AGP", "SVQ", "GVA", "KRK", "TGD", "KEF", "SOU", "JTR", "JMK",
+    "TLV", "BEY", "RAK", "DLA", "NSI", "MRU", "SEZ",
+    "LHE", "KHI", "ISB", "DAC", "COK", "CJB", "ATQ", "CMB", "KTM", "MLE",
+    "SGN", "HAN", "CEB", "DVO", "DPS", "HKT", "CNX", "BNE", "ADL",
 }
 AIRPORT_RE = re.compile(r'\b([A-Z]{3})\b')
 
@@ -171,6 +180,39 @@ CITY_TO_CODE = {
     "addis ababa": "ADD", "addis": "ADD",
     "dar es salaam": "DAR",
     "kigali": "KGL",
+    # 28 Nov 2026: the airports the leads of the last 120 days held three times or more that no name here
+    # gave ("Newark to Saigon" read no route), and the island and beach destinations clients ask for. A name
+    # that is also a common word or another place is left to the AI's reading: male, split, sal, clark,
+    # birmingham, santiago, san jose, santa cruz, kingston, victoria, columbia, ontario, panama, sicily.
+    # North America
+    "newark": "EWR", "baltimore": "BWI", "jacksonville": "JAX", "sacramento": "SMF", "omaha": "OMA",
+    "edmonton": "YEG", "memphis": "MEM", "knoxville": "TYS", "fort lauderdale": "FLL", "ft lauderdale": "FLL",
+    "ottawa": "YOW", "pensacola": "PNS", "fort myers": "RSW", "ft myers": "RSW", "oklahoma city": "OKC",
+    "myrtle beach": "MYR", "albuquerque": "ABQ", "fresno": "FAT", "little rock": "LIT", "louisville": "SDF",
+    "reno": "RNO", "tucson": "TUS", "san antonio": "SAT", "spokane": "GEG", "des moines": "DSM",
+    "oakland": "OAK", "buffalo": "BUF", "albany": "ALB", "richmond": "RIC", "norfolk": "ORF",
+    "dayton": "DAY", "amarillo": "AMA", "grand rapids": "GRR", "anchorage": "ANC", "hilo": "ITO",
+    # Central America and the Caribbean
+    "san salvador": "SAL", "el salvador": "SAL", "guatemala city": "GUA", "guatemala": "GUA",
+    "belize": "BZE", "belize city": "BZE", "punta cana": "PUJ",
+    # Europe
+    "berlin": "BER", "venice": "VCE", "venezia": "VCE", "florence": "FLR", "firenze": "FLR",
+    "naples": "NAP", "napoli": "NAP", "catania": "CTA", "porto": "OPO", "oporto": "OPO",
+    "porto alegre": "POA", "malaga": "AGP",
+    "seville": "SVQ", "sevilla": "SVQ", "geneva": "GVA", "geneve": "GVA", "krakow": "KRK", "cracow": "KRK",
+    "tirana": "TIA", "podgorica": "TGD", "reykjavik": "KEF", "southampton": "SOU",
+    "santorini": "JTR", "mykonos": "JMK",
+    # Middle East and Africa
+    "tel aviv": "TLV", "beirut": "BEY", "marrakech": "RAK", "marrakesh": "RAK", "cape town": "CPT",
+    "douala": "DLA", "yaounde": "NSI", "mauritius": "MRU", "seychelles": "SEZ", "the seychelles": "SEZ",
+    # South Asia
+    "ahmedabad": "AMD", "lahore": "LHE", "karachi": "KHI", "islamabad": "ISB", "dhaka": "DAC",
+    "kochi": "COK", "cochin": "COK", "coimbatore": "CJB", "amritsar": "ATQ", "colombo": "CMB",
+    "kathmandu": "KTM", "maldives": "MLE", "the maldives": "MLE",
+    # Southeast Asia and Australia
+    "ho chi minh city": "SGN", "ho chi minh": "SGN", "saigon": "SGN", "hanoi": "HAN",
+    "da nang": "DAD", "danang": "DAD", "cebu": "CEB", "davao": "DVO", "bali": "DPS", "denpasar": "DPS",
+    "phuket": "HKT", "chiang mai": "CNX", "brisbane": "BNE", "perth": "PER", "adelaide": "ADL",
 }
 
 NAME_PATTERNS = [
@@ -335,6 +377,31 @@ ROUTE_FROM_TO_RE = re.compile(
     r'\bfrom\s+([\w\s]{2,25}?)\s+(?:to|→|->|–)\s+([\w\s]{2,25}?)(?:\s|$|[,.])',
     re.I,
 )
+
+# The longest city name in CITY_TO_CODE, in words ("ho chi minh city"), and the words that begin a longer
+# name ("los" of "los angeles", "san" of "san francisco", "the" of "the maldives").
+_CITY_MAX_WORDS = max(len(name.split()) for name in CITY_TO_CODE)
+_CITY_FIRST_WORDS = frozenset(name.split()[0] for name in CITY_TO_CODE if " " in name)
+_WORD_RUN_RE = re.compile(r"[^\W\d_]+(?:[ \t]+[^\W\d_]+)*")
+
+
+def _place_at(text: str, start: int) -> Optional[str]:
+    """The code of the place a route names at `start`, just after its "to": the longest city name there,
+    else the word itself when it is an airport code. The routes' lazy group stops at the first space, so
+    "to Los Angeles" was read "los", the code of Lagos, "to San Francisco" San Diego's, and "to New York"
+    nothing. A word that only begins a longer name is no code unless typed in capitals ("to SAN")."""
+    run = _WORD_RUN_RE.match(text, start)
+    if not run:
+        return None
+    words = run.group(0).split()
+    for n in range(min(len(words), _CITY_MAX_WORDS), 0, -1):
+        code = CITY_TO_CODE.get(" ".join(words[:n]).lower())
+        if code:
+            return code
+    first = words[0]
+    if first.upper() in AIRPORTS and (first.isupper() or len(words) == 1 or first.lower() not in _CITY_FIRST_WORDS):
+        return first.upper()
+    return None
 
 # Trip type detection
 ONE_WAY_RE = re.compile(
@@ -1789,13 +1856,10 @@ def extract_entities(
         m = ROUTE_RE.search(text)
         if m:
             origin = m.group(1).strip().lower()
-            dest = m.group(2).strip().lower()
             origin_iata = CITY_TO_CODE.get(origin) or (
                 origin.upper() if origin.upper() in AIRPORTS else None
             )
-            dest_iata = CITY_TO_CODE.get(dest) or (
-                dest.upper() if dest.upper() in AIRPORTS else None
-            )
+            dest_iata = _place_at(text, m.start(2))
             if origin_iata and not entities.origin_code:
                 entities.origin_code = origin_iata
             if dest_iata and not entities.destination_code:
@@ -1804,13 +1868,10 @@ def extract_entities(
             m2 = ROUTE_FROM_TO_RE.search(text)
             if m2:
                 origin = m2.group(1).strip().lower()
-                dest = m2.group(2).strip().lower()
                 origin_iata = CITY_TO_CODE.get(origin) or (
                     origin.upper() if origin.upper() in AIRPORTS else None
                 )
-                dest_iata = CITY_TO_CODE.get(dest) or (
-                    dest.upper() if dest.upper() in AIRPORTS else None
-                )
+                dest_iata = _place_at(text, m2.start(2))
                 if origin_iata and not entities.origin_code:
                     entities.origin_code = origin_iata
                 if dest_iata and not entities.destination_code:
