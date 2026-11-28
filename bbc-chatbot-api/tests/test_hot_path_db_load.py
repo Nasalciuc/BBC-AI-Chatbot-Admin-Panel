@@ -521,6 +521,44 @@ class TestSweepSkipsWhatIsDone:
         got, _ = await self._sweep([conv], {"id": "L1", "created_in_crm": True})
         assert got == {"c1": "skipped"}
 
+    # 28 Nov 2026: "already pushed today … flag write likely failed", a WARNING every five minutes for each chat
+    # sent today (~150 an hour), about marks that were there. The guard is for a mark that may be missing.
+
+    @staticmethod
+    def _sent_today(cid):
+        cron._pushed_today = set()
+        cron._pushed_today_date = ""
+        cron._day_guard_blocks(cid)  # starts today's set
+        cron._pushed_today.add(cid)
+
+    @pytest.mark.asyncio
+    async def test_a_chat_sent_today_and_read_as_in_the_crm_is_done_without_a_warning(self, caplog):
+        self._sent_today("c1")
+        conv = dict(_BASE, id="c1", status="closed", mode="ai", created_at=_iso(300), _in_crm=True)
+        try:
+            got, reader = await self._sweep([conv], {"id": "L1", "created_in_crm": True})
+        finally:
+            cron._pushed_today = set()
+        assert got == {"c1": "already_done"}
+        reader.assert_not_awaited()
+        assert not [r for r in caplog.records if "already pushed today" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hint", [False, None, "absent"])
+    async def test_a_chat_sent_today_whose_mark_does_not_read_is_still_held_and_warned(self, hint, caplog):
+        self._sent_today("c1")
+        conv = dict(_BASE, id="c1", status="closed", mode="ai", created_at=_iso(300))
+        if hint != "absent":
+            conv["_in_crm"] = hint
+        try:
+            got, reader = await self._sweep([conv], {"id": "L1", "created_in_crm": False})
+        finally:
+            cron._pushed_today = set()
+        assert got == {"c1": "skipped"}
+        reader.assert_not_awaited()
+        warned = [r for r in caplog.records if "already pushed today" in r.getMessage()]
+        assert warned and warned[0].levelname == "WARNING"
+
 
 # ══════════════════════════════════════════════════════════════
 # 4. Online minutes: a failed read is not a new day

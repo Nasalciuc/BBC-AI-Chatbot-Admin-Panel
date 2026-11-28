@@ -388,7 +388,11 @@ async def run_abandoned_crm() -> dict:
                 results.append({"id": cid, "status": "skipped", "reason": "email_invalid"})
                 continue
 
-            if _day_guard_blocks(cid):
+            # The day guard is for a lead whose CRM mark may have failed. One the scan read as in the CRM has its
+            # mark: past this point it is done or closed, never sent again (the submit reads the mark again under
+            # the lock). Asked of it, the guard said "flag write likely failed", a WARNING every five minutes for
+            # each chat sent today (~150 an hour on 28 Nov 2026), about marks that were there.
+            if conv.get("_in_crm") is not True and _day_guard_blocks(cid):
                 logger.warning(
                     f"[cron][{cid}] already pushed today in this process — "
                     "skipping to avoid a CRM duplicate (flag write likely failed)"
