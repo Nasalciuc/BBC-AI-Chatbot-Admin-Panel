@@ -29,7 +29,7 @@ from app.pipeline.contact_capture import (
     with_stored_contact,
     with_turn_contact,
 )
-from app.pipeline.entity_extractor import mentions_date, turns_down_calls
+from app.pipeline.entity_extractor import mentions_date, speaks_of_leaving, turns_down_calls
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -1355,6 +1355,9 @@ async def _pipeline(
     # the summary kept showing a return he had just cancelled).
     if _clear_return_date:
         entities["_clear_return_date"] = True
+    # A date this message gives that is the lead's return moves the departure only when the message speaks of
+    # leaving (lead_service._departure_is_the_return, #3830). The tool's dates (Step 6.1) are read from it too.
+    entities["_departure_said"] = speaks_of_leaving(message)
     # MARKY's client-stated legs lead the notes so the consultant reads the
     # real shape of the trip before anything else.
 

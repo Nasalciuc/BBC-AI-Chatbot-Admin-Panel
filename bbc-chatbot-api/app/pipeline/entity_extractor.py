@@ -601,6 +601,18 @@ def mentions_date(text: Optional[str]) -> bool:
     return bool(text and _DATE_MENTION_RE.search(text))
 
 
+# "leave", "leaving", "depart", "departure", "fly out", "outbound": the message speaks of the way out.
+_LEAVING_RE = re.compile(
+    r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?|fly(?:ing)?\s+out|outbound|head(?:ing)?\s+out)\b", re.I
+)
+
+
+def speaks_of_leaving(text: Optional[str]) -> bool:
+    """True when the client's message speaks of leaving (_LEAVING_RE): only then may a date it gives move the
+    departure onto the return the lead holds (lead_service._departure_is_the_return)."""
+    return bool(text and _LEAVING_RE.search(text))
+
+
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
     """Extract departure and optional return date from message text.
     Returns (departure_date, return_date) as YYYY-MM-DD strings or None.
