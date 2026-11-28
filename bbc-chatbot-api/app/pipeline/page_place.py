@@ -91,8 +91,9 @@ def _names(text: Optional[str], code: str, words: set[str]) -> bool:
 
 def _questions(text: Optional[str]) -> list[str]:
     """The questions of one of our messages: a yes answers a question, never a statement beside it
-    ("Barcelona fares are available. Shall I send you a quote?" asks nothing about Barcelona: CodeRabbit #291)."""
-    return re.findall(r"[^.!?\n]*\?", text or "")
+    ("Barcelona fares are available. Shall I send you a quote?", or with a semicolon, a colon or a dash, asks
+    nothing about Barcelona: CodeRabbit #291)."""
+    return re.findall(r"[^.!?;:\n—–]*\?", text or "")
 
 
 def _client_words(history: Optional[list], message: str) -> tuple[list[str], list[str]]:

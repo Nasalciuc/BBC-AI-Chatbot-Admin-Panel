@@ -169,8 +169,11 @@ class TestHeldBack:
 
     @pytest.mark.parametrize("yes", ["yes", "Yes, from Chicago", "yeah exactly", "sure", "that's right", "Right.",
                                      "right, from Chicago"])
-    def test_a_yes_to_our_question_that_named_it(self, yes):
-        history = [{"role": "ai", "content": "Is Barcelona where you'd like to go?"}]
+    @pytest.mark.parametrize("asked", ["Is Barcelona where you'd like to go?",
+                                       "Quick check: is Barcelona where you'd like to go?",
+                                       "Hi, I'm Skye. Planning a trip to Barcelona? Tell me roughly when."])
+    def test_a_yes_to_our_question_that_named_it(self, yes, asked):
+        history = [{"role": "ai", "content": asked}]
         assert _held({"destination": "BCN"}, yes, history) == set()
 
     @pytest.mark.parametrize("reply", ["ok", "okay, from Chicago", "no, Lisbon", "maybe", "right now I'm in Chicago"])
@@ -195,8 +198,9 @@ class TestHeldBack:
 
     def test_a_yes_answers_our_question_not_the_statement_beside_it(self):
         # CodeRabbit #291: the place in a statement, the question about something else.
-        history = [{"role": "ai", "content": "Barcelona fares are available. Shall I send you a quote?"}]
-        assert _held({"destination": "BCN"}, "Right.", history) == {"destination"}
+        for joint in (". ", "; ", ": ", " — "):
+            history = [{"role": "ai", "content": f"Barcelona fares are available{joint}shall I send you a quote?"}]
+            assert _held({"destination": "BCN"}, "Right.", history) == {"destination"}, joint
         # Two questions, one of them about the place: the yes confirms it.
         history = [{"role": "ai", "content": "Business class to Barcelona? Where would you fly from?"}]
         assert _held({"destination": "BCN"}, "yes, from Chicago", history) == set()
