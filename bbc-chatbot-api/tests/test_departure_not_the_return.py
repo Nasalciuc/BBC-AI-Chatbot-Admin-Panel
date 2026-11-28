@@ -82,6 +82,10 @@ class TestTheNet:
     ("The trip starts August 22 instead", True),     # CodeRabbit #291
     ("we fly on August 22", True),
     ("we start our trip on August 22", True),
+    ("Our trip will start on August 22 instead", True),
+    ("the trip is starting August 22", True),
+    ("our vacation would now begin on August 22", True),
+    ("school will start the next day", False),
     ("Back on August 22; school starts the next day", False),   # a start that is not the trip's
     ("the meeting begins at 9", False),
     ("August 22 works", False),
