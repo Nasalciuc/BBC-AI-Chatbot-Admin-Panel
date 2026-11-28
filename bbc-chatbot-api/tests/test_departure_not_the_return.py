@@ -99,6 +99,9 @@ class TestTheNet:
     ("we leave August 22 and come back the 30th", True),             # the two legs said together
     ("leave on August 22 to return on the 30th", True),
     ("our return flight leaves August 22", False),
+    ("Our return flight will leave on August 22", False),           # CodeRabbit #291
+    ("the flight home is departing August 22", False),
+    ("Our flight will leave on August 22", True),
     ("we depart August 22 on our return flight", False),
     ("leave it as is, August 22 works", False),                  # a leave that is no journey
     ("please leave the dates, August 22 works", False),

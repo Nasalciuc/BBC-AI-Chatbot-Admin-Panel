@@ -672,6 +672,8 @@ def mentions_date(text: Optional[str]) -> bool:
 # will start", "we start our trip": the message speaks of the way out. "August 22 works" does not, nor "school starts
 # the next day": a start or a beginning counts only with the trip, and not the way back ("our return flight will
 # start…", "the trip home begins…"); nor "leave it as is" or "we fly on Emirates" (CodeRabbit #291).
+# Up to three helper words between a trip and its verb: "our trip will start", "our return flight will leave".
+_AUX = r"(?:(?:will|would|should|could|can|is|are|now|then|be)\s+){0,3}"
 _TRIP_WORD = (r"(?<!\breturn\s)(?<!\breturning\s)(?<!\binbound\s)(?<!\bhome\s)"
               r"(?:trip|journey|travel|vacation|holiday|flight)s?(?!\s+(?:back|home)\b)")
 # Not "leave it as is", "leave a message", "leave the dates": a leave that is no journey.
@@ -684,8 +686,7 @@ _ON_A_DAY = (r"(?=(?:the\s+)?(?:\d|(?:monday|tuesday|wednesday|thursday|friday|s
 _LEAVING_RE = re.compile(
     r"\b(?:leav(?:e|es|ing)" + _NOT_A_JOURNEY + r"|depart(?:s|ing|ure)?|fly(?:ing)?\s+out"
     r"|fly(?:ing)?\s+on\s+" + _ON_A_DAY + r"|outbound|head(?:ing)?\s+out"
-    r"|" + _TRIP_WORD + r"\s+(?:(?:will|would|should|could|can|is|are|now|then|be)\s+){0,3}"
-    r"(?:start(?:s|ing)?|begin(?:s|ning)?)"
+    r"|" + _TRIP_WORD + r"\s+" + _AUX + r"(?:start(?:s|ing)?|begin(?:s|ning)?)"
     r"|(?:start(?:s|ing)?|begin(?:s|ning)?)\s+(?:the\s+|our\s+|my\s+)?" + _TRIP_WORD + r")\b",
     re.I,
 )
@@ -700,8 +701,8 @@ _RETURN_LEG_RE = re.compile(
     r"to\s+(?:fly|come|go|head|get)\s+(?:back|home)\b"
     r"|(?:on|for)\s+(?:the|our|my)\s+(?:return|inbound|way\s+(?:back|home))\b"
     r"|(?:the|our|my)\s+(?:return|inbound)\s+(?:flight|leg|trip|journey)s?\b)"
-    r"|\b(?:(?:return|inbound)\s+(?:flight|leg|trip|journey)s?|(?:flight|trip)s?\s+(?:back|home))\s+"
-    r"(?:leav|depart)\w*",
+    r"|\b(?:(?:return|inbound)\s+(?:flight|leg|trip|journey)s?|(?:flight|trip)s?\s+(?:back|home))\s+" + _AUX
+    + r"(?:leav|depart)\w*",
     re.I,
 )
 
