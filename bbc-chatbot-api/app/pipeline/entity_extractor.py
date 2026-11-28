@@ -683,10 +683,13 @@ _LEAVING_RE = re.compile(
 )
 
 
-# The way back in the same message: "we leave Rome on the 22nd to fly home" leaves the destination, not home.
+# Leaving on the way back: "we leave Rome on the 22nd to fly home", "departing the 22nd on the return" leave the
+# destination, not home. Not a return named in another clause: "we leave on the 22nd; we'll book the return later"
+# still moves the departure (CodeRabbit #291).
 _RETURN_LEG_RE = re.compile(
-    r"\b(?:return(?:s|ing)?|inbound|(?:come|coming|fly|flying|head|heading|go|going|get|getting)\s+(?:back|home)"
-    r"|back\s+home|way\s+(?:back|home))\b",
+    r"\b(?:inbound|(?:come|coming|fly|flying|head|heading|go|going|get|getting)\s+(?:back|home)"
+    r"|return(?:ing)?\s+home|back\s+home|(?:on|for)\s+(?:the|our|my)\s+(?:return|way\s+(?:back|home))"
+    r"|return\s+(?:flight|leg|trip|journey)s?)\b",
     re.I,
 )
 
