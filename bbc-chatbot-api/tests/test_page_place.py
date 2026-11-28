@@ -167,12 +167,13 @@ class TestHeldBack:
                    {"role": "user", "content": "from Chicago"}]
         assert _held({"destination": "BCN"}, "from Chicago", history) == {"destination"}
 
-    @pytest.mark.parametrize("yes", ["yes", "Yes, from Chicago", "yeah exactly", "sure", "that's right"])
+    @pytest.mark.parametrize("yes", ["yes", "Yes, from Chicago", "yeah exactly", "sure", "that's right", "Right.",
+                                     "right, from Chicago"])
     def test_a_yes_to_our_question_that_named_it(self, yes):
         history = [{"role": "ai", "content": "Is Barcelona where you'd like to go?"}]
         assert _held({"destination": "BCN"}, yes, history) == set()
 
-    @pytest.mark.parametrize("reply", ["ok", "okay, from Chicago", "no, Lisbon", "maybe"])
+    @pytest.mark.parametrize("reply", ["ok", "okay, from Chicago", "no, Lisbon", "maybe", "right now I'm in Chicago"])
     def test_no_yes_no_place(self, reply):
         history = [{"role": "ai", "content": "Is Barcelona where you'd like to go?"}]
         assert _held({"destination": "BCN"}, reply, history) == {"destination"}

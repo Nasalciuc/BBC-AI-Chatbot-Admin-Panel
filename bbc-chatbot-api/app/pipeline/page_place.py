@@ -21,10 +21,11 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-# The start of a client's yes. Not "ok": it acknowledges more often than it agrees ("ok, from Chicago").
+# The start of a client's yes. Not "ok": it acknowledges more often than it agrees ("ok, from Chicago"). "Right"
+# only alone ("Right.", "right, from Chicago"), never "right now…".
 _YES_RE = re.compile(
-    r"^\W*(?:yes|yeah|yea|yep|yup|ya|sure|correct|right|exactly|indeed|absolutely|definitely|of\s+course"
-    r"|that'?s\s+(?:right|correct|it)|sounds\s+(?:right|good)|da|s[ií]|sim|oui)\b",
+    r"^\W*(?:yes|yeah|yea|yep|yup|ya|sure|correct|right(?=\s*(?:[.!,]|$))|exactly|indeed|absolutely|definitely"
+    r"|of\s+course|that'?s\s+(?:right|correct|it)|sounds\s+(?:right|good)|da|s[ií]|sim|oui)\b",
     re.I,
 )
 
