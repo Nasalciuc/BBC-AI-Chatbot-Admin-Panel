@@ -4885,6 +4885,9 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
                 "and(visitor_email.not.is.null,visitor_email.neq.)"
             )
             .order("created_at", desc=True)
+            # The id breaks ties: the pages are separate reads, and two chats with the same created_at at a page's
+            # edge could otherwise come twice, or not at all (CodeRabbit #291).
+            .order("id")
             .limit(_ABANDONED_SCAN_CAP)
         )
         return q.offset(offset) if offset else q
@@ -4925,6 +4928,10 @@ async def get_abandoned_conversations(timeout_minutes: int = 30) -> list[dict]:
     if len(rows) >= _ABANDONED_SCAN_CAP:
         ABANDONED_SCAN_HEALTH["cap_hits"] += 1
         page = _older_page
+        # The embedded read only, never the plain one: that asks each of the page's rows for its newest message and
+        # leaves the sweep to read each lead, up to 400 reads more a tick, the reads this scan was rid of after the
+        # executor saturated on 9-10 Nov 2026. While the embedded read is refused, the newest page keeps its own
+        # fallback, and the older ones wait, counted (older_failed), until it is back.
         try:
             older = await _run_sync(lambda: _embedded_read(page * _ABANDONED_SCAN_CAP), label="cron")
             older_rows = list(older.data or [])

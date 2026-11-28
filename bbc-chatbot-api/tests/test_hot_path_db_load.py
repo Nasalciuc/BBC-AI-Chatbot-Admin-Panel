@@ -366,8 +366,8 @@ class TestSweepScan:
         # rows, the way the list's previews ask (a related `order=` is a 400).
         assert "&messages.limit=1" in params and "&messages.order=created_at.desc" in params
         assert "order=messages(" not in params
-        # The page itself is the one the sweep always read.
-        assert "&order=created_at.desc&limit=200" in params
+        # The page itself is the one the sweep always read, newest first, the id breaking ties (CodeRabbit #291).
+        assert "&order=created_at.desc,id&limit=200" in params
         assert "status=in.(active,needs_agent,closed)" in params and "mode=in.(ai,human)" in params
         assert "metadata->>closed_by_agent_id=is.null" in params and "tunnel=eq.sales" in params
 
@@ -468,7 +468,8 @@ class TestSweepReachesOlderChats:
             asyncio.get_event_loop_policy().new_event_loop().run_until_complete(sb.get_abandoned_conversations(30))
         assert len(seen) == 2
         assert "offset=" not in seen[0]
-        assert "&order=created_at.desc&limit=200&offset=400" in seen[1]
+        # The same order on both reads, the id breaking ties at a page's edge (CodeRabbit #291).
+        assert "&order=created_at.desc,id&limit=200&offset=400" in seen[1]
         # The same embedded read: the newest message and the lead's flag, never 200 reads more.
         assert "leads(created_in_crm)" in seen[1] and "&messages.limit=1" in seen[1]
 
