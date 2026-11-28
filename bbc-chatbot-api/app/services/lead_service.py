@@ -79,7 +79,8 @@ def _departure_is_the_return(dep: str, entities: dict, lead: dict) -> bool:
         return False
     held_dep = str(lead.get("departure_date") or "")[:10]
     held_ret = str(lead.get("return_date") or "")[:10]
-    new_ret = str(entities.get("return_date") or "")[:10]
+    # The return as it would be written: a past year is moved to the next one first (CodeRabbit #291).
+    new_ret = str(_validate_future_date(entities.get("return_date")) or "")[:10]
     if (new_ret and new_ret != held_ret) or entities.get("_clear_return_date"):
         return False
     if "one_way" in (entities.get("trip_type"), lead.get("trip_type")):

@@ -668,11 +668,14 @@ def mentions_date(text: Optional[str]) -> bool:
     return bool(text and _DATE_MENTION_RE.search(text))
 
 
-# "leave", "leaving", "depart", "departure", "fly out", "fly on", "outbound", "the trip starts": the message speaks
-# of the way out. "August 22 works" does not (CodeRabbit #291).
+# "leave", "leaving", "depart", "departure", "fly out", "fly on", "outbound", "the trip starts", "we start our trip":
+# the message speaks of the way out. "August 22 works" does not, nor "school starts the next day": a start or
+# a beginning counts only with the trip (CodeRabbit #291).
+_TRIP_WORD = r"(?:trip|journey|travel|vacation|holiday|flight)s?"
 _LEAVING_RE = re.compile(
     r"\b(?:leav(?:e|es|ing)|depart(?:s|ing|ure)?|fly(?:ing)?\s+(?:out|on)|outbound|head(?:ing)?\s+out"
-    r"|start(?:s|ing)?|begin(?:s|ning)?)\b",
+    r"|" + _TRIP_WORD + r"\s+(?:start(?:s|ing)?|begin(?:s|ning)?)"
+    r"|(?:start(?:s|ing)?|begin(?:s|ning)?)\s+(?:the\s+|our\s+|my\s+)?" + _TRIP_WORD + r")\b",
     re.I,
 )
 

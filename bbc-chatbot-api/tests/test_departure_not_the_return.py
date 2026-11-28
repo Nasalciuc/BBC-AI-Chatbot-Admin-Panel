@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from freezegun import freeze_time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
@@ -38,6 +39,15 @@ class TestTheNet:
         # CodeRabbit #291: the tool may give the 22nd as both ends; that return is the one the lead holds.
         entities = {"departure_date": _BACK, "return_date": _BACK, "_departure_said": False}
         assert _departure_is_the_return(_BACK, entities, _LEAD)
+
+    @freeze_time("2026-11-28")
+    def test_the_held_return_with_a_past_year_is_no_new_return_either(self):
+        # CodeRabbit #291: the writer moves "2026-08-22" to 2027 before writing it; compared as written.
+        lead = {**_LEAD, "departure_date": "2027-08-07", "return_date": "2027-08-22"}
+        entities = {"departure_date": "2027-08-22", "return_date": "2026-08-22", "_departure_said": False}
+        assert _departure_is_the_return("2027-08-22", entities, lead)
+        assert not _departure_is_the_return(
+            "2027-08-22", {**entities, "return_date": "2026-09-05"}, lead)   # another return: it moves
 
     @pytest.mark.parametrize("entities", [
         {"departure_date": _BACK, "_departure_said": True},                            # "we'd rather leave on the 22nd"
@@ -71,7 +81,9 @@ class TestTheNet:
     ("leaving August 22 then", True),
     ("The trip starts August 22 instead", True),     # CodeRabbit #291
     ("we fly on August 22", True),
-    ("starting August 22 please", True),
+    ("we start our trip on August 22", True),
+    ("Back on August 22; school starts the next day", False),   # a start that is not the trip's
+    ("the meeting begins at 9", False),
     ("August 22 works", False),
     ("the 22nd is fine for us", False),
     ("", False),
