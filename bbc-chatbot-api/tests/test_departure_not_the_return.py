@@ -34,6 +34,11 @@ class TestTheNet:
     def test_the_lead_s_return_read_as_the_departure_is_kept_off(self):
         assert _departure_is_the_return(_BACK, {"departure_date": _BACK, "_departure_said": False}, _LEAD)
 
+    def test_the_held_return_read_again_with_it_is_no_new_return(self):
+        # CodeRabbit #291: the tool may give the 22nd as both ends; that return is the one the lead holds.
+        entities = {"departure_date": _BACK, "return_date": _BACK, "_departure_said": False}
+        assert _departure_is_the_return(_BACK, entities, _LEAD)
+
     @pytest.mark.parametrize("entities", [
         {"departure_date": _BACK, "_departure_said": True},                            # "we'd rather leave on the 22nd"
         {"departure_date": _BACK},                                                     # a writer that does not say
@@ -64,6 +69,9 @@ class TestTheNet:
     ("departure on August 22 please", True),
     ("can we fly out August 22?", True),
     ("leaving August 22 then", True),
+    ("The trip starts August 22 instead", True),     # CodeRabbit #291
+    ("we fly on August 22", True),
+    ("starting August 22 please", True),
     ("August 22 works", False),
     ("the 22nd is fine for us", False),
     ("", False),

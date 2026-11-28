@@ -73,15 +73,17 @@ def _departure_is_the_return(dep: str, entities: dict, lead: dict) -> bool:
 
     Only for a message whose reader says whether it spoke of leaving (`_departure_said`, a bool, set by
     the orchestrator and the operator card): "we'd rather leave on the 22nd" moves the departure. So do a
-    return in the same message, a cleared return and a one-way."""
+    new return in the same message (not the one the lead holds, read again with it: CodeRabbit #291), a
+    cleared return and a one-way."""
     if entities.get("_departure_said") is not False:
-        return False
-    if entities.get("return_date") or entities.get("_clear_return_date"):
-        return False
-    if "one_way" in (entities.get("trip_type"), lead.get("trip_type")):
         return False
     held_dep = str(lead.get("departure_date") or "")[:10]
     held_ret = str(lead.get("return_date") or "")[:10]
+    new_ret = str(entities.get("return_date") or "")[:10]
+    if (new_ret and new_ret != held_ret) or entities.get("_clear_return_date"):
+        return False
+    if "one_way" in (entities.get("trip_type"), lead.get("trip_type")):
+        return False
     return bool(held_dep and held_ret and held_dep < held_ret and dep == held_ret)
 
 
