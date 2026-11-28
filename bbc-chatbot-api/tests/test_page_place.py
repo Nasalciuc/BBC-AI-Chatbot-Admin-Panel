@@ -76,6 +76,18 @@ class TestThePromptLine:
         lead = {"id": "L1", "origin_code": "JFK", "destination_code": "LHR", "trip_notes": {"page_trip": page}}
         assert "Treat it as known" in proactive.page_trip_line(lead)
 
+    def test_a_page_trip_older_than_the_record_still_reads_as_seeded(self):
+        # CodeRabbit #291: a page trip with no "landed" record and the page's code on the lead was "held"
+        # before this change; it still is. A city named only in words still gives way (the older rule).
+        lead = _lead(destination_code="BCN")
+        del lead["trip_notes"]["page_trip"]["landed"]
+        assert proactive.page_trip_line(lead) is not None
+        assert proactive.page_trip_note(lead) is not None
+        assert proactive.page_trip_line(_lead(destination_code="LIS")) is None
+        words_only = {"source": "route_page", "destination_name": "Paris", "confirmed": False}
+        assert proactive.page_trip_line({"id": "L1", "destination_code": "NRT",
+                                         "trip_notes": {"page_trip": words_only}}) is None
+
     def test_a_place_an_older_seed_wrote_is_still_the_page_s(self):
         """Leads seeded before this change hold the page's code, and recorded writing it: the line still asks,
         and the consultant is still told the route was never confirmed."""
@@ -164,6 +176,21 @@ class TestHeldBack:
     def test_no_yes_no_place(self, reply):
         history = [{"role": "ai", "content": "Is Barcelona where you'd like to go?"}]
         assert _held({"destination": "BCN"}, reply, history) == {"destination"}
+
+    def test_a_yes_on_an_earlier_turn_still_counts(self):
+        # CodeRabbit #291: "yes" to the place, then the origin on the next turn, when the tool reads both.
+        history = [{"role": "ai", "content": "Is Barcelona where you'd like to go?"},
+                   {"role": "user", "content": "yes"},
+                   {"role": "ai", "content": "Great. Where would you fly from?"},
+                   {"role": "user", "content": "Chicago"}]
+        assert _held({"origin": "ORD", "destination": "BCN"}, "Chicago", history) == set()
+
+    def test_an_earlier_yes_to_something_else_does_not(self):
+        history = [{"role": "ai", "content": "Shall I put a quote together?"},
+                   {"role": "user", "content": "yes please"},
+                   {"role": "ai", "content": "Where would you fly from?"},
+                   {"role": "user", "content": "Chicago"}]
+        assert _held({"origin": "ORD", "destination": "BCN"}, "Chicago", history) == {"destination"}
 
     def test_a_yes_to_a_question_that_named_no_place(self):
         history = [{"role": "agent", "content": "Shall I send you a quote?"}]

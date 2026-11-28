@@ -1258,8 +1258,10 @@ def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> 
     all or none)."""
     # A route the page named only in words, or a place the page is about (a
     # route page, TripContext.from_the_page), is never written on the lead by
-    # the seed: a code there is one the client gave. Unless the seed recorded
-    # writing it, before #3823: the page's own code is still the page's.
+    # the seed: a code there is one the client gave. Unless it is the page's
+    # own code and a seed from before #3823 wrote it: it recorded so, or it
+    # was older than the record and the fallback below reads it (CodeRabbit
+    # #291).
     every = _pairs(lead, trip)
     recorded = _recorded_landed(lead)
     for side in ("origin", "destination"):
@@ -1267,8 +1269,9 @@ def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> 
         if not (_unseeded_side(trip, side) and lead.get(column)):
             continue
         have, page = every.get(column, (None, None))
-        if not (recorded and column in recorded and have == page):
-            return "changed"
+        if page is not None and have == page and (recorded is None or column in recorded):
+            continue
+        return "changed"
     if recorded is None:
         seeded = any(have is not None and not (f == "cabin_class" and have == _CABIN_DEFAULT)
                      for f, (have, _) in every.items())

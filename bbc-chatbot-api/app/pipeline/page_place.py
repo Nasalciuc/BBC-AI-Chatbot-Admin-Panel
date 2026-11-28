@@ -88,6 +88,32 @@ def _names(text: Optional[str], code: str, words: set[str]) -> bool:
     return any(re.search(r"\b" + re.escape(w) + r"\b", text, re.I) for w in words)
 
 
+def _client_words(history: Optional[list], message: str) -> tuple[list[str], list[str]]:
+    """(the client's messages, our messages the client answered yes to), over the history and this message.
+    A yes answers our message just before it: "yes" to "Is Barcelona where you'd like to go?" still counts
+    on the turn after, when the client answers where they fly from (CodeRabbit #291)."""
+    from app.pipeline.contact_capture import last_question
+
+    said: list[str] = []
+    agreed: list[str] = []
+    ours = ""
+    for m in history or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content") or ""
+        if m.get("role") in ("ai", "agent"):
+            ours = content
+        elif m.get("role") == "user":
+            said.append(content)
+            if ours and _YES_RE.match(content):
+                agreed.append(ours)
+    # This message: the history holds it when it was saved first; read again either way.
+    said.append(message or "")
+    if _YES_RE.match(message or ""):
+        agreed.append(last_question(history))
+    return said, agreed
+
+
 def held_back(tool_entities: Optional[dict], meta: Optional[dict], history: Optional[list], message: str,
               lead: Optional[dict]) -> set[str]:
     """The keys of the tool's reading ("origin", "destination") that are a place the page names and the
@@ -96,12 +122,7 @@ def held_back(tool_entities: Optional[dict], meta: Optional[dict], history: Opti
     places = page_places(meta)
     if not places or not isinstance(tool_entities, dict):
         return set()
-    from app.pipeline.contact_capture import last_question
-
-    said = [m.get("content") or "" for m in (history or []) if isinstance(m, dict) and m.get("role") == "user"]
-    said.append(message or "")
-    asked = last_question(history)
-    yes = bool(_YES_RE.match(message or ""))
+    said, agreed = _client_words(history, message)
     lead = lead if isinstance(lead, dict) else {}
     held: set[str] = set()
     for key, column in (("origin", "origin_code"), ("destination", "destination_code")):
@@ -110,7 +131,7 @@ def held_back(tool_entities: Optional[dict], meta: Optional[dict], history: Opti
         if not code or code not in places or str(lead.get(column) or "").upper() == code:
             continue
         words = places[code]
-        if any(_names(text, code, words) for text in said) or (yes and _names(asked, code, words)):
+        if any(_names(text, code, words) for text in said + agreed):
             continue
         held.add(key)
     return held
