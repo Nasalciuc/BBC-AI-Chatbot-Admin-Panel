@@ -90,6 +90,9 @@ class TestTheNet:
     ("the trip home begins August 22", False),
     ("our flight back will start August 22", False),
     ("we start our trip home on August 22", False),
+    ("We'll leave Rome on August 22 to fly home", False),        # leaving the destination is the way back
+    ("leaving on August 22 to come back", False),
+    ("departing August 22 on the return", False),
     ("Back on August 22; school starts the next day", False),   # a start that is not the trip's
     ("the meeting begins at 9", False),
     ("August 22 works", False),

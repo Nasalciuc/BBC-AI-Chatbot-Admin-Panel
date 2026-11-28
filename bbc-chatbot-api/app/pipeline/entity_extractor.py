@@ -683,10 +683,19 @@ _LEAVING_RE = re.compile(
 )
 
 
+# The way back in the same message: "we leave Rome on the 22nd to fly home" leaves the destination, not home.
+_RETURN_LEG_RE = re.compile(
+    r"\b(?:return(?:s|ing)?|inbound|(?:come|coming|fly|flying|head|heading|go|going|get|getting)\s+(?:back|home)"
+    r"|back\s+home|way\s+(?:back|home))\b",
+    re.I,
+)
+
+
 def speaks_of_leaving(text: Optional[str]) -> bool:
-    """True when the client's message speaks of leaving (_LEAVING_RE): only then may a date it gives move the
-    departure onto the return the lead holds (lead_service._departure_is_the_return)."""
-    return bool(text and _LEAVING_RE.search(text))
+    """True when the client's message speaks of leaving (_LEAVING_RE) and not of the way back (_RETURN_LEG_RE):
+    only then may a date it gives move the departure onto the return the lead holds
+    (lead_service._departure_is_the_return). A message with a new return moves it anyway."""
+    return bool(text and _LEAVING_RE.search(text) and not _RETURN_LEG_RE.search(text))
 
 
 def _extract_dates(text: str) -> tuple[str | None, str | None]:
