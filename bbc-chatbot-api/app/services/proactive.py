@@ -1099,11 +1099,17 @@ async def open_conversation(
 
 def _entities_from_trip(trip: TripContext) -> dict:
     """The page's search in the shape update_lead_from_entities takes. Trip
-    type is left out on purpose: that writer marks it as said by the client."""
+    type is left out on purpose: that writer marks it as said by the client.
+
+    The places a page is about (a route page, TripContext.from_the_page) stay
+    off the lead: #3823 (27 Nov 2026) opened on a destination page, the lead
+    took the page's city as the destination and the bot told the client so;
+    they wanted another one. They reach the lead once the client says them
+    (app.pipeline.page_place)."""
     ent: dict = {}
-    if trip.origin_code:
+    if trip.origin_code and not trip.from_the_page:
         ent["origin"] = trip.origin_code
-    if trip.destination_code:
+    if trip.destination_code and not trip.from_the_page:
         ent["destination"] = trip.destination_code
     if trip.depart_date:
         ent["departure_date"] = trip.depart_date.isoformat()
@@ -1225,6 +1231,13 @@ def _recorded_landed(lead: dict) -> Optional[list[str]]:
     return [f for f in landed if f in _SEED_FIELDS]
 
 
+def _unseeded_side(trip: TripContext, side: str) -> bool:
+    """The page names this side of the route ("origin", "destination") and the seed never writes it on the
+    lead: a city named only in words, or any place of a page the trip is about (_entities_from_trip)."""
+    name, code = getattr(trip, f"{side}_name"), getattr(trip, f"{side}_code")
+    return bool(name or code) and (trip.from_the_page or not code)
+
+
 def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> str:
     """How the lead stands against what the page seeded, over `fields` (all
     the seeded ones for the prompt, route and dates for the CRM note):
@@ -1243,14 +1256,19 @@ def _page_state(lead: dict, trip: TripContext, fields: tuple = _SEED_FIELDS) -> 
     without the record counts the seed as written when the lead holds any of
     the page's fields, the cabin "business" aside (one update writes them
     all or none)."""
-    # A route the page named only in words (a route page's title) is never
-    # written on the lead: a code there is one the client gave.
-    if (trip.origin_name and not trip.origin_code and lead.get("origin_code")) or (
-        trip.destination_name and not trip.destination_code and lead.get("destination_code")
-    ):
-        return "changed"
+    # A route the page named only in words, or a place the page is about (a
+    # route page, TripContext.from_the_page), is never written on the lead by
+    # the seed: a code there is one the client gave. Unless the seed recorded
+    # writing it, before #3823: the page's own code is still the page's.
     every = _pairs(lead, trip)
     recorded = _recorded_landed(lead)
+    for side in ("origin", "destination"):
+        column = f"{side}_code"
+        if not (_unseeded_side(trip, side) and lead.get(column)):
+            continue
+        have, page = every.get(column, (None, None))
+        if not (recorded and column in recorded and have == page):
+            return "changed"
     if recorded is None:
         seeded = any(have is not None and not (f == "cabin_class" and have == _CABIN_DEFAULT)
                      for f, (have, _) in every.items())
@@ -1292,6 +1310,14 @@ def page_trip_line(lead: Optional[dict]) -> Optional[str]:
     line = _trip_line(trip)
     if not line:
         return None
+    if trip.from_the_page:
+        # #3823 (27 Nov 2026): "treat it as known" made the page's city the client's trip, and the bot told
+        # them so; they wanted another one. A page is what they were reading, not what they asked for.
+        return (
+            f"From the page the chat opened on, not the client's words: {line}. Until the client says it is "
+            "their trip (they name it, or say yes when you ask), ask once, naturally, whether it is what they "
+            "have in mind, and never state it as their route. If they name another place, theirs wins."
+        )
     return (
         f"From the page (the client's own search, already shown in your opening message): {line}. "
         "Treat it as known and do not ask for it again; if the client changes anything, "

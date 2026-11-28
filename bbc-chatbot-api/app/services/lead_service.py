@@ -61,7 +61,9 @@ def _calculate_score(lead: dict, conv: Optional[dict] = None) -> int:
 # Money-path observability: lead writes must never fail silently. Surfaced
 # in /health as lead_writes so ops sees breakage without log diving.
 # departure_kept: a departure read from a message that was the lead's return (_departure_is_the_return).
-LEAD_WRITE_HEALTH: dict = {"errors_since_boot": 0, "last_error_at": None, "departure_kept": 0}
+# page_place_held: turns whose AI reading gave the page's place as the route before the client said it
+# (app.pipeline.page_place).
+LEAD_WRITE_HEALTH: dict = {"errors_since_boot": 0, "last_error_at": None, "departure_kept": 0, "page_place_held": 0}
 
 
 def _departure_is_the_return(dep: str, entities: dict, lead: dict) -> bool:

@@ -820,10 +820,12 @@ def build_site_context(metadata: dict | None) -> Optional[str]:
     kw_dest = keyword.get("destination_hint")
 
     if city:
+        # #3823 (27 Nov 2026): the page's city was taken for the client's destination and said back to them
+        # as their trip; it was not. It reaches the lead only once they say it (app.pipeline.page_place).
         lines.append(
-            f"The page they were reading suggests interest in {city} — acknowledge "
-            "it naturally instead of asking cold. If they state a different route, theirs "
-            "wins, silently."
+            f"The page they were reading is about {city}: a hint, not their trip yet. Instead of asking cold, "
+            f"ask once, naturally, whether {city} is where they want to go, and do not treat it as their "
+            "destination until they say so. If they state a different route, theirs wins, silently."
         )
     elif country:
         gateways = landing.get("gateways") or []

@@ -30,6 +30,7 @@ from app.pipeline.contact_capture import (
     with_turn_contact,
 )
 from app.pipeline.entity_extractor import mentions_date, speaks_of_leaving, turns_down_calls
+from app.pipeline import page_place
 from app.realtime.manager import manager
 from app.flags import flag
 
@@ -1751,6 +1752,13 @@ async def _pipeline(
                 _tool_blocked.update(_kept_dates)
                 logger.info(f"[{cid}] Tool {', '.join(_kept_dates)} skipped — the lead's dates kept, "
                             "no date in this message")
+        # The place the page is about is the client's only once they say it (page_place, #3823).
+        _page_held = page_place.held_back(_te, _site_metadata, history, message, lead)
+        if _page_held:
+            _tool_blocked.update(_page_held)
+            lead_service.LEAD_WRITE_HEALTH["page_place_held"] += 1
+            logger.info(f"[{cid}] Tool {', '.join(f'{k}={_te.get(k)}' for k in sorted(_page_held))} skipped — "
+                        "the page's place, the client has not said it")
         _pax_updates: dict = {}
         if flag("PAX_TOOL_FIELDS", False):
             _pax_updates, _pax_inconsistent = _tool_pax_breakdown(
